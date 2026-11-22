@@ -21,7 +21,24 @@ Tokens do not move on their own: **tap a transition** (the dark bars) to make it
 Transitions can split, merge and recolor tokens, so pick the right ones at the right time.
 A transition can only fire when the tokens it needs are there and its output circles have room (at most 7 tokens each); otherwise it is greyed out.
 
-Planned: placing extra transitions and places during a level, and upgrades that let transitions fire on their own at intervals.
+Some sources only hold a limited number of tokens, shown as dots behind them; once they are used up the source turns grey.
+
+### Building and upgrades
+A toolbar at the bottom offers tools.
+Everything works with a single tap; a tool says what a tap does where it cannot be told from what you tap.
+Tapping a tool again (or pressing Escape) goes back to firing.
+
+- **Place** and **transition** tools build new nodes inside the shaded area, which reaches a bit around the existing nodes; nodes need some room around them.
+  The transition tools show what the new transition consumes (left) and produces (right).
+- A new transition starts with **loose ends** (plugs) and cannot fire until all of them are connected: tap a plug, then a place.
+  Some given transitions and goals have loose ends, too.
+- **Remove** (red cross) takes away an arc, place or transition; goals cannot be removed.
+  Removed things fade out but finish what they are doing; a removed place loses its tokens.
+  Cutting an arc leaves a loose end that can be connected elsewhere.
+- **Auto** (clock) makes a transition fire on its own; **faster** (double chevron) shortens its interval.
+- **Capacity** (plus) lets a place hold more tokens.
+
+Levels can be picked with the numbered buttons at the top; `#2` in the URL opens level 2.
 
 ## Petri nets behind the game
 The map *is* a colored Petri net:
@@ -36,6 +53,8 @@ The map *is* a colored Petri net:
 | colored bars that fill up | source transitions firing on a timer |
 | goals | sink transitions with a target number of tokens to consume |
 | room in a circle | place capacity |
+| dots behind a source | a bounded number of firings |
+| building, connecting and removing | editing the net's structure while it runs |
 
 Firing follows the usual rule: a transition is enabled if every input place holds enough tokens of the arc's color; firing removes them and produces the output tokens.
 Time is continuous, so produced tokens are visibly on their way and only become usable once they arrive.
@@ -44,8 +63,9 @@ Details are in [docs/DESIGN.md](docs/DESIGN.md).
 ## Code layout
 - `src/core` — pure simulation: multisets, net model, `Simulation` (`fire`, `step(dt)`, auto-fire timers).
   No Pixi dependency.
-- `src/game` — level definitions and `Game` rules (goals, source ramp, portrait transposition).
-- `src/render` — Pixi views (`NetView`, `Hud`) and styling.
+- `src/game` — level definitions and `Game` rules (goals, source ramp, portrait transposition), plus building, removal and upgrade rules.
+- `src/input` — `Controller`: brushes and taps to game actions.
+- `src/render` — Pixi views (`NetView` with picking, `Hud` with toolbar) and styling.
 
 ## License
 MIT — see [LICENSE](LICENSE).

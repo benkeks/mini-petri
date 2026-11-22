@@ -1,11 +1,18 @@
-import { Application } from "pixi.js";
+import { Application, Rectangle } from "pixi.js";
 import { Game } from "./game/game";
-import { level1 } from "./game/level1";
+import { levels } from "./game/levels";
+import { Controller } from "./input/controller";
 import { Hud } from "./render/hud";
 import { NetView } from "./render/netView";
 import { THEME } from "./render/style";
 
 const STEP = 1 / 60;
+
+/** Level from the URL hash (`#2` is the second level), defaulting to the first. */
+function levelFromHash(): number {
+  const n = Number.parseInt(location.hash.slice(1), 10);
+  return Number.isInteger(n) && n >= 1 && n <= levels.length ? n - 1 : 0;
+}
 
 async function main(): Promise<void> {
   const app = new Application();
@@ -18,21 +25,42 @@ async function main(): Promise<void> {
   });
   document.getElementById("app")!.appendChild(app.canvas);
 
-  let game = new Game(level1);
-  let view = new NetView(game);
-  const hud = new Hud(game, restart);
+  let levelIndex = levelFromHash();
+  let game = new Game(levels[levelIndex]);
+  let view = createView();
+  const controller = new Controller(game, view);
+  const hud = new Hud(game, levelIndex, levels.length, controller, {
+    restart: () => load(levelIndex),
+    selectLevel: (i) => {
+      if (i === levelIndex) load(i);
+      else location.hash = `#${i + 1}`;
+    },
+    selectBrush: (b) => controller.setBrush(b),
+  });
   app.stage.addChild(view.root, hud.root);
+
+  /** The net view; taps anywhere on the world (outside the HUD) go to the controller. */
+  function createView(): NetView {
+    const v = new NetView(game);
+    v.root.eventMode = "static";
+    v.root.hitArea = new Rectangle(-1e5, -1e5, 2e5, 2e5);
+    v.root.on("pointerdown", (e) => controller.tap(v.root.toLocal(e.global)));
+    v.root.on("pointermove", (e) => controller.move(v.root.toLocal(e.global)));
+    return v;
+  }
 
   function rebuildView(): void {
     view.root.destroy({ children: true });
-    view = new NetView(game);
+    view = createView();
     app.stage.addChildAt(view.root, 0);
+    controller.attach(game, view);
   }
 
-  function restart(): void {
-    game = new Game(level1);
+  function load(index: number): void {
+    levelIndex = index;
+    game = new Game(levels[index]);
     rebuildView();
-    hud.setGame(game);
+    hud.setGame(game, index);
     layout();
   }
 
@@ -45,14 +73,15 @@ async function main(): Promise<void> {
       rebuildView();
     }
     const { width: lw, height: lh } = game.size;
-    const top = hud.layout(w, h);
-    const availH = h - top - 30;
+    const { top, bottom } = hud.layout(w, h);
+    const availH = h - top - bottom;
     const scale = Math.min(w / lw, availH / lh) * 0.96;
     view.root.scale.set(scale);
     view.root.position.set((w - lw * scale) / 2, top + (availH - lh * scale) / 2);
   }
 
   app.renderer.on("resize", layout);
+  window.addEventListener("hashchange", () => load(levelFromHash()));
   layout();
 
   let acc = 0;
@@ -63,12 +92,14 @@ async function main(): Promise<void> {
       game.step(STEP);
       acc -= STEP;
     }
+    controller.sync();
     view.update();
     hud.update(dt);
   });
 
   window.addEventListener("keydown", (e) => {
-    if (e.key === "r") restart();
+    if (e.key === "r") load(levelIndex);
+    if (e.key === "Escape") controller.cancel();
   });
 }
 

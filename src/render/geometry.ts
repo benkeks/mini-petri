@@ -129,6 +129,18 @@ export function offsetPolyline(pts: Pt[], off: number): Pt[] {
   });
 }
 
+export function distanceToPolyline(p: Pt, pts: Pt[]): number {
+  let best = Infinity;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1];
+    const b = pts[i];
+    const len2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2;
+    const t = len2 > 0 ? Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / len2)) : 0;
+    best = Math.min(best, Math.hypot(p.x - (a.x + (b.x - a.x) * t), p.y - (a.y + (b.y - a.y) * t)));
+  }
+  return best;
+}
+
 export function lerp(a: Pt, b: Pt, t: number): Pt {
   return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
 }

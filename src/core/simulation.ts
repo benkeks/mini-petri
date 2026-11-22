@@ -115,6 +115,8 @@ export class Simulation {
     for (const { arc, colors } of b.inputs) firing.pendingInputs += this.launch(arc, colors, "input", firing.id);
     this.firings.set(firing.id, firing);
     this.autoTimers.set(tid, 0);
+    const t = this.net.transitions.get(tid)!;
+    if (t.supply !== undefined) t.supply--;
     const e: FireEvent = { transitionId: tid, consumed: firing.consumed, produced: firing.produced, time: this.time };
     for (const fn of this.fireListeners) fn(e);
     if (firing.pendingInputs === 0) this.complete(firing, 0);
@@ -158,15 +160,38 @@ export class Simulation {
     this.autoTimers.delete(tid);
   }
 
+  /** True while `tid` has a firing whose outputs have not started to travel yet. */
+  isBusy(tid: string): boolean {
+    for (const f of this.firings.values()) if (f.transitionId === tid) return true;
+    return false;
+  }
+
   step(dt: number): void {
     this.time += dt;
     this.advanceTokens(dt);
     this.runAutoFire(dt);
+    this.collectGhosts();
+  }
+
+  /** Deletes ghosts that have nothing left to do: arcs without tokens, then nodes without arcs. */
+  private collectGhosts(): void {
+    const net = this.net;
+    const busyArcs = new Set(this.inFlight.map((tok) => tok.arcId));
+    for (const f of this.firings.values()) for (const { arc } of f.outputs) busyArcs.add(arc.id);
+    for (const a of [...net.arcs.values()]) if (a.ghost && !busyArcs.has(a.id)) net.deleteArc(a.id);
+    for (const t of [...net.transitions.values()]) {
+      if (t.ghost && !this.isBusy(t.id) && net.arcsOf(t.id).length === 0) {
+        net.deleteNode(t.id);
+        this.autoTimers.delete(t.id);
+      }
+    }
+    for (const p of [...net.places.values()]) if (p.ghost && net.arcsOf(p.id).length === 0) net.deleteNode(p.id);
   }
 
   /** Chooses the tokens a firing of `tid` would move, or undefined if `tid` is not enabled. */
   private bind(tid: string): Binding | undefined {
-    if (!this.net.transitions.has(tid) || this.net.transitions.get(tid)!.disabled) return undefined;
+    const t = this.net.transitions.get(tid);
+    if (!t || t.disabled || t.ghost || (t.open?.length ?? 0) > 0 || t.supply === 0) return undefined;
     const inputArcs = this.net.inputs(tid);
     const taken = new Map<string, Set<number>>();
     const chosen = new Map<Arc, Color[]>();
@@ -247,7 +272,9 @@ export class Simulation {
   private arrive(tok: InFlightToken, overshoot: number): void {
     const arc = this.net.arcs.get(tok.arcId)!;
     if (tok.kind === "output") {
-      this.net.places.get(arc.to)!.marking.push(tok.color);
+      const place = this.net.places.get(arc.to)!;
+      // Removed places swallow their arrivals.
+      if (!place.ghost) place.marking.push(tok.color);
       for (const fn of this.arriveListeners) fn(tok, arc.to);
       return;
     }
@@ -257,7 +284,7 @@ export class Simulation {
 
   private runAutoFire(dt: number): void {
     for (const t of this.net.transitions.values()) {
-      if (!t.autoInterval) continue;
+      if (!t.autoInterval || t.ghost) continue;
       const acc = (this.autoTimers.get(t.id) ?? 0) + dt;
       // The timer saturates while the transition is disabled, so it fires as soon as it becomes enabled.
       if (acc >= t.autoInterval && this.fire(t.id)) continue;

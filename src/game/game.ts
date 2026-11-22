@@ -1,7 +1,24 @@
 import { expand, type Color } from "../core/multiset";
 import { Net } from "../core/net";
 import { Simulation } from "../core/simulation";
-import type { Goal, Level } from "./level";
+import type { Goal, Kit, Level } from "./level";
+
+/** New nodes must be within this distance of a live node. */
+export const BUILD_RANGE = 220;
+/** Radii nodes claim for themselves; footprints plus `CLEARANCE` must not overlap. */
+export const PLACE_FOOTPRINT = 42;
+export const TRANSITION_FOOTPRINT = 36;
+export const CLEARANCE = 24;
+/** Interval of a transition upgraded to fire automatically. */
+export const AUTO_INTERVAL = 4;
+export const FASTER_FACTOR = 0.6;
+export const MIN_INTERVAL = 0.6;
+export const CAPACITY_STEP = 3;
+export const MAX_CAPACITY = 16;
+
+export type NodeKind = "place" | "transition";
+/** Why a placement is not allowed. */
+export type PlacementIssue = "far" | "crowded" | "outside";
 
 export interface GoalStatus extends Goal {
   /** Matching tokens that have reached the sink, capped at `count`. */
@@ -58,6 +75,100 @@ export class Game {
     return this.sim.fire(tid);
   }
 
+  /** Whether a node of `kind` may be built at (x, y) in current coordinates. */
+  placementIssue(kind: NodeKind, x: number, y: number): PlacementIssue | undefined {
+    const net = this.sim.net;
+    const r = footprint(kind);
+    const { width, height } = this.size;
+    if (x < r || y < r || x > width - r || y > height - r) return "outside";
+    const nodes = [...net.places.values(), ...net.transitions.values()];
+    for (const n of nodes) {
+      const other = net.places.has(n.id) ? PLACE_FOOTPRINT : TRANSITION_FOOTPRINT;
+      if (Math.hypot(n.x - x, n.y - y) < r + other + CLEARANCE) return "crowded";
+    }
+    if (!net.liveNodes().some((n) => Math.hypot(n.x - x, n.y - y) <= BUILD_RANGE)) return "far";
+    return undefined;
+  }
+
+  buildPlace(x: number, y: number): string | undefined {
+    if (this.complete || !this.level.tools?.place || this.placementIssue("place", x, y)) return undefined;
+    const net = this.sim.net;
+    const id = net.freshId("p");
+    net.addPlace({ id, x, y, marking: [] });
+    return id;
+  }
+
+  /** Builds a transition from `kit` with all ports open; it is enabled once they are connected. */
+  buildTransition(kit: Kit, x: number, y: number): string | undefined {
+    if (this.complete || !this.level.tools?.kits?.includes(kit) || this.placementIssue("transition", x, y)) return undefined;
+    const net = this.sim.net;
+    const id = net.freshId("t");
+    net.addTransition({ id, x, y, kind: "normal", open: kit.ports });
+    net.validateTransition(id);
+    return id;
+  }
+
+  /** Connects open port `index` of transition `tid` to place `pid`; only checks if `apply` is false. */
+  connect(tid: string, index: number, pid: string, apply = true): boolean {
+    const net = this.sim.net;
+    const t = net.transitions.get(tid);
+    const p = net.places.get(pid);
+    if (this.complete || !t || t.ghost || !t.open?.[index] || !p || p.ghost) return false;
+    if (apply) net.connect(tid, index, pid);
+    return true;
+  }
+
+  /**
+   * Removes an arc, place or transition; it stays as a ghost until its tokens in flight are done.
+   * Like the other player actions, it only checks whether the action is possible if `apply` is false.
+   */
+  remove(id: string, apply = true): boolean {
+    const net = this.sim.net;
+    if (this.complete || !this.level.tools?.remove) return false;
+    const a = net.arcs.get(id);
+    if (a && !a.ghost) {
+      if (apply) net.ghostArc(id);
+      return true;
+    }
+    const t = net.transitions.get(id);
+    if (t && !t.ghost && this.goalsOf(id).length === 0) {
+      if (apply) net.ghostTransition(id);
+      return true;
+    }
+    const p = net.places.get(id);
+    if (p && !p.ghost) {
+      if (apply) net.ghostPlace(id);
+      return true;
+    }
+    return false;
+  }
+
+  /** Lets a manual transition fire on its own. */
+  upgradeAuto(tid: string, apply = true): boolean {
+    const t = this.sim.net.transitions.get(tid);
+    if (this.complete || !this.level.tools?.auto || !t || t.ghost || t.kind !== "normal" || t.autoInterval) return false;
+    if (apply) t.autoInterval = AUTO_INTERVAL;
+    return true;
+  }
+
+  /** Shortens the interval of an automatic transition. */
+  upgradeFaster(tid: string, apply = true): boolean {
+    const t = this.sim.net.transitions.get(tid);
+    if (this.complete || !this.level.tools?.faster || !t || t.ghost || t.kind !== "normal") return false;
+    if (!t.autoInterval || t.autoInterval <= MIN_INTERVAL) return false;
+    if (apply) t.autoInterval = Math.max(MIN_INTERVAL, t.autoInterval * FASTER_FACTOR);
+    return true;
+  }
+
+  upgradeCapacity(pid: string, apply = true): boolean {
+    const p = this.sim.net.places.get(pid);
+    if (this.complete || !this.level.tools?.capacity || !p || p.ghost || p.capacity! >= MAX_CAPACITY) return false;
+    if (!apply) return true;
+    p.capacity = Math.min(MAX_CAPACITY, p.capacity! + CAPACITY_STEP);
+    this.sim.net.version++;
+    return true;
+  }
+
   /** Advances the game; frozen once the level is won. */
   step(dt: number): void {
     if (this.complete) return;
@@ -110,6 +221,10 @@ export class Game {
       }
     }
   }
+}
+
+export function footprint(kind: NodeKind): number {
+  return kind === "place" ? PLACE_FOOTPRINT : TRANSITION_FOOTPRINT;
 }
 
 function bump(m: Map<string, number>, key: string): void {

@@ -9,6 +9,8 @@ npm test        # unit tests (Vitest)
 npm run build   # type-check + production build
 ```
 
+The current build of `main` is deployed to <https://benkeks.github.io/mini-petri/>.
+
 ## How to play
 Colored tokens appear at sources and need to reach the goals.
 Each goal shows how many tokens of which color it still wants as empty circles next to it; a circle disappears whenever a matching token arrives.

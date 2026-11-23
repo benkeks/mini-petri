@@ -1,7 +1,7 @@
 import { Container, Graphics, Text } from "pixi.js";
 import type { Color } from "../core/multiset";
 import { arcCount, type Arc, type Port, type Transition } from "../core/net";
-import { BUILD_RANGE, CONNECTION_RANGE, RESOLVED_LINGER, type NodeKind } from "../game/game";
+import { BUILD_RANGE, CONNECTION_RANGE, POWERUP_LIFETIME, RESOLVED_LINGER, type NodeKind, type PowerupOffer } from "../game/game";
 import type { Game } from "../game/game";
 import { placeRadius } from "../game/placeSize";
 import {
@@ -19,6 +19,7 @@ import {
   type Pt,
 } from "./geometry";
 import { THEME, TOKEN_COLORS, TOKEN_RADIUS, TRANSITION_H, TRANSITION_W } from "./style";
+import { drawToolIcon } from "./toolIcon";
 
 const FLASH_TIME = 0.35;
 const SHAKE_TIME = 0.3;
@@ -31,9 +32,16 @@ const PLUG_RADIUS = 8;
 const PICK_SLOP = 12;
 const GHOST_ALPHA = 0.3;
 const BUILD_FADE_TIME = 0.25;
+const REWARD_WIDTH = 48;
+const REWARD_HEIGHT = 48;
+const REWARD_GAP = 8;
+const REWARD_PICK_SLOP = 4;
+const APPEAR_TIME = 0.4;
+const REWARD_EXIT_TIME = 0.3;
 
 /** What a tap at some point of the world hits. */
 export type Pick =
+  | { kind: "reward"; id: string; index: number }
   | { kind: "port"; tid: string; index: number }
   | { kind: "transition"; id: string }
   | { kind: "place"; id: string }
@@ -45,7 +53,7 @@ export interface Overlay {
   /** Pointer position in world coordinates, if known. */
   pointer?: Pt;
   /** Shows the build range and a preview of the node to build under the pointer. */
-  build?: { kind: NodeKind; ports?: Port[]; capacity?: number; connection?: { tid: string; index: number } };
+  build?: { kind: NodeKind; ports?: Port[]; capacity?: number; connection?: { tid: string; index: number }; fromPlace?: string; canPlace?: (x: number, y: number) => boolean };
   /** Picks the active brush can act on; they are highlighted. */
   target?: (pick: Pick) => boolean;
   /** Nodes and ports reachable from a node preview at the given world position. */
@@ -75,6 +83,14 @@ interface TransitionNode {
   deniedAt: number;
 }
 
+interface RewardNode {
+  offer: PowerupOffer;
+  root: Container;
+  timer: Graphics;
+  backgrounds: Graphics[];
+  removedAt?: number;
+}
+
 /** Draws the net in world coordinates and tells which part of it lies under a point. */
 export class NetView {
   readonly root = new Container();
@@ -94,6 +110,9 @@ export class NetView {
   private readonly placeLayer = new Graphics();
   private readonly tokenLayer = new Graphics();
   private readonly overlayLayer = new Graphics();
+  private readonly rewardLayer = new Container();
+  private rewardVersion = -1;
+  private rewards: RewardNode[] = [];
   private readonly transitionLayer = new Container();
   private readonly labelLayer = new Container();
   /** Labels that belong to arcs and transitions; rebuilt with them. */
@@ -125,6 +144,7 @@ export class NetView {
       this.tokenLayer,
       this.labelLayer,
       this.overlayLayer,
+      this.rewardLayer,
     );
     this.labelLayer.addChild(this.staticLabels);
     game.sim.onFire((e) => {
@@ -141,6 +161,7 @@ export class NetView {
     for (const n of this.transitions.values()) this.drawTransition(n, now);
     this.drawInFlight();
     this.drawOverlay(now);
+    this.drawRewards();
   }
 
   private updateBuildArea(dt: number, viewport: { x: number; y: number; width: number; height: number }): void {
@@ -178,6 +199,19 @@ export class NetView {
   /** The topmost live part of the net at world point `p`: plugs, then transitions, places and arcs. */
   pick(p: Pt): Pick {
     const net = this.game.sim.net;
+    const scale = this.root.scale.x || 1;
+    for (const offer of [...this.game.offers.values()].reverse()) {
+      if (this.game.sim.time >= offer.expiresAt) continue;
+      const x = (p.x - offer.x) * scale;
+      const y = (p.y - offer.y) * scale;
+      for (const index of [0, 1]) {
+        const center = (index - 0.5) * (REWARD_WIDTH + REWARD_GAP);
+        if (Math.abs(x - center) <= REWARD_WIDTH / 2 + REWARD_PICK_SLOP
+          && Math.abs(y) <= REWARD_HEIGHT / 2 + REWARD_PICK_SLOP) {
+          return { kind: "reward", id: offer.id, index };
+        }
+      }
+    }
     const slop = PICK_SLOP / (this.root.scale.x || 1);
     const closest = <T>(items: Iterable<T>, dist: (x: T) => number, max: number): T | undefined => {
       let best: T | undefined;
@@ -203,6 +237,70 @@ export class NetView {
     const arc = closest(live(net.arcs), (a) => distanceToPolyline(p, this.visibleRoute(a)), 5 + slop);
     if (arc) return { kind: "arc", id: arc.id };
     return { kind: "empty", x: p.x, y: p.y };
+  }
+
+  private drawRewards(): void {
+    const now = this.game.sim.time;
+    if (this.rewardVersion !== this.game.offerVersion) {
+      this.rewardVersion = this.game.offerVersion;
+      for (const reward of this.rewards) {
+        if (!this.game.offers.has(reward.offer.id) && reward.removedAt === undefined) reward.removedAt = now;
+      }
+      for (const offer of this.game.offers.values()) {
+        if (this.rewards.some((reward) => reward.offer.id === offer.id)) continue;
+        const root = new Container();
+        const timer = new Graphics();
+        const backgrounds: Graphics[] = [];
+        for (const [index, choice] of offer.choices.entries()) {
+          const x = (index - 0.5) * (REWARD_WIDTH + REWARD_GAP);
+          const background = new Graphics().roundRect(x - REWARD_WIDTH / 2, -REWARD_HEIGHT / 2, REWARD_WIDTH, REWARD_HEIGHT, 8).fill(0xb9b8b4);
+          const border = new Graphics().roundRect(x - REWARD_WIDTH / 2, -REWARD_HEIGHT / 2, REWARD_WIDTH, REWARD_HEIGHT, 8)
+            .stroke({ width: 2, color: THEME.ink });
+          const icon = new Graphics();
+          icon.position.set(x, 0);
+          root.addChild(background, border, icon);
+          if (choice.kind === "coins") {
+            icon.circle(0, 0, 13).fill(0xdd8a25);
+            const amount = new Text({ text: String(choice.amount), style: { fontFamily: THEME.font, fontSize: 11, fill: 0xffffff, fontWeight: "bold" } });
+            amount.anchor.set(0.5);
+            amount.position.set(x, 0);
+            root.addChild(amount);
+          } else {
+            drawToolIcon(icon, choice.kind === "kit" ? { kind: "kit", kit: choice.kit } : { kind: choice.kind });
+            if (choice.kind === "kit") {
+              const badge = new Graphics().circle(x + 19, 19, 10).fill(0xdd8a25);
+              const price = new Text({ text: String(choice.price), style: { fontFamily: THEME.font, fontSize: 11, fill: 0xffffff, fontWeight: "bold" } });
+              price.anchor.set(0.5);
+              price.position.set(x + 19, 19);
+              root.addChild(badge, price);
+            }
+          }
+          backgrounds.push(background);
+        }
+        root.addChild(timer);
+        this.rewardLayer.addChild(root);
+        this.rewards.push({ offer, root, timer, backgrounds });
+      }
+    }
+    const scale = this.root.scale.x || 1;
+    for (const reward of this.rewards) {
+      const { offer, root, timer, backgrounds, removedAt } = reward;
+      const enter = Math.max(0, Math.min(1, (now - (offer.expiresAt - POWERUP_LIFETIME)) / APPEAR_TIME));
+      const exit = removedAt === undefined ? 1 : Math.max(0, 1 - (now - removedAt) / REWARD_EXIT_TIME);
+      root.position.set(offer.x, offer.y);
+      root.scale.set((0.75 + 0.25 * (1 - (1 - enter) ** 3)) * (0.75 + 0.25 * exit) / scale);
+      root.alpha = enter * exit;
+      for (const background of backgrounds) background.alpha = 0.72 + 0.2 * Math.sin(now * 3);
+      const width = 2 * REWARD_WIDTH + REWARD_GAP;
+      const left = Math.max(0, Math.min(1, (offer.expiresAt - this.game.sim.time) / POWERUP_LIFETIME));
+      timer.clear().roundRect(-width / 2, -REWARD_HEIGHT / 2 - 7, width, 3, 1.5).fill(THEME.muted)
+        .roundRect(-width / 2, -REWARD_HEIGHT / 2 - 7, width * left, 3, 1.5).fill(0x5ba76a);
+    }
+    this.rewards = this.rewards.filter((reward) => {
+      if (reward.removedAt === undefined || now - reward.removedAt < REWARD_EXIT_TIME) return true;
+      reward.root.destroy({ children: true });
+      return false;
+    });
   }
 
   /** (Re)builds arcs, ports, transitions and labels whenever the net's structure changes. */
@@ -387,6 +485,11 @@ export class NetView {
     const sim = this.game.sim;
     const enabled = sim.isEnabled(t.id);
     g.clear();
+    const spawnedAt = this.game.spawnedAt.get(t.id);
+    const entering = spawnedAt === undefined ? 1 : Math.max(0, Math.min(1, (now - spawnedAt) / APPEAR_TIME));
+    const gone = t.ghost && (this.game.exhausted.has(t.id) || this.game.failed.has(t.id));
+    n.container.alpha = gone ? 0 : (t.ghost ? GHOST_ALPHA : entering);
+    n.container.scale.set(0.75 + 0.25 * (1 - (1 - entering) ** 3));
 
     // Effects are timed by the simulation clock, which stops once the level is won.
     const frozen = this.game.complete;
@@ -488,7 +591,9 @@ export class NetView {
         if (!connectionOrigin) g.circle(x, y, CONNECTION_RANGE).stroke({ width: 3, color: THEME.arc, alpha: 0.7 });
         const connection = o.build.connection;
         const invalid = this.game.placementIssue(o.build.kind, x, y)
-          || (connection && !this.game.canConnectAt(connection.tid, connection.index, x, y));
+          || (o.build.canPlace && !o.build.canPlace(x, y))
+          || (connection && !this.game.canConnectAt(connection.tid, connection.index, x, y))
+          || (o.build.fromPlace && !this.game.canBuildConnectedTransition(o.build.fromPlace, x, y));
         const color = invalid ? THEME.warn : THEME.ink;
         if (o.build.kind === "place") g.circle(x, y, placeRadius(o.build.capacity)).fill({ color: THEME.placeFill, alpha: 0.6 }).stroke({ width: 5, color, alpha: 0.6 });
         else {
@@ -592,7 +697,9 @@ export class NetView {
 
   private drawResolved(n: TransitionNode, now: number, at: number, failed = false): void {
     const k = (now - at) / RESOLVED_LINGER;
-    n.container.alpha = k < 0.6 ? 1 : Math.max(0, 1 - (k - 0.6) / 0.4);
+    const fade = k < 0.6 ? 1 : Math.max(0, 1 - (k - 0.6) / 0.4);
+    n.container.alpha *= fade;
+    n.container.scale.set(n.container.scale.x * (0.75 + 0.25 * fade));
     const s = 1 + 0.3 * Math.max(0, 1 - k * 4);
     n.gfx.circle(0, 0, 20 * s).fill(failed ? THEME.warn : THEME.ink);
     if (failed) {

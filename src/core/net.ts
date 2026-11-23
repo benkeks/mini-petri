@@ -43,13 +43,15 @@ export interface Transition {
   supply?: number;
   /** A removed transition: it never fires again but finishes its firings in progress. */
   ghost?: boolean;
+  /** Add a copy of the first any-color input to the any-color outputs. */
+  copyInputColor?: boolean;
 }
 
 /**
  * A directed arc between a place and a transition (either direction) moving `count` tokens per firing.
  * A colored arc only moves tokens of `color`. An arc without `color` ("any") moves tokens of any color:
  * as input it takes the oldest tokens of its place; as output it passes on tokens taken by the
- * transition's "any" inputs, in input-arc order.
+ * transition's "any" inputs, in input-arc order, unless the transition copies its input color.
  */
 export interface Arc {
   id: string;
@@ -237,12 +239,15 @@ export class Net {
 
   /** "Any" outputs can only pass on tokens taken by "any" inputs; open ports count as their future arcs. */
   validateTransition(tid: string): void {
-    const open = this.transitions.get(tid)!.open ?? [];
+    const transition = this.transitions.get(tid)!;
+    const open = transition.open ?? [];
     const anyCount = (dir: Port["dir"], arcs: readonly Arc[]) =>
       [...arcs, ...open.filter((port) => port.dir === dir)].filter((x) => !x.color).reduce((n, x) => n + arcCount(x), 0);
     const anyIn = anyCount("in", this.inputs(tid));
     const anyOut = anyCount("out", this.outputs(tid));
-    if (anyOut > anyIn) throw new Error(`Transition ${tid} has more "any" output tokens than "any" input tokens`);
+    if (transition.copyInputColor) {
+      if (anyIn < 1 || anyOut !== anyIn + 1) throw new Error(`Transition ${tid} must copy the first "any" input into one additional output`);
+    } else if (anyOut > anyIn) throw new Error(`Transition ${tid} has more "any" output tokens than "any" input tokens`);
   }
 
   private assertFreeId(id: string): void {

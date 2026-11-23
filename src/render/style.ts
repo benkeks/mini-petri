@@ -16,7 +16,7 @@ export const THEME = {
   placeFill: 0xffffff,
   warn: 0xd8342c,
   enabledGlow: 0x2b2b2b,
-  font: "Helvetica Neue, Arial, sans-serif",
+  font: "Fredoka, sans-serif",
 };
 
 export const TOKEN_RADIUS = 6;

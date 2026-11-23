@@ -135,6 +135,28 @@ describe("Simulation", () => {
     expect(fired).toHaveLength(2);
   });
 
+  it("randomizes the order of ready transitions competing for a token", () => {
+    const s: NetSpec = {
+      places: [{ id: "p", x: 0, y: 0, marking: ["blue"] }],
+      transitions: [
+        { id: "first", x: 100, y: 0, kind: "sink", autoInterval: 1 },
+        { id: "second", x: 100, y: 100, kind: "sink", autoInterval: 1 },
+      ],
+      arcs: [
+        { id: "a", from: "p", to: "first" },
+        { id: "b", from: "p", to: "second" },
+      ],
+    };
+    for (const [random, expected] of [[0, "second"], [0.99, "first"]] as const) {
+      const sim = new Simulation(new Net(s), { random: () => random });
+      const fired: string[] = [];
+      sim.onFire((event) => fired.push(event.transitionId));
+      sim.step(1);
+      expect(fired).toEqual([expected]);
+      expect(sim.autoProgress(expected === "first" ? "second" : "first")).toBe(1);
+    }
+  });
+
   it("always enables sources without inputs", () => {
     const sim = new Simulation(
       new Net({

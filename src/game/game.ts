@@ -3,6 +3,7 @@ import { Net, type Transition } from "../core/net";
 import { Simulation } from "../core/simulation";
 import type { Goal, Kit, Level } from "./level";
 import { PLACE_CAPACITIES, placeRadius } from "./placeSize";
+import { POWERUPS, type Powerup } from "./powerups";
 
 /** New nodes must be within this distance of a live node. */
 export const BUILD_RANGE = 220;
@@ -14,11 +15,14 @@ export function withinConnectionRange(a: { x: number; y: number }, b: { x: numbe
 /** Radii nodes claim for themselves; footprints plus `CLEARANCE` must not overlap. */
 export const PLACE_FOOTPRINT = placeRadius(PLACE_CAPACITIES[PLACE_CAPACITIES.length - 1]) + 8;
 export const TRANSITION_FOOTPRINT = 36;
-export const CLEARANCE = 24;
+export const CLEARANCE = 16;
 /** Interval of a transition upgraded to fire automatically. */
 export const AUTO_INTERVAL = 4;
 export const FASTER_FACTOR = 0.6;
 export const MIN_INTERVAL = 0.6;
+export const UPGRADE_COST = 5;
+export const STARTING_COINS = 40;
+export const EXHAUSTED_SOURCE_REWARD = 5;
 
 export type NodeKind = "place" | "transition";
 /** Why a placement is not allowed. */
@@ -32,8 +36,28 @@ export interface GoalStatus extends Goal {
 
 /** Seconds a resolved goal or exhausted source stays visible before it is removed from the map. */
 export const RESOLVED_LINGER = 1.2;
-const ENDLESS_EPOCH_PROGRESS = 60;
-const EMISSION_PROGRESS = 10;
+/** Unconnected one-token places expire after this many seconds without use. */
+export const UNUSED_PLACE_LIFETIME = 120;
+export const POWERUP_LIFETIME = 120;
+export const ENDLESS_EPOCH_PROGRESS = 60;
+export const EMISSION_PROGRESS = 10;
+export const ENDLESS_RULES = {
+  blueOnlyEpochs: 5,
+  redChance: 0.5,
+  distantRedAfter: 10,
+  variedRedAfter: 20,
+  redFiveRoll: 0.75,
+  redTenRoll: 0.9,
+  blueDoubleFrom: 25,
+  blueTripleAfter: 50,
+  blueDoubleRoll: 0.75,
+  blueTripleRoll: 0.9,
+  greenFrom: 40,
+  greenChance: 0.1,
+  redSoloFrom: 75,
+  yellowFrom: 100,
+  yellowChance: 0.1,
+} as const;
 const SINK_GRACE = 180;
 const SOURCE_IDLE = 240;
 const COUNTDOWN = 60;
@@ -44,6 +68,21 @@ const TIME_EPSILON = 1e-8;
 interface Countdown {
   startsAt: number;
   deadline: number;
+  duration: number;
+}
+
+export interface CoinEvent {
+  amount: number;
+  x: number;
+  y: number;
+}
+
+export interface PowerupOffer {
+  id: string;
+  x: number;
+  y: number;
+  expiresAt: number;
+  choices: [Powerup, Powerup];
 }
 
 /** Game rules on top of the net simulation: goals at sinks and source difficulty ramp. */
@@ -52,15 +91,25 @@ export class Game {
   /** True when node coordinates are transposed so the net flows top to bottom. */
   portrait = false;
   complete = false;
+  paused = false;
   completedAt?: number;
   /** Goal tokens delivered during this endless run. */
   score = 0;
+  private coinBalance = STARTING_COINS;
+  private readonly coinListeners: ((event: CoinEvent) => void)[] = [];
+  private readonly upgradeSpending = new Map<string, number>();
+  private readonly inventory = new Map<string, number>();
+  readonly offers = new Map<string, PowerupOffer>();
+  offerVersion = 0;
+  private nextOfferId = 1;
   /** Goal sinks whose goals are all met, with the time they were met. */
   readonly resolved = new Map<string, number>();
   /** Exhausted sources and the time their supply ran out. */
   readonly exhausted = new Map<string, number>();
   /** Transitions that timed out and the time their countdown expired. */
   readonly failed = new Map<string, number>();
+  /** Creation times of spawned endless transitions, for their entrance animation. */
+  readonly spawnedAt = new Map<string, number>();
   /** Matching tokens that reached each goal sink, per `sink:color`. */
   private readonly delivered = new Map<string, number>();
   /** Matching tokens consumed by each goal sink, including those still travelling into it. */
@@ -68,10 +117,14 @@ export class Game {
   private goalDefinitions: Goal[];
   private nextRampAt: number;
   private readonly countdowns = new Map<string, Countdown>();
+  private readonly unusedPlaces = new Map<string, number>();
+  private unusedPlacesVersion = -1;
   private readonly endlessCenter?: Transition;
   private endlessProgress = 0;
   private endlessEpoch = 0;
-  private pendingColor?: "blue" | "red";
+  private redSurplus = 0;
+  private pendingColor?: Color;
+  private nextRedHasSource = true;
   private nextSpawnRetryAt = 0;
   private nextEndlessId = 1;
 
@@ -82,9 +135,17 @@ export class Game {
     this.nextRampAt = level.ramp.every;
     if (level.mode === "endless") {
       this.endlessCenter = [...this.sim.net.transitions.values()].find((t) => t.kind === "source" && t.supply === undefined);
-      for (const goal of this.goalDefinitions) this.startCountdown(goal.sinkId, SINK_GRACE);
-      this.sim.onBeforeAutoFire(() => this.expireCountdowns());
+      for (const goal of this.goalDefinitions) {
+        const factor = goal.color === "yellow" ? 2 : 1;
+        this.startCountdown(goal.sinkId, SINK_GRACE * factor, this.sim.time, COUNTDOWN * factor);
+      }
     }
+    this.syncUnusedPlaces();
+    this.sim.onBeforeAutoFire(() => {
+      if (this.level.mode === "endless") this.expireCountdowns();
+      this.expireUnusedPlaces();
+    });
+    this.sim.onArrive((_token, placeId, time) => this.touchPlace(placeId, time));
     for (const t of this.sim.net.transitions.values()) {
       if (t.kind === "source" && t.supply === 0) this.exhausted.set(t.id, this.sim.time);
     }
@@ -98,6 +159,7 @@ export class Game {
         if (transition.supply === 0) {
           this.countdowns.delete(transition.id);
           this.exhausted.set(transition.id, e.time);
+          this.changeCoins(EXHAUSTED_SOURCE_REWARD, transition);
         }
       }
       const goals = this.goalsOf(e.transitionId);
@@ -132,10 +194,94 @@ export class Game {
     });
   }
 
+  /** Number of completed endless spawn epochs. */
+  get epoch(): number {
+    return this.endlessEpoch;
+  }
+
+  get coins(): number {
+    return this.coinBalance;
+  }
+
+  onCoins(fn: (event: CoinEvent) => void): void {
+    this.coinListeners.push(fn);
+  }
+
+  powerupStock(id: string): number {
+    return this.inventory.get(id) ?? 0;
+  }
+
+  availableKits(): Kit[] {
+    if (!this.level.tools) return [];
+    const kits = [...(this.level.tools?.kits ?? [])];
+    for (const powerup of POWERUPS) {
+      if (powerup.kind === "kit" && this.powerupStock(powerup.id) > 0) kits.push(powerup.kit);
+    }
+    return kits;
+  }
+
+  kitPowerup(kit: Kit): Extract<Powerup, { kind: "kit" }> | undefined {
+    return POWERUPS.find((powerup): powerup is Extract<Powerup, { kind: "kit" }> =>
+      powerup.kind === "kit" && powerup.kit === kit);
+  }
+
+  collectOffer(id: string, index: number): boolean {
+    const offer = this.offers.get(id);
+    if (this.complete || !offer || this.sim.time >= offer.expiresAt || (index !== 0 && index !== 1)) return false;
+    const choice = offer.choices[index];
+    this.offers.delete(id);
+    this.offerVersion++;
+    if (choice.kind === "coins") this.changeCoins(choice.amount, offer);
+    else this.inventory.set(choice.id, this.powerupStock(choice.id) + 1);
+    return true;
+  }
+
+  private spawnOffer(position: { x: number; y: number }, at: number): void {
+    const expiresAt = at + POWERUP_LIFETIME;
+    if (this.sim.time >= expiresAt) return;
+    const eligible = POWERUPS.filter((powerup) => this.endlessEpoch >= powerup.afterEpoch);
+    const first = eligible.splice(Math.floor(this.random() * eligible.length), 1)[0];
+    const second = eligible[Math.floor(this.random() * eligible.length)];
+    const id = `offer${this.nextOfferId++}`;
+    this.offers.set(id, { id, x: position.x, y: position.y, expiresAt, choices: [first, second] });
+    this.offerVersion++;
+  }
+
+  private expireOffers(): void {
+    for (const offer of this.offers.values()) {
+      if (this.sim.time < offer.expiresAt) continue;
+      this.offers.delete(offer.id);
+      this.offerVersion++;
+    }
+  }
+
+  private changeCoins(amount: number, position: { x: number; y: number }): void {
+    if (amount === 0) return;
+    this.coinBalance += amount;
+    for (const fn of this.coinListeners) fn({ amount, x: position.x, y: position.y });
+  }
+
+  private buyUpgrade(node: { id: string; x: number; y: number }): void {
+    this.upgradeSpending.set(node.id, (this.upgradeSpending.get(node.id) ?? 0) + UPGRADE_COST);
+    this.changeCoins(-UPGRADE_COST, node);
+  }
+
+  private useUpgrade(kind: "auto" | "capacity", node: { id: string; x: number; y: number }): void {
+    const stock = this.powerupStock(kind);
+    if (stock > 0) this.inventory.set(kind, stock - 1);
+    else this.buyUpgrade(node);
+  }
+
+  private refundUpgrade(node: { id: string; x: number; y: number }): void {
+    const spent = this.upgradeSpending.get(node.id) ?? 0;
+    this.upgradeSpending.delete(node.id);
+    this.changeCoins(Math.round(spent / 2), node);
+  }
+
   /** Player interaction: only non-automatic transitions can be fired by hand. */
   playerFire(tid: string): boolean {
     const t = this.sim.net.transitions.get(tid);
-    if (!t || t.kind !== "normal" || this.complete) return false;
+    if (!t || t.kind !== "normal" || this.complete || this.paused) return false;
     return this.sim.fire(tid);
   }
 
@@ -157,6 +303,7 @@ export class Game {
     const net = this.sim.net;
     const id = net.freshId("p");
     net.addPlace({ id, x, y, capacity, marking: [] });
+    this.syncUnusedPlaces();
     return id;
   }
 
@@ -167,6 +314,33 @@ export class Game {
     const id = this.buildPlace(x, y, 1);
     if (id === undefined) return undefined;
     net.connect(tid, index, id);
+    this.syncUnusedPlaces();
+    return id;
+  }
+
+  /** Available color-preserving one-to-one kit, if building it is enabled. */
+  relayKit(): Kit | undefined {
+    return this.level.tools?.kits?.find((kit) => kit.ports.length === 2
+      && kit.ports.every((port) => !port.color && (port.count ?? 1) === 1)
+      && kit.ports.some((port) => port.dir === "in")
+      && kit.ports.some((port) => port.dir === "out"));
+  }
+
+  /** Whether a new relay can be built and connected from a place at this point. */
+  canBuildConnectedTransition(pid: string, x: number, y: number): boolean {
+    const place = this.sim.net.places.get(pid);
+    return !!place && !place.ghost && !this.complete && !!this.relayKit()
+      && withinConnectionRange(place, { x, y }) && !this.placementIssue("transition", x, y);
+  }
+
+  /** Builds a relay with its input connected to the selected place. */
+  buildConnectedTransition(pid: string, x: number, y: number): string | undefined {
+    const kit = this.relayKit();
+    if (!kit || !this.canBuildConnectedTransition(pid, x, y)) return undefined;
+    const id = this.buildTransition(kit, x, y);
+    if (id === undefined) throw new Error("Could not build a validated connected transition");
+    const input = kit.ports.findIndex((port) => port.dir === "in");
+    if (!this.connect(id, input, pid)) throw new Error("Could not connect a validated transition");
     return id;
   }
 
@@ -178,12 +352,24 @@ export class Game {
   }
 
   /** Builds a transition from `kit` with all ports open; it is enabled once they are connected. */
+  canBuildTransition(kit: Kit, x: number, y: number): boolean {
+    if (this.complete || this.placementIssue("transition", x, y)) return false;
+    if (this.level.tools?.kits?.includes(kit)) return true;
+    const powerup = this.kitPowerup(kit);
+    return !!this.level.tools && !!powerup && this.powerupStock(powerup.id) > 0 && this.coins >= powerup.price;
+  }
+
   buildTransition(kit: Kit, x: number, y: number): string | undefined {
-    if (this.complete || !this.level.tools?.kits?.includes(kit) || this.placementIssue("transition", x, y)) return undefined;
+    if (!this.canBuildTransition(kit, x, y)) return undefined;
     const net = this.sim.net;
     const id = net.freshId("t");
-    net.addTransition({ id, x, y, kind: "normal", open: kit.ports });
+    net.addTransition({ id, x, y, kind: "normal", open: kit.ports, copyInputColor: kit.copyInputColor });
     net.validateTransition(id);
+    const powerup = this.kitPowerup(kit);
+    if (powerup && !this.level.tools?.kits?.includes(kit)) {
+      this.inventory.set(powerup.id, this.powerupStock(powerup.id) - 1);
+      this.changeCoins(-powerup.price, { x, y });
+    }
     return id;
   }
 
@@ -192,7 +378,11 @@ export class Game {
     const net = this.sim.net;
     const p = net.places.get(pid);
     if (!p || p.ghost || !this.canConnectAt(tid, index, p.x, p.y)) return false;
-    if (apply) net.connect(tid, index, pid);
+    if (apply) {
+      this.syncUnusedPlaces();
+      net.connect(tid, index, pid);
+      this.syncUnusedPlaces();
+    }
     return true;
   }
 
@@ -205,17 +395,31 @@ export class Game {
     if (this.complete || !this.level.tools?.remove) return false;
     const a = net.arcs.get(id);
     if (a && !a.ghost) {
-      if (apply) net.ghostArc(id);
+      if (apply) {
+        this.syncUnusedPlaces();
+        net.ghostArc(id);
+        this.syncUnusedPlaces();
+      }
       return true;
     }
     const t = net.transitions.get(id);
     if (t && !t.ghost && t.kind === "normal" && this.goalsOf(id).length === 0) {
-      if (apply) net.ghostTransition(id);
+      if (apply) {
+        this.syncUnusedPlaces();
+        this.refundUpgrade(t);
+        net.ghostTransition(id);
+        this.syncUnusedPlaces();
+      }
       return true;
     }
     const p = net.places.get(id);
     if (p && !p.ghost) {
-      if (apply) net.ghostPlace(id);
+      if (apply) {
+        this.changeCoins(p.marking.length, p);
+        this.refundUpgrade(p);
+        net.ghostPlace(id);
+        this.syncUnusedPlaces();
+      }
       return true;
     }
     return false;
@@ -224,15 +428,20 @@ export class Game {
   /** Automates a manual transition, or speeds up one that is already automatic. */
   upgradeAuto(tid: string, apply = true): boolean {
     const t = this.sim.net.transitions.get(tid);
-    if (this.complete || !this.level.tools?.auto || !t || t.ghost || t.kind !== "normal") return false;
+    if (this.complete || !this.level.tools?.auto || !t || t.ghost || t.kind !== "normal"
+      || (this.powerupStock("auto") === 0 && this.coins < UPGRADE_COST)) return false;
     if (t.autoInterval && t.autoInterval <= MIN_INTERVAL) return false;
-    if (apply) t.autoInterval = t.autoInterval ? Math.max(MIN_INTERVAL, t.autoInterval * FASTER_FACTOR) : AUTO_INTERVAL;
+    if (apply) {
+      t.autoInterval = t.autoInterval ? Math.max(MIN_INTERVAL, t.autoInterval * FASTER_FACTOR) : AUTO_INTERVAL;
+      this.useUpgrade("auto", t);
+    }
     return true;
   }
 
   upgradeCapacity(pid: string, apply = true): boolean {
     const p = this.sim.net.places.get(pid);
-    if (this.complete || !this.level.tools?.capacity || !p || p.ghost) return false;
+    if (this.complete || !this.level.tools?.capacity || !p || p.ghost
+      || (this.powerupStock("capacity") === 0 && this.coins < UPGRADE_COST)) return false;
     const next = PLACE_CAPACITIES.find((capacity) => capacity > p.capacity!);
     if (next === undefined) return false;
     const radius = placeRadius(next) + 8;
@@ -243,13 +452,15 @@ export class Game {
     }
     if (!apply) return true;
     p.capacity = next;
+    this.useUpgrade("capacity", p);
     this.sim.net.version++;
+    this.syncUnusedPlaces();
     return true;
   }
 
-  /** Advances the game; frozen once the level is won. */
+  /** Advances the game; frozen while paused or once the level is won. */
   step(dt: number): void {
-    if (this.complete) return;
+    if (this.complete || this.paused) return;
     if (this.level.mode !== "endless") {
       this.advance(dt);
       return;
@@ -265,10 +476,16 @@ export class Game {
   private advance(dt: number): void {
     if (this.level.mode === "endless") this.endlessProgress += dt;
     this.sim.step(dt);
+    this.expireOffers();
     this.rampSources();
     for (const [tid, at] of this.resolved) {
       if (this.sim.time - at < RESOLVED_LINGER) continue;
-      if (this.sim.net.transitions.has(tid)) this.sim.removeTransition(tid);
+      const sink = this.sim.net.transitions.get(tid);
+      if (sink) {
+        this.spawnOffer(sink, at + RESOLVED_LINGER);
+        this.sim.removeTransition(tid);
+        this.spawnedAt.delete(tid);
+      }
       if (this.level.mode === "endless") {
         this.forgetGoal(tid);
         this.resolved.delete(tid);
@@ -276,20 +493,28 @@ export class Game {
     }
     for (const [tid, at] of this.exhausted) {
       const t = this.sim.net.transitions.get(tid);
-      if (!t) this.exhausted.delete(tid);
+      if (!t) {
+        this.exhausted.delete(tid);
+        this.spawnedAt.delete(tid);
+      }
       else if (!t.ghost && this.sim.time - at >= RESOLVED_LINGER) this.sim.net.ghostTransition(tid);
     }
     for (const [tid, at] of this.failed) {
       const t = this.sim.net.transitions.get(tid);
-      if (!t) this.failed.delete(tid);
+      if (!t) {
+        this.failed.delete(tid);
+        this.spawnedAt.delete(tid);
+      }
       else if (this.sim.time - at >= RESOLVED_LINGER) {
         if (t.kind === "sink") {
           this.sim.removeTransition(tid);
+          this.spawnedAt.delete(tid);
           this.forgetGoal(tid);
           this.failed.delete(tid);
         } else if (!t.ghost) this.sim.net.ghostTransition(tid);
       }
     }
+    this.expireUnusedPlaces();
     if (this.level.mode === "endless") {
       this.spawnEndless();
     } else if (this.resolved.size === new Set(this.goalDefinitions.map((g) => g.sinkId)).size) {
@@ -310,6 +535,8 @@ export class Game {
     this.portrait = portrait;
     const net = this.sim.net;
     for (const n of [...net.places.values(), ...net.transitions.values()]) [n.x, n.y] = [n.y, n.x];
+    for (const offer of this.offers.values()) [offer.x, offer.y] = [offer.y, offer.x];
+    this.offerVersion++;
   }
 
   goals(): GoalStatus[] {
@@ -327,16 +554,52 @@ export class Game {
     return this.goalDefinitions.filter((g) => g.sinkId === sinkId);
   }
 
+  /** Records interaction or a token arrival at an unconnected small place. */
+  touchPlace(pid: string, time = this.sim.time): void {
+    this.syncUnusedPlaces();
+    const since = this.unusedPlaces.get(pid);
+    if (since !== undefined && time >= since && time - since < UNUSED_PLACE_LIFETIME - TIME_EPSILON) {
+      this.unusedPlaces.set(pid, time);
+    }
+  }
+
+  private syncUnusedPlaces(): void {
+    const net = this.sim.net;
+    if (this.unusedPlacesVersion === net.version) return;
+    const connected = new Set<string>();
+    for (const arc of net.arcs.values()) {
+      if (!arc.ghost) {
+        connected.add(arc.from);
+        connected.add(arc.to);
+      }
+    }
+    for (const p of net.places.values()) {
+      if (p.ghost || p.capacity !== 1 || connected.has(p.id)) this.unusedPlaces.delete(p.id);
+      else if (!this.unusedPlaces.has(p.id)) this.unusedPlaces.set(p.id, this.sim.time);
+    }
+    for (const id of this.unusedPlaces.keys()) if (!net.places.has(id)) this.unusedPlaces.delete(id);
+    this.unusedPlacesVersion = net.version;
+  }
+
+  private expireUnusedPlaces(): void {
+    this.syncUnusedPlaces();
+    for (const [id, since] of this.unusedPlaces) {
+      if (this.sim.time - since + TIME_EPSILON < UNUSED_PLACE_LIFETIME) continue;
+      this.sim.net.ghostPlace(id);
+      this.unusedPlaces.delete(id);
+    }
+  }
+
   /** Fraction of the final countdown remaining, or undefined before it starts. */
   countdownProgress(tid: string): number | undefined {
     const countdown = this.countdowns.get(tid);
     if (!countdown || this.sim.time + TIME_EPSILON < countdown.startsAt) return undefined;
-    return Math.max(0, Math.min(1, (countdown.deadline - this.sim.time) / COUNTDOWN));
+    return Math.max(0, Math.min(1, (countdown.deadline - this.sim.time) / countdown.duration));
   }
 
-  private startCountdown(tid: string, grace: number, at = this.sim.time): void {
+  private startCountdown(tid: string, grace: number, at = this.sim.time, duration = COUNTDOWN): void {
     const startsAt = at + grace;
-    this.countdowns.set(tid, { startsAt, deadline: startsAt + COUNTDOWN });
+    this.countdowns.set(tid, { startsAt, deadline: startsAt + duration, duration });
   }
 
   private expireCountdowns(): void {
@@ -368,8 +631,7 @@ export class Game {
 
   private spawnEndless(): void {
     while (this.endlessProgress >= ENDLESS_EPOCH_PROGRESS - 1e-9 && this.sim.time >= this.nextSpawnRetryAt) {
-      this.pendingColor ??= this.endlessEpoch < 5 ? "blue"
-        : this.endlessEpoch === 5 || this.random() < 0.5 ? "red" : "blue";
+      this.pendingColor ??= this.endlessColor();
       if (!this.spawnEndlessGoal(this.pendingColor)) {
         console.warn("Could not place an endless goal and its source; retrying in one second");
         this.nextSpawnRetryAt = this.sim.time + 1;
@@ -381,26 +643,66 @@ export class Game {
     }
   }
 
-  private spawnEndlessGoal(color: "blue" | "red"): boolean {
+  private endlessColor(): Color {
+    if (this.endlessEpoch < ENDLESS_RULES.blueOnlyEpochs) return "blue";
+    if (this.endlessEpoch === ENDLESS_RULES.blueOnlyEpochs) return "red";
+    const epoch = this.endlessEpoch + 1;
+    const green = epoch >= ENDLESS_RULES.greenFrom ? ENDLESS_RULES.greenChance : 0;
+    const yellow = epoch >= ENDLESS_RULES.yellowFrom ? ENDLESS_RULES.yellowChance : 0;
+    const roll = this.random();
+    if (roll < yellow) return "yellow";
+    if (roll < yellow + green) return "green";
+    return roll < yellow + green + (1 - yellow - green) * ENDLESS_RULES.redChance ? "red" : "blue";
+  }
+
+  private spawnEndlessGoal(color: Color): boolean {
     const net = this.sim.net;
-    const positions = this.endlessPositions(color === "red");
+    const alternating = color === "red" && this.endlessEpoch + 1 >= ENDLESS_RULES.redSoloFrom;
+    const withSource = color === "red" && (!alternating || this.nextRedHasSource);
+    const positions = this.endlessPositions(withSource, color === "red");
     if (!positions) return false;
 
+    const inputCount = color === "blue" ? this.blueSinkInputCount() : 1;
     const sinkId = net.freshId(`endless${this.nextEndlessId++}_`);
-    net.addTransition({ id: sinkId, ...positions.sink, kind: "sink", autoInterval: 0.6, open: [{ dir: "in", color }] });
-    this.goalDefinitions.push({ sinkId, color, count: 5 });
-    this.startCountdown(sinkId, SINK_GRACE);
+    net.addTransition({ id: sinkId, ...positions.sink, kind: "sink", autoInterval: 0.6, open: [{ dir: "in", color, count: inputCount }] });
+    this.spawnedAt.set(sinkId, this.sim.time);
+    let goalCount = color === "red" && this.endlessEpoch >= ENDLESS_RULES.variedRedAfter ? this.redCount()
+      : color === "yellow" ? 10 * (1 + Math.floor(this.random() * 3)) : inputCount > 1 ? 6 : 5;
+    // Keep five in reserve for the next unpaired sink without exceeding a source's 15-token maximum.
+    if (alternating) goalCount = Math.min(goalCount, withSource ? 10 + this.redSurplus : this.redSurplus);
+    this.goalDefinitions.push({ sinkId, color, count: goalCount });
+    const factor = color === "yellow" ? 2 : 1;
+    this.startCountdown(sinkId, SINK_GRACE * factor, this.sim.time, COUNTDOWN * factor);
     if (positions.source) {
+      const proposedSupply = this.endlessEpoch >= ENDLESS_RULES.variedRedAfter ? this.redCount() : 5;
+      const supply = Math.max(proposedSupply, goalCount - this.redSurplus + (alternating ? 5 : 0));
+      this.redSurplus += supply - goalCount;
       const sourceId = net.freshId(`endless${this.nextEndlessId++}_`);
       net.addTransition({
-        id: sourceId, ...positions.source, kind: "source", autoInterval: 3, supply: 5, open: [{ dir: "out", color: "red" }],
+        id: sourceId, ...positions.source, kind: "source", autoInterval: 3, supply, open: [{ dir: "out", color: "red" }],
       });
+      this.spawnedAt.set(sourceId, this.sim.time);
       this.startCountdown(sourceId, SOURCE_IDLE);
+    } else if (color === "red") {
+      this.redSurplus -= goalCount;
     }
+    if (alternating) this.nextRedHasSource = !this.nextRedHasSource;
     return true;
   }
 
-  private endlessPositions(withSource: boolean): { sink: { x: number; y: number }; source?: { x: number; y: number } } | undefined {
+  private blueSinkInputCount(): number {
+    if (this.endlessEpoch + 1 < ENDLESS_RULES.blueDoubleFrom) return 1;
+    const roll = this.random();
+    if (this.endlessEpoch >= ENDLESS_RULES.blueTripleAfter && roll >= ENDLESS_RULES.blueTripleRoll) return 3;
+    return roll >= ENDLESS_RULES.blueDoubleRoll ? 2 : 1;
+  }
+
+  private redCount(): number {
+    const roll = this.random();
+    return roll < ENDLESS_RULES.redFiveRoll ? 5 : roll < ENDLESS_RULES.redTenRoll ? 10 : 15;
+  }
+
+  private endlessPositions(withSource: boolean, red: boolean): { sink: { x: number; y: number }; source?: { x: number; y: number } } | undefined {
     const net = this.sim.net;
     const nodes = net.liveNodes();
     if (nodes.length === 0) throw new Error("Endless mode needs a live node to spawn near");
@@ -409,14 +711,24 @@ export class Game {
     const candidateAt = (anchor: { x: number; y: number }, angle: number) => {
       const dx = Math.cos(angle);
       const dy = Math.sin(angle);
-      const sink = { x: anchor.x + dx * (BUILD_RANGE - 1), y: anchor.y + dy * (BUILD_RANGE - 1) };
-      if (this.placementIssue("transition", sink.x, sink.y)) return undefined;
+      const distant = red && this.endlessEpoch >= ENDLESS_RULES.distantRedAfter;
+      const distance = distant ? BUILD_RANGE * 1.5 : BUILD_RANGE - 1;
+      const sink = { x: anchor.x + dx * distance, y: anchor.y + dy * distance };
+      const sinkIssue = this.placementIssue("transition", sink.x, sink.y);
+      if (sinkIssue === "crowded" || (!distant && sinkIssue)) return undefined;
+      if (distant) {
+        const middle = { x: (anchor.x + sink.x) / 2, y: (anchor.y + sink.y) / 2 };
+        if (this.placementIssue("place", middle.x, middle.y) === "crowded"
+          || nodes.some((node) => Math.hypot(node.x - sink.x, node.y - sink.y) < BUILD_RANGE + 30)) return undefined;
+      }
       if (!withSource) return { sink };
-      const source = { x: sink.x + dx * (BUILD_RANGE - 1), y: sink.y + dy * (BUILD_RANGE - 1) };
+      const separation = distant ? BUILD_RANGE * 1.5 : BUILD_RANGE - 1;
+      const source = { x: sink.x + dx * separation, y: sink.y + dy * separation };
       const middle = { x: (sink.x + source.x) / 2, y: (sink.y + source.y) / 2 };
       // The sink will be added first, making both the source and middle place reachable.
       if (this.placementIssue("transition", source.x, source.y) !== "crowded"
-        && this.placementIssue("place", middle.x, middle.y) !== "crowded") return { sink, source };
+        && this.placementIssue("place", middle.x, middle.y) !== "crowded"
+        && (!distant || nodes.every((node) => Math.hypot(node.x - source.x, node.y - source.y) >= BUILD_RANGE + 30))) return { sink, source };
       return undefined;
     };
 

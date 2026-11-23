@@ -9,6 +9,8 @@ The [README](../README.md) covers gameplay.
   No color means "any" (drawn in ink/black); `count` defaults to 1.
 - "Any" input arcs take the oldest tokens of their place; colored input arcs are bound first.
   "Any" output arcs pass on the colors taken by the transition's "any" inputs, so a transition's any-outputs may not exceed its any-inputs (checked when the net is built).
+  A transition explicitly marked `copyInputColor` is the exception: it adds a copy of the first any-color input to its outputs.
+  The generic 2-to-3 kit preserves both input colors and duplicates the oldest input.
 - Places have a capacity (`DEFAULT_CAPACITY = 7`).
   A transition is disabled if firing it would push an output place's occupancy (settled tokens + tokens committed to it + net change) above capacity.
   Game levels use capacities 1, 7 and 19; other capacities are rejected because they do not have a matching visual size.
@@ -28,24 +30,35 @@ The [README](../README.md) covers gameplay.
 - Resolved goal sinks are still removed at once with `Simulation.removeTransition`.
 - Exhausted sources show the same check mark and fade as resolved goals, then become ghosts so their outgoing tokens can finish before the source and its arcs are collected.
   Source exhaustion does not count towards level completion.
+- An unconnected capacity-1 place is ghosted after 120 seconds without a tap or token arrival.
+  Connecting it clears the idle timer; disconnecting it starts a fresh timer.
+  Larger places never expire, and in-flight tokens on ghost arcs finish as usual.
 
 ## Building and upgrades
-- `Level.tools` declares which tools a level offers; usage is unlimited for now.
-- The buildable plane is unbounded; new nodes must be within `BUILD_RANGE` (220) of a live node and keep `CLEARANCE` (24) between node footprints (places reserve 48 for their largest size, transitions 36).
+- `Level.tools` declares which actions a level offers; places are built from selected loose ends rather than a separate toolbar tool.
+- The buildable plane is unbounded; new nodes must be within `BUILD_RANGE` (220) of a live node and keep `CLEARANCE` (16) between node footprints (places reserve 48 for their largest size, transitions 36).
 - New connections must be at most `BUILD_RANGE + 80` (300) units between transition and place centers, including when building a place from a plug.
   Existing level arcs are unchanged.
 - Built transitions come from kits (`{ id, ports }`) and start with all ports open; built ids are fresh (`p1`, `t1`, `c1`, …).
 - Upgrades: auto (manual `normal` transition gets a 4 s interval; later upgrades multiply the interval by 0.6, down to 0.6 s), capacity (next of 1, 7 and 19).
   A place cannot be upgraded if the larger footprint would overlap another node.
+- Each run starts with 40 coins. Each upgrade costs 5, exhausting a finite source awards 5, and removing a place awards one per settled token.
+  Removing a node refunds half of its total purchased upgrade costs, rounded to the nearest integer; existing upgrades and swallowed incoming tokens do not count.
+  Ordinary node construction and connections are free; limited transition kits charge their displayed price when successfully built.
+- When a resolved sink disappears, two distinct randomly selected powerups appear at its position for 120 seconds.
+  Collecting one discards the other. The available rewards and their unlocks are listed in [Epoch progression](#epoch-progression).
+  Free upgrades stack on the existing upgrade tool and are consumed before paid uses; limited kits stack in separate toolbar buttons.
+  Free upgrades do not contribute to removal refunds. Invalid or unaffordable actions consume neither stock nor coins.
 - All `Game` actions take `apply = false` to only check feasibility; the view uses this to highlight targets.
 
 ## Input
 - `NetView.pick` maps a world point to the topmost live object: plug, transition, place, arc (with a screen-space tolerance), else empty space.
-- `Controller` dispatches taps by brush: fire (default), place, kit, remove, auto, capacity.
+- `Controller` dispatches taps by brush: fire (default), kit, remove, auto, capacity.
   Plugs can be picked with any brush, switching to the firing brush; the next tap on a place connects them.
   Tapping empty space with a plug selected builds and connects a capacity-1 place, subject to the place tool and ordinary placement rules.
   In firing mode, tapping a place first and then a plug connects them in the other order.
   Tapping a transition instead connects the selected place to its first eligible input port, then its first eligible output port; an explicitly tapped plug still takes precedence.
+  Tapping empty space with a place selected builds an available one-to-one relay with its input connected, then selects its output.
   After building a transition its first plug is selected, and after each connection the next one, so wiring is a sequence of taps on places.
   Build brushes revert to firing after a successful build; removal and upgrade brushes stay active.
 - Denied taps shake the node, or show a red ripple on empty space.
@@ -56,6 +69,7 @@ The [README](../README.md) covers gameplay.
 
 ## Continuous-time firing semantics
 - Firing is atomic: input tokens are removed and output tokens are committed to their target places at the moment of firing.
+- Automatic transitions whose timers are ready are shuffled each step before firing, so competitors do not always favor insertion order.
 - The animation has two phases: the consumed tokens travel into the transition; only when all of them have arrived do the produced tokens leave (overshoot time carries over, so timing is frame-rate independent).
 - Output tokens join the target marking, and can enable further transitions, only on arrival, but they count towards the target's capacity immediately.
 - Travel time is the arc's octilinear route length (see below) divided by `tokenSpeed` (230 units/s).
@@ -74,20 +88,60 @@ The [README](../README.md) covers gameplay.
   The level definitions and completion rules remain available for future tutorials or quizzes.
 - Each game owns its goal list and score, so spawned goals and deliveries do not leak across restarts.
   The score increases by matching goal tokens on arrival, and resolving every current goal does not end the game.
+  The HUD shows the number of completed spawn epochs. Pausing freezes simulation time and player actions, but still allows camera navigation.
 - An unlimited blue source, two capacity-19 places, a manually fired color-preserving relay and a five-token blue sink form the initial network.
-  Endless mode offers the relay kit but no green or yellow transition kits.
-- Private progression gains one unit per elapsed second and ten units per token emitted by a source.
-  Every 60 units creates a goal; the first five epochs produce blue goals.
-  The sixth produces a red goal and source, and subsequent goals are randomly blue or red; each red goal has a paired five-token red source.
-  New nodes have open colored ports and appear near live nodes, with normal placement clearance and a random bias towards the starting source.
-  An outer-edge fallback allows growth when central areas are crowded.
-  A red pair has room for a place connecting both endpoints.
-- A sink's countdown starts after 180 seconds and expires 60 seconds later; every token arriving during the countdown extends its deadline by ten seconds.
+  Endless mode offers the relay kit initially; additional colored transition kits unlock over time.
+- Epoch progression and spawning rules are detailed below.
+- A sink's countdown starts after 180 seconds and expires 60 seconds later; yellow sinks instead have 360 seconds of grace and a 120-second countdown.
+  Every token arriving during a countdown extends its deadline by ten seconds.
   A spawned source's countdown starts after 240 seconds without an emission and expires 60 seconds later; emission resets the entire timer.
   The initial blue source has no countdown.
   Timed-out transitions are disabled, crossed out, and removed after the same linger as completed goals; source tokens already in flight finish traveling.
   Arrivals are processed before timeouts and automatic firing, and late sink arrivals cannot avert expiry or score.
-  Building and upgrades remain unlimited.
+
+## Epoch progression
+
+The initial sink exists before the first epoch. Private progress gains 1 unit per elapsed second and 10 per emitted source token.
+Every 60 units creates one new goal epoch; if placement fails, it retries rather than advancing.
+New transitions have open colored ports, use normal clearance, and favor positions near the starting source, with an outer-edge fallback.
+
+| Spawned epoch | Goal and source changes |
+| --- | --- |
+| 1–5 | Blue sink, requiring 5 tokens, one per firing. |
+| 6 | Red sink and paired red source, each with 5 tokens. |
+| 7–39 | Each epoch is 50% blue sink, 50% red sink with paired source. |
+| 11 onward | Red endpoints are at least 250 units from existing nodes and 330 units apart instead of 219; the sink is 330 units from its anchor. Room is reserved for intermediate connections. |
+| 21 onward | Red source and sink counts are sampled from 5 (75%), 10 (15%), or 15 (10%), subject to supply balancing. |
+| 25–50 | Each blue sink has a 25% chance of consuming 2 tokens per firing; otherwise it consumes 1. |
+| 40–99 | Each epoch is 45% blue, 45% red, or 10% green. Green sinks require 5 tokens and have no source. |
+| 51 onward | Each blue sink has a 10% chance of consuming 3 tokens per firing, a 15% chance of consuming 2, and otherwise consumes 1. |
+| 75 onward | Red sinks alternate between paired and source-free, starting with a paired sink. Paired sources reserve at least 5 tokens for the next source-free sink; sink demands and source supplies remain 5, 10, or 15. |
+| 100 onward | Each epoch is 40% blue, 40% red, 10% green, or 10% yellow. Yellow sinks have no source, require 10, 20, or 30 tokens with equal probability, and have twice the normal grace and countdown. |
+
+Blue sinks with multi-token inputs require 6 tokens in total; other blue sinks require 5. This keeps each target divisible by its input weight.
+Red counts are adjusted when needed so cumulative red supply never falls below cumulative red sink demand, including source-free sinks.
+
+### Powerup unlocks
+
+These are available after the stated number of epochs have completed. A kit's price is paid when it is built, not when it is collected.
+The table is checked against the powerup definitions by the tests.
+
+| Completed epochs | ID | Reward | Kit cost |
+| --- | --- | --- | --- |
+| 0 | `coins5` | 5 coins | — |
+| 0 | `capacity` | Free place upgrade | — |
+| 0 | `auto` | Free time upgrade | — |
+| 15 | `blueMultiply` | Blue 3→2 | 7 |
+| 20 | `coins10` | 10 coins | — |
+| 25 | `blueToRed` | Blue 2→red | 5 |
+| 30 | `redToBlue` | Red→blue | 5 |
+| 35 | `blueToGreen` | Blue→green | 10 |
+| 40 | `splitAny` | Any 2→3 | 20 |
+| 60 | `redToGreen` | Red→green | 5 |
+| 90 | `redBlueToYellow` | Red+blue→yellow | 10 |
+| 120 | `redTwoBlueToYellow` | Red+2 blue→2 yellow | 20 |
+
+When changing progression, update this overview and the boundary tests in [game.test.ts](../tests/game.test.ts) and [powerups.test.ts](../tests/powerups.test.ts).
 
 ## Presentation
 - Mini Metro-like palette (`src/render/style.ts`); portrait screens (height > 1.1 × width) transpose node coordinates, so the flow runs top to bottom and transition bars lie horizontally.
@@ -98,6 +152,7 @@ The [README](../README.md) covers gameplay.
   Tokens hop (lift, grow, shadow) between their slot inside a place and the arc.
 - Place size shows its capacity: one central token, a ring of six, and a second ring of twelve.
 - Sources with a `supply` show one dot per remaining firing upstream of them; exhausted sources show a check mark and fade away.
+- Spawned sources and sinks fade and scale in, and shrink and fade out when resolved or timed out. Reward choices similarly animate in and out without delaying collection or expiry.
 - Active expiry countdowns show a shrinking red ring; timed-out sources and sinks show a cross before disappearing.
 - Open ports dangle as short stubs with a plug, against the flow for inputs and along it for outputs; plugs pulse softly, the selected one strongly, with a line to the pointer.
 - Ghosts are drawn at 30% opacity.
@@ -109,3 +164,10 @@ The [README](../README.md) covers gameplay.
 - Goal sinks show one empty circle per token still wanted, to their right (below in portrait).
 - The win popup dims the screen, pops in with a back-out ease and confetti, and blocks input.
   Its animation runs on real time because the simulation clock is stopped.
+- The HUD shows score, game time and epoch at the top left, and the coin balance at the bottom left, with small screen-space coin flights between the balance and the affected node.
+  Pause and restart controls are at the top right; an in-game restart confirmation pauses play and restores its previous pause state when cancelled.
+- UI text uses uppercase Fredoka, bundled under the SIL Open Font License.
+- Reward choices use compact toolbar icons without text on pulsing grey backgrounds and remain screen-sized when zooming, with a shrinking expiry bar; numbers show coin amounts and kit prices.
+  Camera bounds include uncollected rewards.
+  The toolbar places upgrades after the ordinary relay and before other transition kits, with removal last and a little extra space before it.
+  It wraps into rows as needed and shows stock in green (free) or black (limited paid) badges, and prices in orange badges.

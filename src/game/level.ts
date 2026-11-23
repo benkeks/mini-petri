@@ -27,6 +27,8 @@ export interface Level {
 export interface Kit {
   id: string;
   ports: Port[];
+  /** Add a copy of the first any-color input to the any-color outputs. */
+  copyInputColor?: boolean;
 }
 
 export interface Tools {

@@ -53,19 +53,22 @@ export interface FireEvent {
 export interface SimulationOptions {
   /** Speed of tokens in flight, in world units per second. */
   tokenSpeed?: number;
+  /** Random source used to order competing automatic transitions. */
+  random?: () => number;
 }
 
 export class Simulation {
   time = 0;
   readonly inFlight: InFlightToken[] = [];
   readonly tokenSpeed: number;
+  private readonly random: () => number;
   private nextId = 1;
   private readonly firings = new Map<number, Firing>();
   /** Seconds accumulated towards the next auto-fire, per transition. */
   private readonly autoTimers = new Map<string, number>();
   private readonly fireListeners: ((e: FireEvent) => void)[] = [];
   private readonly completeListeners: ((e: FireEvent) => void)[] = [];
-  private readonly arriveListeners: ((t: InFlightToken, placeId: string) => void)[] = [];
+  private readonly arriveListeners: ((t: InFlightToken, placeId: string, time: number) => void)[] = [];
   private readonly beforeAutoListeners: (() => void)[] = [];
 
   constructor(
@@ -73,6 +76,7 @@ export class Simulation {
     opts: SimulationOptions = {},
   ) {
     this.tokenSpeed = opts.tokenSpeed ?? 230;
+    this.random = opts.random ?? Math.random;
   }
 
   /** Called when a transition fires (inputs consumed, outputs committed). */
@@ -85,7 +89,7 @@ export class Simulation {
     this.completeListeners.push(fn);
   }
 
-  onArrive(fn: (t: InFlightToken, placeId: string) => void): void {
+  onArrive(fn: (t: InFlightToken, placeId: string, time: number) => void): void {
     this.arriveListeners.push(fn);
   }
 
@@ -220,6 +224,7 @@ export class Simulation {
     const inputs = inputArcs.map((arc) => ({ arc, colors: chosen.get(arc)! }));
 
     const pool = inputs.filter((x) => !x.arc.color).flatMap((x) => x.colors);
+    if (t.copyInputColor) pool.push(pool[0]);
     const outputs = this.net.outputs(tid).map((arc) => ({
       arc,
       colors: arc.color ? Array<Color>(arcCount(arc)).fill(arc.color) : pool.splice(0, arcCount(arc)),
@@ -282,7 +287,7 @@ export class Simulation {
       const place = this.net.places.get(arc.to)!;
       // Removed places swallow their arrivals.
       if (!place.ghost) place.marking.push(tok.color);
-      for (const fn of this.arriveListeners) fn(tok, arc.to);
+      for (const fn of this.arriveListeners) fn(tok, arc.to, this.time - overshoot);
       return;
     }
     const f = this.firings.get(tok.firingId)!;
@@ -290,13 +295,19 @@ export class Simulation {
   }
 
   private runAutoFire(dt: number): void {
+    const ready: string[] = [];
     for (const t of this.net.transitions.values()) {
       if (!t.autoInterval || t.ghost) continue;
       const acc = (this.autoTimers.get(t.id) ?? 0) + dt;
       // The timer saturates while the transition is disabled, so it fires as soon as it becomes enabled.
-      if (acc >= t.autoInterval && this.fire(t.id)) continue;
       this.autoTimers.set(t.id, Math.min(acc, t.autoInterval));
+      if (acc >= t.autoInterval) ready.push(t.id);
     }
+    for (let i = ready.length - 1; i > 0; i--) {
+      const j = Math.floor(this.random() * (i + 1));
+      [ready[i], ready[j]] = [ready[j], ready[i]];
+    }
+    for (const tid of ready) this.fire(tid);
   }
 }
 

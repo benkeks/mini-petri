@@ -12,7 +12,6 @@ interface ControllerView {
 /** What a tap does when it cannot be inferred from what was tapped. */
 export type Brush =
   | { kind: "fire" }
-  | { kind: "place" }
   | { kind: "kit"; kit: Kit }
   | { kind: "remove" }
   | { kind: "auto" }
@@ -25,11 +24,13 @@ export function brushesOf(game: Game): Brush[] {
   const tools = game.level.tools;
   if (!tools) return [FIRE];
   const brushes: Brush[] = [FIRE];
-  if (tools.place) brushes.push({ kind: "place" });
-  for (const kit of tools.kits ?? []) brushes.push({ kind: "kit", kit });
-  if (tools.remove) brushes.push({ kind: "remove" });
+  const kits = game.availableKits();
+  const relay = game.relayKit();
+  for (const kit of kits) if (kit === relay) brushes.push({ kind: "kit", kit });
   if (tools.auto) brushes.push({ kind: "auto" });
   if (tools.capacity) brushes.push({ kind: "capacity" });
+  for (const kit of kits) if (kit !== relay) brushes.push({ kind: "kit", kit });
+  if (tools.remove) brushes.push({ kind: "remove" });
   return brushes;
 }
 
@@ -77,8 +78,23 @@ export class Controller {
   tap(p: Pt): void {
     this.pointer = p;
     const game = this.game;
-    if (game.complete) return;
+    if (game.complete || game.paused) return;
     const pick = this.view.pick(p);
+    if (pick.kind === "reward") {
+      if (!game.collectOffer(pick.id, pick.index)) this.view.deny(pick);
+      return;
+    }
+    if (pick.kind === "place") game.touchPlace(pick.id);
+    if (this.selectedPlace && pick.kind === "empty" && game.relayKit()) {
+      const tid = game.buildConnectedTransition(this.selectedPlace, pick.x, pick.y);
+      if (tid === undefined) {
+        this.view.deny(pick);
+        return;
+      }
+      this.selectedPlace = undefined;
+      this.selected = { tid, index: 0 };
+      return;
+    }
     if (this.selectedPlace && (pick.kind === "port" || pick.kind === "transition")) {
       const place = this.selectedPlace;
       const tid = pick.kind === "port" ? pick.tid : pick.id;
@@ -121,38 +137,40 @@ export class Controller {
 
   /** Updates what the view shows for the current brush and pointer; call once per frame. */
   sync(): void {
-    const b = this.brush;
     const game = this.game;
+    if (this.brush.kind === "kit" && !game.availableKits().includes(this.brush.kit)) this.brush = FIRE;
+    const b = this.brush;
     if (this.selected) {
       const t = game.sim.net.transitions.get(this.selected.tid);
       if (!t || t.ghost || !t.open?.[this.selected.index]) this.selected = undefined;
     }
+    if (this.selectedPlace) {
+      const place = game.sim.net.places.get(this.selectedPlace);
+      if (!place || place.ghost) this.selectedPlace = undefined;
+    }
     const selectedTransition = this.selected && this.game.sim.net.transitions.get(this.selected.tid);
     const canBuildConnected = this.selected && this.game.level.tools?.place && selectedTransition && !selectedTransition.ghost
       && selectedTransition.open?.[this.selected.index];
+    const relay = this.selectedPlace && game.relayKit();
     this.view.overlay = {
       pointer: this.pointer,
-      build: canBuildConnected ? { kind: "place", capacity: 1, connection: this.selected } : b.kind === "place" ? { kind: "place" } : b.kind === "kit" ? { kind: "transition", ports: b.kit.ports } : undefined,
+      build: canBuildConnected ? { kind: "place", capacity: 1, connection: this.selected }
+        : relay ? { kind: "transition", ports: relay.ports.filter((port) => port.dir === "out"), fromPlace: this.selectedPlace }
+        : b.kind === "kit" ? { kind: "transition", ports: b.kit.ports, canPlace: (x, y) => game.canBuildTransition(b.kit, x, y) } : undefined,
       target: this.selected
         ? (pick) => pick.kind === "place" && this.game.connect(this.selected!.tid, this.selected!.index, pick.id, false)
         : this.selectedPlace
           ? (pick) => pick.kind === "port"
             ? game.connect(pick.tid, pick.index, this.selectedPlace!, false)
             : pick.kind === "transition" && this.firstConnectiblePort(pick.id, this.selectedPlace!) !== undefined
-        : b.kind === "fire" || b.kind === "place" || b.kind === "kit"
+        : b.kind === "fire" || b.kind === "kit"
           ? undefined
           : (pick) => this.act(pick, false),
-      previewTarget: !this.selected && !this.selectedPlace && (b.kind === "place" || b.kind === "kit")
+      previewTarget: !this.selected && !this.selectedPlace && b.kind === "kit"
         ? (pick, point) => {
           if (game.complete) return false;
-          if (b.kind === "kit") {
-            const place = pick.kind === "place" && game.sim.net.places.get(pick.id);
-            return !!place && !place.ghost && b.kit.ports.length > 0 && withinConnectionRange(place, point);
-          }
-          if (pick.kind === "port") return game.canConnectAt(pick.tid, pick.index, point.x, point.y);
-          if (pick.kind !== "transition") return false;
-          return game.sim.net.transitions.get(pick.id)?.open?.some((_, index) =>
-            game.canConnectAt(pick.id, index, point.x, point.y)) ?? false;
+          const place = pick.kind === "place" && game.sim.net.places.get(pick.id);
+          return !!place && !place.ghost && b.kit.ports.length > 0 && withinConnectionRange(place, point);
         }
         : undefined,
       removing: !this.selected && b.kind === "remove",
@@ -166,22 +184,22 @@ export class Controller {
     if (this.selected) return this.game.level.tools?.place
       ? "Tap a place inside the ring, or empty space to build a small place."
       : "Tap a place inside the ring to connect this loose end.";
-    if (this.selectedPlace) return "Tap a transition or loose end inside the ring to connect it to this place.";
+    if (this.selectedPlace) return this.game.relayKit()
+      ? "Tap a transition or loose end, or empty space to build a relay."
+      : "Tap a transition or loose end inside the ring to connect it to this place.";
     switch (this.brush.kind) {
       case "fire":
         return this.game.level.tools
-          ? "Tap a dark transition to fire it. Connect a place and a loose end in either order. Pick a tool below to build, remove or upgrade."
+          ? "Tap a dark transition to fire it. Tap a completed sink's reward to choose one. Pick a tool below to build, remove or upgrade."
           : "Tap a dark transition to fire it. Fill the empty circles next to each goal by delivering tokens of their color.";
-      case "place":
-        return "Tap inside the white area to build a place.";
       case "kit":
         return "Tap inside the white area to build this transition, then connect its loose ends to places.";
       case "remove":
         return "Tap an arc, place or transition to remove it. Sources and sinks cannot be removed.";
       case "auto":
-        return "Tap a transition to automate it; tap again to make it faster.";
+        return this.game.powerupStock("auto") ? "Tap a transition to use a free time upgrade." : "Tap a transition to automate or speed it up (5 coins).";
       case "capacity":
-        return "Tap a place to let it hold more tokens.";
+        return this.game.powerupStock("capacity") ? "Tap a place to use a free capacity upgrade." : "Tap a place to increase its capacity (5 coins).";
     }
   }
 
@@ -206,19 +224,17 @@ export class Controller {
         if (t.kind !== "normal") return apply;
         return apply ? game.playerFire(pick.id) : game.sim.isEnabled(pick.id);
       }
-      case "place":
       case "kit": {
         if (pick.kind !== "empty") return false;
-        const kind = b.kind === "place" ? "place" : "transition";
-        if (!apply) return !game.placementIssue(kind, pick.x, pick.y);
-        const id = b.kind === "place" ? game.buildPlace(pick.x, pick.y) : game.buildTransition(b.kit, pick.x, pick.y);
+        if (!apply) return game.canBuildTransition(b.kit, pick.x, pick.y);
+        const id = game.buildTransition(b.kit, pick.x, pick.y);
         if (id === undefined) return false;
         this.brush = FIRE;
-        if (b.kind === "kit") this.selected = { tid: id, index: 0 };
+        this.selected = { tid: id, index: 0 };
         return true;
       }
       case "remove":
-        return pick.kind !== "empty" && pick.kind !== "port" && game.remove(pick.id, apply);
+        return pick.kind !== "empty" && pick.kind !== "port" && pick.kind !== "reward" && game.remove(pick.id, apply);
       case "auto":
         return pick.kind === "transition" && game.upgradeAuto(pick.id, apply);
       case "capacity":

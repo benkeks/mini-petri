@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { BUILD_RANGE, CLEARANCE, Game, PLACE_FOOTPRINT, RESOLVED_LINGER, TRANSITION_FOOTPRINT, withinConnectionRange } from "../src/game/game";
+import design from "../docs/DESIGN.md?raw";
+import { BUILD_RANGE, CLEARANCE, EMISSION_PROGRESS, ENDLESS_EPOCH_PROGRESS, ENDLESS_RULES, Game, PLACE_FOOTPRINT, RESOLVED_LINGER, TRANSITION_FOOTPRINT, withinConnectionRange } from "../src/game/game";
 import { endless } from "../src/game/endless";
 import type { Level } from "../src/game/level";
 
@@ -27,6 +28,29 @@ function level(unreachableGoal = false): Level {
 function run(game: Game, seconds: number): void {
   for (let t = 0; t < seconds; t += 1 / 60) game.step(1 / 60);
 }
+
+describe("epoch overview", () => {
+  it("matches the spawn thresholds and probabilities used by the game", () => {
+    const r = ENDLESS_RULES;
+    const percent = (n: number) => Math.round(n * 100);
+    const section = design.split("## Epoch progression")[1]?.split("### Powerup unlocks")[0];
+    expect(section).toBeDefined();
+    expect(section).toContain(`Private progress gains 1 unit per elapsed second and ${EMISSION_PROGRESS} per emitted source token.\nEvery ${ENDLESS_EPOCH_PROGRESS} units creates one new goal epoch`);
+    const rows = section!.split("\n").filter((line) => /^\| \d/.test(line));
+    expect(rows).toEqual([
+      `| 1–${r.blueOnlyEpochs} | Blue sink, requiring 5 tokens, one per firing. |`,
+      `| ${r.blueOnlyEpochs + 1} | Red sink and paired red source, each with 5 tokens. |`,
+      `| ${r.blueOnlyEpochs + 2}–${r.greenFrom - 1} | Each epoch is ${percent(1 - r.redChance)}% blue sink, ${percent(r.redChance)}% red sink with paired source. |`,
+      `| ${r.distantRedAfter + 1} onward | Red endpoints are at least ${BUILD_RANGE + 30} units from existing nodes and ${BUILD_RANGE * 1.5} units apart instead of ${BUILD_RANGE - 1}; the sink is ${BUILD_RANGE * 1.5} units from its anchor. Room is reserved for intermediate connections. |`,
+      `| ${r.variedRedAfter + 1} onward | Red source and sink counts are sampled from 5 (${percent(r.redFiveRoll)}%), 10 (${percent(r.redTenRoll - r.redFiveRoll)}%), or 15 (${percent(1 - r.redTenRoll)}%), subject to supply balancing. |`,
+      `| ${r.blueDoubleFrom}–${r.blueTripleAfter} | Each blue sink has a ${percent(1 - r.blueDoubleRoll)}% chance of consuming 2 tokens per firing; otherwise it consumes 1. |`,
+      `| ${r.greenFrom}–${r.yellowFrom - 1} | Each epoch is ${percent((1 - r.greenChance) * (1 - r.redChance))}% blue, ${percent((1 - r.greenChance) * r.redChance)}% red, or ${percent(r.greenChance)}% green. Green sinks require 5 tokens and have no source. |`,
+      `| ${r.blueTripleAfter + 1} onward | Each blue sink has a ${percent(1 - r.blueTripleRoll)}% chance of consuming 3 tokens per firing, a ${percent(r.blueTripleRoll - r.blueDoubleRoll)}% chance of consuming 2, and otherwise consumes 1. |`,
+      `| ${r.redSoloFrom} onward | Red sinks alternate between paired and source-free, starting with a paired sink. Paired sources reserve at least 5 tokens for the next source-free sink; sink demands and source supplies remain 5, 10, or 15. |`,
+      `| ${r.yellowFrom} onward | Each epoch is ${percent((1 - r.greenChance - r.yellowChance) * (1 - r.redChance))}% blue, ${percent((1 - r.greenChance - r.yellowChance) * r.redChance)}% red, ${percent(r.greenChance)}% green, or ${percent(r.yellowChance)}% yellow. Yellow sinks have no source, require 10, 20, or 30 tokens with equal probability, and have twice the normal grace and countdown. |`,
+    ]);
+  });
+});
 
 describe("goal sinks", () => {
   it("count only matching tokens once they arrive", () => {
@@ -72,6 +96,16 @@ describe("goal sinks", () => {
       return game;
     }
 
+    function advanceEpoch(game: Game) {
+      game.sim.net.places.get("starterPlace")!.marking = [];
+      for (let i = 0; i < 6; i++) expect(game.sim.fire("starterSource")).toBe(true);
+      const before = new Set(game.sim.net.transitions.keys());
+      game.step(0);
+      const spawned = [...game.sim.net.transitions.values()].filter((transition) => !before.has(transition.id));
+      game.sim.step(1);
+      return spawned;
+    }
+
     function redPair(game: Game) {
       const source = [...game.sim.net.transitions.values()].find((t) => t.kind === "source" && t.id !== "starterSource")!;
       const goal = game.goals().find((g) => g.color === "red")!;
@@ -113,6 +147,7 @@ describe("goal sinks", () => {
       expect(emitted.sim.fire("starterSource")).toBe(true);
       emitted.step(0);
       expect(emitted.goals()).toHaveLength(2);
+      expect(emitted.epoch).toBe(1);
 
       const mixed = pausedGame();
       for (let i = 0; i < 3; i++) expect(mixed.sim.fire("starterSource")).toBe(true);
@@ -134,6 +169,55 @@ describe("goal sinks", () => {
       for (let i = 0; i < 3; i++) expect(multiGame.sim.fire("starterSource")).toBe(true);
       multiGame.step(0);
       expect(multiGame.goals()).toHaveLength(2);
+    });
+
+    it("freezes game time and manual firing while paused, then resumes", () => {
+      const game = pausedGame();
+      game.sim.net.places.get("starterPlace")!.marking.push("blue");
+      game.paused = true;
+      game.step(60);
+      expect(game.sim.time).toBe(0);
+      expect(game.epoch).toBe(0);
+      expect(game.playerFire("starterRelay")).toBe(false);
+      expect(game.sim.net.places.get("starterPlace")!.marking).toEqual(["blue"]);
+      game.paused = false;
+      expect(game.playerFire("starterRelay")).toBe(true);
+      game.step(1);
+      expect(game.sim.time).toBeCloseTo(1);
+    });
+
+    it.each([
+      { roll: 0.6, expected: [1, 1, 1, 1] },
+      { roll: 0.8, expected: [1, 2, 2, 2] },
+      { roll: 0.95, expected: [1, 2, 2, 3] },
+    ])("introduces occasional multi-token blue sinks at the epoch boundaries (roll $roll)", ({ roll, expected }) => {
+      const game = pausedGame(() => roll);
+      const seen: number[] = [];
+      let weightedSink = "";
+      for (let epoch = 1; epoch <= 51; epoch++) {
+        game.sim.net.places.get("starterPlace")!.marking = [];
+        for (let i = 0; i < 6; i++) expect(game.sim.fire("starterSource")).toBe(true);
+        game.step(0);
+        const goal = game.goals().at(-1)!;
+        if ([24, 25, 50, 51].includes(epoch)) {
+          expect(goal.color).toBe("blue");
+          const sink = game.sim.net.transitions.get(goal.sinkId)!;
+          const count = sink.open![0].count!;
+          seen.push(count);
+          expect(goal.count).toBe(count === 1 ? 5 : 6);
+          if (epoch === 51 && count > 1) weightedSink = sink.id;
+        }
+        game.sim.step(1);
+      }
+      expect(seen).toEqual(expected);
+      if (weightedSink) {
+        const sink = game.sim.net.transitions.get(weightedSink)!;
+        game.sim.net.addPlace({ id: "weightedInput", x: sink.x - 100, y: sink.y, capacity: 7, marking: Array(7).fill("blue") });
+        expect(game.connect(sink.id, 0, "weightedInput")).toBe(true);
+        game.step(3);
+        expect(game.score).toBe(6);
+        expect(game.sim.net.places.get("weightedInput")!.marking).toEqual(["blue"]);
+      }
     });
 
     it("creates five blue epochs before red pairs, with nearby, well-spaced nodes", () => {
@@ -202,6 +286,155 @@ describe("goal sinks", () => {
         expect(place).toBeDefined();
         expect(game.connect(sink.id, 0, place!)).toBe(true);
       }
+    });
+
+    it("widens red pairs after epoch ten and varies balanced total supplies after epoch twenty", () => {
+      let seed = 42;
+      const game = pausedGame(() => {
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+        return seed / 2 ** 32;
+      });
+      let supplyTotal = 0;
+      let demandTotal = 0;
+      const pairs: { epoch: number; supply: number; demand: number }[] = [];
+      for (let epoch = 1; epoch <= 70; epoch++) {
+        game.sim.net.places.get("starterPlace")!.marking = [];
+        for (let i = 0; i < 6; i++) expect(game.sim.fire("starterSource")).toBe(true);
+        const before = new Set(game.sim.net.transitions.keys());
+        const existing = game.sim.net.liveNodes().map((node) => ({ ...node }));
+        game.step(0);
+        const spawned = [...game.sim.net.transitions.values()].filter((t) => !before.has(t.id));
+        const source = spawned.find((t) => t.kind === "source");
+        const sink = spawned.find((t) => t.kind === "sink")!;
+        if (source) {
+          const demand = game.goalsFor(sink.id)[0].count;
+          const supply = source.supply!;
+          pairs.push({ epoch, supply, demand });
+          supplyTotal += supply;
+          demandTotal += demand;
+          expect(supplyTotal).toBeGreaterThanOrEqual(demandTotal);
+          expect(Math.hypot(source.x - sink.x, source.y - sink.y)).toBeCloseTo(epoch <= 10 ? BUILD_RANGE - 1 : BUILD_RANGE * 1.5);
+          if (epoch > 10) {
+            for (const node of [sink, source]) {
+              expect(Math.min(...existing.map((other) => Math.hypot(node.x - other.x, node.y - other.y)))).toBeGreaterThanOrEqual(BUILD_RANGE + 30);
+            }
+            const bridgeable = existing.some((node) => {
+              if (Math.abs(Math.hypot(node.x - sink.x, node.y - sink.y) - BUILD_RANGE * 1.5) > 1e-6) return false;
+              return !game.placementIssue("place", (node.x + sink.x) / 2, (node.y + sink.y) / 2);
+            });
+            expect(bridgeable).toBe(true);
+          }
+          const middle = { x: (source.x + sink.x) / 2, y: (source.y + sink.y) / 2 };
+          expect(game.placementIssue("place", middle.x, middle.y)).toBeUndefined();
+          expect(withinConnectionRange(source, middle)).toBe(true);
+          expect(withinConnectionRange(sink, middle)).toBe(true);
+          if (epoch <= 20) expect([supply, demand]).toEqual([5, 5]);
+        }
+        game.sim.step(1);
+      }
+      const later = pairs.filter((pair) => pair.epoch > 20);
+      expect(later.some((pair) => pair.supply > 5)).toBe(true);
+      expect(later.some((pair) => pair.demand > 5)).toBe(true);
+      expect(later.some((pair) => pair.supply > pair.demand)).toBe(true);
+      expect(later.some((pair) => pair.supply < pair.demand)).toBe(true);
+    });
+
+    it("introduces source-free green and yellow sinks at their epoch boundaries", () => {
+      let first = false;
+      let afterSelection = 0.5;
+      const game = pausedGame(() => {
+        if (first) {
+          first = false;
+          return 0.05;
+        }
+        return afterSelection;
+      });
+      for (let epoch = 1; epoch <= 102; epoch++) {
+        afterSelection = epoch === 101 ? 0.5 : epoch === 102 ? 0.95 : 0.05;
+        first = epoch >= 39;
+        const spawned = advanceEpoch(game);
+        if (epoch === 39) expect(game.goalsFor(spawned.find((t) => t.kind === "sink")!.id)[0].color).toBe("red");
+        if (epoch === 40 || epoch === 99 || epoch >= 100) {
+          expect(spawned).toHaveLength(1);
+          const goal = game.goalsFor(spawned[0].id)[0];
+          expect(goal.color).toBe(epoch < 100 ? "green" : "yellow");
+          expect(goal.count).toBe(epoch < 100 ? 5 : (epoch - 99) * 10);
+        }
+      }
+    });
+
+    it("alternates red pairs and source-free sinks from epoch 75 while keeping supply balanced", () => {
+      let first = false;
+      let firstRoll = 0.3;
+      const game = pausedGame(() => {
+        if (first) {
+          first = false;
+          return firstRoll;
+        }
+        return 0.95;
+      });
+      let supply = 0;
+      let demand = 0;
+      let lateRed = 0;
+      for (let epoch = 1; epoch <= 90; epoch++) {
+        first = true;
+        firstRoll = epoch >= 75 && epoch % 3 === 1 ? 0.05 : 0.3;
+        const spawned = advanceEpoch(game);
+        const sink = spawned.find((transition) => transition.kind === "sink")!;
+        const goal = game.goalsFor(sink.id)[0];
+        if (goal.color !== "red") continue;
+        const source = spawned.find((transition) => transition.kind === "source");
+        if (epoch < 75) expect(source).toBeDefined();
+        else {
+          expect(Boolean(source)).toBe(lateRed % 2 === 0);
+          lateRed++;
+        }
+        expect([5, 10, 15]).toContain(goal.count);
+        if (source) {
+          expect([5, 10, 15]).toContain(source.supply);
+          supply += source.supply!;
+        }
+        demand += goal.count;
+        expect(supply).toBeGreaterThanOrEqual(demand);
+        if (epoch >= 75 && source) {
+          expect(supply - demand).toBeGreaterThanOrEqual(5);
+          expect([source.supply, goal.count]).toEqual([15, 10]);
+        } else if (epoch >= 75) expect(goal.count).toBe(5);
+      }
+      expect(lateRed).toBe(11);
+    });
+
+    it("gives yellow sinks double grace and countdown, extending their deadline on delivery", () => {
+      let chooseYellow = false;
+      const game = pausedGame(() => {
+        if (chooseYellow) {
+          chooseYellow = false;
+          return 0.05;
+        }
+        return 0.9;
+      });
+      for (let epoch = 1; epoch < 100; epoch++) advanceEpoch(game);
+      chooseYellow = true;
+      const sink = advanceEpoch(game)[0];
+      expect(game.goalsFor(sink.id)[0].color).toBe("yellow");
+      sink.autoInterval = undefined;
+      game.sim.net.addPlace({ id: "yellowInput", x: sink.x - 100, y: sink.y, capacity: 7, marking: [] });
+      expect(game.connect(sink.id, 0, "yellowInput")).toBe(true);
+      game.sim.step(358.9);
+      expect(game.countdownProgress(sink.id)).toBeUndefined();
+      game.sim.step(0.1);
+      expect(game.countdownProgress(sink.id)).toBeCloseTo(1);
+      game.sim.step(60);
+      expect(game.countdownProgress(sink.id)).toBeCloseTo(0.5);
+      game.sim.net.places.get("yellowInput")!.marking.push("yellow");
+      expect(game.sim.fire(sink.id)).toBe(true);
+      game.sim.step(1);
+      expect(game.score).toBe(1);
+      expect(game.countdownProgress(sink.id)).toBeCloseTo(69 / 120);
+      game.sim.step(68.9);
+      expect(game.failed.has(sink.id)).toBe(false);
+      game.sim.step(0.1);
+      expect(game.failed.has(sink.id)).toBe(true);
     });
 
     it("allows a red source and sink to deliver exactly five tokens", () => {

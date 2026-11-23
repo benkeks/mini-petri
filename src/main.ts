@@ -12,6 +12,7 @@ import { THEME } from "./render/style";
 const STEP = 1 / 60;
 
 async function main(): Promise<void> {
+  await document.fonts.load("600 16px Fredoka");
   const app = new Application();
   await app.init({
     background: THEME.background,
@@ -27,10 +28,16 @@ async function main(): Promise<void> {
   const camera = new Camera();
   const navigation = new Navigation(camera);
   let boundsVersion = -1;
+  let boundsOfferVersion = -1;
   let view = createView();
   const controller = new Controller(game, view);
   const hud = new Hud(game, controller, {
     restart: () => load(),
+    requestRestart: () => requestRestart(),
+    togglePause: () => {
+      game.paused = !game.paused;
+      navigation.cancel();
+    },
     selectBrush: (b) => controller.setBrush(b),
   });
   app.stage.addChild(view.root, mask, hud.root);
@@ -54,13 +61,20 @@ async function main(): Promise<void> {
     rebuildView();
     hud.setGame(game);
     boundsVersion = -1;
+    boundsOfferVersion = -1;
     layout(true);
   }
 
+  function requestRestart(): void {
+    navigation.cancel();
+    hud.showRestartConfirmation();
+  }
+
   function updateBounds(): void {
-    if (boundsVersion === game.sim.net.version) return;
+    if (boundsVersion === game.sim.net.version && boundsOfferVersion === game.offerVersion) return;
     boundsVersion = game.sim.net.version;
-    camera.setNodes(game.sim.net.liveNodes(), game.size);
+    boundsOfferVersion = game.offerVersion;
+    camera.setNodes([...game.sim.net.liveNodes(), ...game.offers.values()], game.size);
   }
 
   function applyCamera(): void {
@@ -101,27 +115,32 @@ async function main(): Promise<void> {
     return p.x >= v.x && p.x <= v.x + v.width && p.y >= v.y && p.y <= v.y + v.height;
   };
   const updatePointer = (p: Pt) => controller.move(camera.toWorld(p));
+  const modalPointers = new Set<number>();
 
   app.canvas.addEventListener("pointerdown", (event) => {
+    if (hud.confirming) {
+      modalPointers.add(event.pointerId);
+      return;
+    }
     if (game.complete || event.button !== 0) return;
     const p = screenPoint(event);
     if (!inViewport(p)) return;
     const pick = view.pick(camera.toWorld(p));
     const brush = controller.brush.kind;
-    navigation.down(event.pointerId, p, pick.kind === "empty" && brush !== "place" && brush !== "kit");
+    navigation.down(event.pointerId, p, pick.kind === "empty" && brush !== "kit");
     app.canvas.setPointerCapture(event.pointerId);
     updatePointer(p);
     event.preventDefault();
   });
   app.canvas.addEventListener("pointermove", (event) => {
-    if (game.complete) return;
+    if (game.complete || hud.confirming) return;
     const p = screenPoint(event);
     navigation.move(event.pointerId, p);
     applyCamera();
     if (inViewport(p)) updatePointer(p);
   });
   app.canvas.addEventListener("pointerup", (event) => {
-    if (game.complete) {
+    if (modalPointers.delete(event.pointerId) || game.complete || hud.confirming) {
       navigation.cancel(event.pointerId);
       return;
     }
@@ -145,10 +164,16 @@ async function main(): Promise<void> {
     }
     applyCamera();
   });
-  app.canvas.addEventListener("pointercancel", (event) => navigation.cancel(event.pointerId));
-  app.canvas.addEventListener("lostpointercapture", (event) => navigation.cancel(event.pointerId));
+  app.canvas.addEventListener("pointercancel", (event) => {
+    modalPointers.delete(event.pointerId);
+    navigation.cancel(event.pointerId);
+  });
+  app.canvas.addEventListener("lostpointercapture", (event) => {
+    modalPointers.delete(event.pointerId);
+    navigation.cancel(event.pointerId);
+  });
   app.canvas.addEventListener("wheel", (event) => {
-    if (game.complete) return;
+    if (game.complete || hud.confirming) return;
     const p = screenPoint(event);
     if (!inViewport(p)) return;
     event.preventDefault();
@@ -179,11 +204,16 @@ async function main(): Promise<void> {
       width: viewport.width / camera.scale,
       height: viewport.height / camera.scale,
     });
-    hud.update(dt);
+    if (hud.update(dt, (point) => ({ x: point.x * camera.scale + camera.x, y: point.y * camera.scale + camera.y }))) layout();
   });
 
   window.addEventListener("keydown", (e) => {
-    if (e.key === "r") load();
+    if (hud.confirming) {
+      if (e.key === "Escape") hud.cancelRestart();
+      else if (e.key === "Enter" && !e.repeat) hud.confirmRestart();
+      return;
+    }
+    if (e.key.toLowerCase() === "r" && !e.repeat) requestRestart();
     if (e.key === "Escape") controller.cancel();
   });
 }

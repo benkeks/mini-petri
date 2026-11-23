@@ -1,16 +1,22 @@
 import { Container, Graphics, Rectangle, Text } from "pixi.js";
 import { COLORS } from "../core/multiset";
-import type { Game } from "../game/game";
+import { UPGRADE_COST, type CoinEvent, type Game } from "../game/game";
 import { brushesOf, sameBrush, type Brush, type Controller } from "../input/controller";
+import type { Pt } from "./geometry";
 import { THEME, TOKEN_COLORS } from "./style";
+import { drawToolIcon } from "./toolIcon";
 
 const TOOL_SIZE = 48;
 const TOOL_GAP = 8;
+const REMOVE_EXTRA_GAP = 8;
+const COIN_ROW = 30;
 /** Room for the hint line above the toolbar. */
 const HINT_SPACE = 34;
 
 export interface HudActions {
   restart(): void;
+  requestRestart(): void;
+  togglePause(): void;
   selectBrush(b: Brush): void;
 }
 
@@ -18,6 +24,10 @@ interface ToolButton {
   brush: Brush;
   root: Container;
   bg: Graphics;
+  badges: Graphics;
+  count: Text;
+  price: Text;
+  baseY: number;
 }
 
 const POP_TIME = 0.55;
@@ -32,10 +42,49 @@ interface Confetto {
   r: number;
 }
 
+interface CoinFlight {
+  event: CoinEvent;
+  age: number;
+}
+
 /** Back-out easing: overshoots a little before settling at 1. */
 function easeOutBack(k: number): number {
   const c = 1.9;
   return 1 + (c + 1) * (k - 1) ** 3 + c * (k - 1) ** 2;
+}
+
+/** Centers each toolbar row, keeping the removal tool close but slightly separated. */
+export function toolbarLayout(width: number, brushes: readonly Brush[]): {
+  size: number;
+  rows: number;
+  positions: { x: number; row: number }[];
+} {
+  const size = Math.max(1, Math.min(TOOL_SIZE, (width - 32) / 2 - TOOL_GAP));
+  const available = Math.max(size, width - 16);
+  const rows: number[][] = [[]];
+  const rowWidth = (row: number[]) => row.length * size + Math.max(0, row.length - 1) * TOOL_GAP
+    + (row.length > 1 && brushes[row[row.length - 1]].kind === "remove" ? REMOVE_EXTRA_GAP : 0);
+  brushes.forEach((_, index) => {
+    let row = rows[rows.length - 1];
+    if (row.length && rowWidth([...row, index]) > available) {
+      row = [];
+      rows.push(row);
+    }
+    row.push(index);
+  });
+  const last = rows[rows.length - 1];
+  const previous = rows[rows.length - 2];
+  if (last.length === 1 && brushes[last[0]].kind === "remove" && previous?.length > 1
+    && size * 2 + TOOL_GAP + REMOVE_EXTRA_GAP <= available) last.unshift(previous.pop()!);
+  const positions: { x: number; row: number }[] = [];
+  rows.forEach((row, rowIndex) => {
+    let x = (width - rowWidth(row)) / 2 + size / 2;
+    row.forEach((index, i) => {
+      if (i > 0) x += size + TOOL_GAP + (brushes[index].kind === "remove" ? REMOVE_EXTRA_GAP : 0);
+      positions[index] = { x, row: rowIndex };
+    });
+  });
+  return { size, rows: rows.length, positions };
 }
 
 /** Screen-space overlay: time, goal progress, toolbar, hint and the level-won popup. */
@@ -43,9 +92,14 @@ export class Hud {
   readonly root = new Container();
   private readonly title: Text;
   private readonly stats: Text;
+  private readonly meta: Text;
+  private readonly coins: Text;
+  private readonly pause: Text;
   private readonly restart: Text;
   private readonly hint: Text;
   private readonly toolbar = new Container();
+  private readonly coinLayer = new Graphics();
+  private coinFlights: CoinFlight[] = [];
   private tools: ToolButton[] = [];
   private toolSize = TOOL_SIZE;
   /** Dims the net and swallows taps while the level-won popup is shown. */
@@ -56,6 +110,10 @@ export class Hud {
   private readonly detail: Text;
   private readonly againButton = new Container();
   private readonly confettiLayer = new Graphics();
+  private readonly confirmationShade = new Graphics();
+  private readonly confirmation = new Container();
+  private wasPaused = false;
+  confirming = false;
   private confetti: Confetto[] = [];
   /** Real seconds since the popup appeared, or undefined while it is hidden. */
   private shownFor?: number;
@@ -67,16 +125,22 @@ export class Hud {
     private readonly controller: Controller,
     private readonly actions: HudActions,
   ) {
-    const onRestart = () => actions.restart();
+    const onRestart = () => actions.requestRestart();
     const style = { fontFamily: THEME.font, fill: THEME.ink };
-    this.title = new Text({ text: game.level.name, style: { ...style, fontSize: 18, fontWeight: "bold" } });
+    this.title = new Text({ text: game.level.name.toUpperCase(), style: { ...style, fontSize: 18, fontWeight: "bold" } });
     this.title.visible = game.level.mode !== "endless";
-    this.stats = new Text({ text: "", style: { ...style, fontSize: 15 } });
-    this.restart = new Text({ text: "↻ restart", style: { ...style, fontSize: 16 } });
-    this.restart.anchor.set(1, 0);
-    this.restart.eventMode = "static";
-    this.restart.cursor = "pointer";
+    this.stats = new Text({ text: "", style: { ...style, fontSize: 24, fontWeight: "bold" } });
+    this.meta = new Text({ text: "", style: { ...style, fontSize: 14 } });
+    this.coins = new Text({ text: "", style: { ...style, fontSize: 16, fontWeight: "bold", fill: 0xa97717 } });
+    this.restart = new Text({ text: "RESTART", style: { ...style, fontSize: 15, fontWeight: "bold" } });
+    this.pause = new Text({ text: "PAUSE", style: { ...style, fontSize: 15, fontWeight: "bold" } });
+    for (const control of [this.pause, this.restart]) {
+      control.anchor.set(1, 0);
+      control.eventMode = "static";
+      control.cursor = "pointer";
+    }
     this.restart.on("pointertap", onRestart);
+    this.pause.on("pointertap", () => actions.togglePause());
     this.hint = new Text({
       text: "",
       style: { ...style, fontSize: 13, fill: 0x6e685e, wordWrap: true, wordWrapWidth: 600, align: "center" },
@@ -84,14 +148,14 @@ export class Hud {
     this.hint.anchor.set(0.5, 1);
 
     this.shade.eventMode = "static";
-    this.heading = new Text({ text: "Level complete!", style: { ...style, fontSize: 32, fontWeight: "bold" } });
+    this.heading = new Text({ text: "LEVEL COMPLETE!", style: { ...style, fontSize: 32, fontWeight: "bold" } });
     this.heading.anchor.set(0.5);
     this.heading.position.set(0, -38);
     this.detail = new Text({ text: "", style: { ...style, fontSize: 17, fill: 0x6e685e } });
     this.detail.anchor.set(0.5);
     this.detail.position.set(0, 4);
-    const button = (c: Container, label: string, onTap: () => void) => {
-      const bg = new Graphics().roundRect(-72, -20, 144, 40, 20).fill(THEME.ink);
+    const button = (c: Container, label: string, onTap: () => void, color: number = THEME.ink) => {
+      const bg = new Graphics().roundRect(-72, -20, 144, 40, 20).fill(color);
       const text = new Text({ text: label, style: { ...style, fontSize: 18, fontWeight: "bold", fill: 0xffffff } });
       text.anchor.set(0.5);
       c.addChild(bg, text);
@@ -100,31 +164,91 @@ export class Hud {
       c.hitArea = new Rectangle(-72, -20, 144, 40);
       c.on("pointertap", onTap);
     };
-    button(this.againButton, "↻ again", onRestart);
+    button(this.againButton, "AGAIN", onRestart);
     this.card.roundRect(-170, -90, 340, 180, 18).fill(THEME.background).stroke({ width: 3, color: THEME.ink });
     this.card.eventMode = "static";
     this.popup.addChild(this.card, this.againButton, this.heading, this.detail);
 
+    this.confirmationShade.eventMode = "static";
+    this.confirmationShade.alpha = 0.4;
+    const confirmCard = new Graphics().roundRect(-170, -90, 340, 180, 18)
+      .fill(THEME.background).stroke({ width: 3, color: THEME.ink });
+    confirmCard.eventMode = "static";
+    const confirmTitle = new Text({ text: "RESTART GAME?", style: { ...style, fontSize: 25, fontWeight: "bold" } });
+    confirmTitle.anchor.set(0.5);
+    confirmTitle.position.set(0, -48);
+    const confirmDetail = new Text({ text: "ALL PROGRESS WILL BE LOST.", style: { ...style, fontSize: 14, fill: 0x6e685e } });
+    confirmDetail.anchor.set(0.5);
+    confirmDetail.position.set(0, -12);
+    const cancelButton = new Container();
+    const confirmButton = new Container();
+    button(cancelButton, "CANCEL", () => this.cancelRestart());
+    button(confirmButton, "RESTART", () => this.confirmRestart(), THEME.warn);
+    cancelButton.position.set(-77, 50);
+    confirmButton.position.set(77, 50);
+    this.confirmation.addChild(confirmCard, confirmTitle, confirmDetail, cancelButton, confirmButton);
+    this.confirmationShade.visible = this.confirmation.visible = false;
+
     this.root.addChild(
       this.title,
       this.stats,
+      this.meta,
+      this.coins,
       this.toolbar,
       this.hint,
+      this.coinLayer,
       this.shade,
       this.confettiLayer,
       this.popup,
+      this.pause,
       this.restart,
+      this.confirmationShade,
+      this.confirmation,
     );
+    this.listenForCoins(game);
     this.buildToolbar();
     this.hidePopup();
   }
 
   setGame(game: Game): void {
     this.game = game;
-    this.title.text = game.level.name;
+    this.confirming = false;
+    this.confirmationShade.visible = this.confirmation.visible = false;
+    this.coinFlights = [];
+    this.coinLayer.clear();
+    this.listenForCoins(game);
+    this.title.text = game.level.name.toUpperCase();
     this.title.visible = game.level.mode !== "endless";
     this.buildToolbar();
     this.hidePopup();
+  }
+
+  showRestartConfirmation(): void {
+    if (this.confirming) return;
+    this.wasPaused = this.game.paused;
+    this.game.paused = true;
+    this.confirming = true;
+    this.confirmationShade.visible = this.confirmation.visible = true;
+  }
+
+  cancelRestart(): void {
+    if (!this.confirming) return;
+    this.game.paused = this.wasPaused;
+    this.confirming = false;
+    this.confirmationShade.visible = this.confirmation.visible = false;
+  }
+
+  confirmRestart(): void {
+    if (!this.confirming) return;
+    this.confirming = false;
+    this.confirmationShade.visible = this.confirmation.visible = false;
+    this.actions.restart();
+  }
+
+  private listenForCoins(game: Game): void {
+    game.onCoins((event) => {
+      if (this.game === game) this.coinFlights.push({ event, age: 0 });
+    });
   }
 
   /** Positions HUD elements and returns the screen heights reserved at the top and bottom. */
@@ -132,26 +256,38 @@ export class Hud {
     this.width = width;
     this.height = height;
     this.title.position.set(16, 10);
-    this.stats.position.set(16, this.title.visible ? 36 : 12);
+    this.stats.position.set(16, this.title.visible ? 34 : 8);
+    this.meta.position.set(16, this.title.visible ? 64 : 38);
+    this.coins.position.set(16, height - COIN_ROW + 4);
     this.restart.position.set(width - 16, 12);
+    this.pause.position.set(width - 28 - this.restart.width, 12);
+    for (const control of [this.pause, this.restart]) {
+      control.hitArea = new Rectangle(-control.width - 6, -10, control.width + 12, 44);
+    }
     this.popup.position.set(width / 2, height / 2);
     this.shade.clear().rect(0, 0, width, height).fill(THEME.ink);
+    this.confirmationShade.clear().rect(0, 0, width, height).fill(THEME.ink);
+    this.confirmation.position.set(width / 2, height / 2);
+    this.confirmation.scale.set(Math.max(0, Math.min(1, (width - 24) / 340, (height - 24) / 180)));
 
     const n = this.tools.length;
-    this.toolSize = Math.min(TOOL_SIZE, (width - 16) / Math.max(1, n) - TOOL_GAP);
+    const layout = toolbarLayout(width, this.tools.map((tool) => tool.brush));
+    this.toolSize = layout.size;
     const size = this.toolSize;
-    const toolbarH = n > 1 ? size + 16 : 0;
+    const toolbarH = n > 1 ? layout.rows * (size + TOOL_GAP) + 8 : 0;
     this.tools.forEach((b, i) => {
-      b.root.position.set(width / 2 + (i - (n - 1) / 2) * (size + TOOL_GAP), height - 8 - size / 2);
+      const { x, row } = layout.positions[i];
+      b.baseY = height - COIN_ROW - 8 - size / 2 - (layout.rows - 1 - row) * (size + TOOL_GAP);
+      b.root.position.set(x, b.baseY);
       b.root.scale.set(size / TOOL_SIZE);
     });
     this.toolbar.visible = n > 1;
 
     this.hint.style.wordWrapWidth = Math.min(600, width - 32);
-    this.hint.position.set(width / 2, height - toolbarH - 8);
+    this.hint.position.set(width / 2, height - COIN_ROW - toolbarH - 8);
     this.hint.visible = this.shownFor === undefined;
     this.hint.style.fontSize = width > 480 ? 13 : 11;
-    return { top: this.title.visible ? 64 : 48, bottom: toolbarH + HINT_SPACE };
+    return { top: this.title.visible ? 92 : 68, bottom: toolbarH + HINT_SPACE + COIN_ROW };
   }
 
   private buildToolbar(): void {
@@ -160,20 +296,36 @@ export class Hud {
       const root = new Container();
       const bg = new Graphics();
       const icon = new Graphics();
-      drawIcon(icon, brush);
-      root.addChild(bg, icon);
+      const badges = new Graphics();
+      const label = () => {
+        const text = new Text({ text: "", style: { fontFamily: THEME.font, fontSize: 11, fill: 0xffffff, fontWeight: "bold" } });
+        text.anchor.set(0.5);
+        return text;
+      };
+      const count = label();
+      const price = label();
+      count.position.set(19, -19);
+      price.position.set(19, 19);
+      drawToolIcon(icon, brush);
+      root.addChild(bg, icon, badges, count, price);
       root.eventMode = "static";
       root.cursor = "pointer";
       root.hitArea = new Rectangle(-TOOL_SIZE / 2 - 4, -TOOL_SIZE / 2 - 4, TOOL_SIZE + 8, TOOL_SIZE + 8);
       root.on("pointertap", () => this.actions.selectBrush(brush));
       this.toolbar.addChild(root);
-      return { brush, root, bg };
+      return { brush, root, bg, badges, count, price, baseY: 0 };
     });
   }
 
   /** `dt` is real elapsed time; the popup keeps animating while the game is frozen. */
-  update(dt: number): void {
+  update(dt: number, toScreen: (point: Pt) => Pt): boolean {
     const g = this.game;
+    const brushes = brushesOf(g);
+    const changed = brushes.length !== this.tools.length || brushes.some((brush, i) => !sameBrush(brush, this.tools[i].brush));
+    if (changed) {
+      this.buildToolbar();
+      this.layout(this.width, this.height);
+    }
     for (const b of this.tools) {
       const active = sameBrush(b.brush, this.controller.brush);
       const h = TOOL_SIZE / 2;
@@ -181,16 +333,60 @@ export class Hud {
         width: active ? 3.5 : 2,
         color: active ? THEME.ink : THEME.muted,
       });
-      b.root.y = this.height - 8 - this.toolSize / 2 - (active ? 4 : 0);
+      b.root.y = b.baseY - (active ? 4 : 0);
+      const powerup = b.brush.kind === "kit" ? g.kitPowerup(b.brush.kit) : undefined;
+      const free = b.brush.kind === "auto" || b.brush.kind === "capacity" ? g.powerupStock(b.brush.kind) : 0;
+      const stock = powerup ? g.powerupStock(powerup.id) : free;
+      const price = powerup?.price ?? ((b.brush.kind === "auto" || b.brush.kind === "capacity") && !free ? UPGRADE_COST : 0);
+      b.badges.clear();
+      if (stock) b.badges.circle(19, -19, 10).fill(powerup ? 0x222222 : 0x32944c);
+      if (price) b.badges.circle(19, 19, 10).fill(0xdd8a25);
+      b.count.text = stock ? String(stock) : "";
+      b.price.text = price ? String(price) : "";
     }
-    const hint = this.controller.hint();
+    const hint = g.paused ? "PAUSED — TAP RESUME TO CONTINUE." : this.controller.hint().toUpperCase();
     if (this.hint.text !== hint) this.hint.text = hint;
     const progress = g.level.mode === "endless"
-      ? `score ${g.score}`
-      : `goals ${g.resolved.size}/${new Set(g.level.goals.map((goal) => goal.sinkId)).size}`;
-    this.stats.text = `${progress}   time ${g.sim.time.toFixed(0)}s`;
+      ? `SCORE ${g.score}`
+      : `GOALS ${g.resolved.size}/${new Set(g.level.goals.map((goal) => goal.sinkId)).size}`;
+    this.stats.text = progress;
+    const seconds = Math.floor(g.sim.time);
+    const minutes = Math.floor(seconds / 60);
+    this.meta.text = `TIME ${minutes}:${String(seconds % 60).padStart(2, "0")}${g.level.mode === "endless" ? `  EPOCH ${g.epoch}` : ""}`;
+    this.coins.text = `COINS ${g.coins}`;
+    const pauseLabel = g.paused ? "RESUME" : "PAUSE";
+    if (this.pause.text !== pauseLabel) {
+      this.pause.text = pauseLabel;
+      this.pause.hitArea = new Rectangle(-this.pause.width - 6, -10, this.pause.width + 12, 44);
+    }
+    this.drawCoins(dt, toScreen);
     if (g.complete && this.shownFor === undefined) this.showPopup();
     if (this.shownFor !== undefined) this.animatePopup(dt);
+    return changed;
+  }
+
+  private drawCoins(dt: number, toScreen: (point: Pt) => Pt): void {
+    const graphics = this.coinLayer.clear();
+    for (const flight of this.coinFlights) {
+      flight.age += dt;
+      const world = toScreen(flight.event);
+      const node = {
+        x: Math.max(12, Math.min(this.width - 12, world.x)),
+        y: Math.max(64, Math.min(this.height - 70, world.y)),
+      };
+      const counter = { x: 16 + this.coins.width / 2, y: this.height - COIN_ROW / 2 };
+      const from = flight.event.amount > 0 ? node : counter;
+      const to = flight.event.amount > 0 ? counter : node;
+      const count = Math.min(5, Math.abs(flight.event.amount));
+      for (let i = 0; i < count; i++) {
+        const progress = Math.max(0, Math.min(1, (flight.age - i * 0.045) / 0.65));
+        if (flight.age < i * 0.045 || progress >= 1) continue;
+        const x = from.x + (to.x - from.x) * progress + (i - (count - 1) / 2) * 5 * Math.sin(Math.PI * progress);
+        const y = from.y + (to.y - from.y) * progress - 16 * Math.sin(Math.PI * progress);
+        graphics.circle(x, y, 4).fill({ color: 0xe7b843, alpha: 0.85 }).stroke({ width: 1, color: 0xa97717, alpha: 0.85 });
+      }
+    }
+    this.coinFlights = this.coinFlights.filter((flight) => flight.age < 0.85);
   }
 
   private hidePopup(): void {
@@ -205,7 +401,7 @@ export class Hud {
     this.shownFor = 0;
     this.shade.visible = this.popup.visible = true;
     this.hint.visible = false;
-    this.detail.text = `all goals met in ${this.game.completedAt!.toFixed(0)}s`;
+    this.detail.text = `ALL GOALS MET IN ${this.game.completedAt!.toFixed(0)}S`;
     this.againButton.position.set(0, 52);
     const scale = Math.min(1, (this.width - 24) / 340);
     this.confetti = Array.from({ length: CONFETTI }, (_, i) => {
@@ -245,41 +441,3 @@ export class Hud {
   }
 }
 
-/** Icons of the toolbar, drawn around (0, 0) within TOOL_SIZE. */
-function drawIcon(g: Graphics, b: Brush): void {
-  const ink = THEME.ink;
-  const bar = (x: number, w = 8, h = 24, color: number = ink) => g.roundRect(x - w / 2, -h / 2, w, h, 3).fill(color);
-  switch (b.kind) {
-    case "fire":
-      bar(0);
-      for (const a of [-0.6, 0, 0.6].flatMap((d) => [d, Math.PI + d])) {
-        g.moveTo(Math.cos(a) * 9, Math.sin(a) * 15).lineTo(Math.cos(a) * 15, Math.sin(a) * 19).stroke({ width: 2.5, color: ink, cap: "round" });
-      }
-      break;
-    case "place":
-      g.circle(0, 0, 13).fill(0xffffff).stroke({ width: 3.5, color: ink });
-      break;
-    case "kit": {
-      bar(0, 6, 22);
-      const side = (dir: "in" | "out", x: number) => {
-        const dots = b.kit.ports.filter((p) => p.dir === dir).flatMap((p) => Array<number>(p.count ?? 1).fill(p.color ? TOKEN_COLORS[p.color] : ink));
-        dots.forEach((c, i) => g.circle(x, (i - (dots.length - 1) / 2) * 11, 4.5).fill(c));
-      };
-      side("in", -13);
-      side("out", 13);
-      break;
-    }
-    case "remove":
-      for (const s of [1, -1]) g.moveTo(-10, -10 * s).lineTo(10, 10 * s).stroke({ width: 4, color: THEME.warn, cap: "round" });
-      break;
-    case "auto":
-      g.circle(-4, 0, 11).stroke({ width: 3, color: ink });
-      g.moveTo(-4, 0).lineTo(-4, -7).moveTo(-4, 0).lineTo(1, 3).stroke({ width: 2.5, color: ink, cap: "round" });
-      g.moveTo(10, -5).lineTo(15, 0).lineTo(10, 5).stroke({ width: 3, color: ink, cap: "round", join: "round" });
-      break;
-    case "capacity":
-      g.circle(0, 0, 14).stroke({ width: 3, color: ink });
-      g.moveTo(-7, 0).lineTo(7, 0).moveTo(0, -7).lineTo(0, 7).stroke({ width: 3, color: ink, cap: "round" });
-      break;
-  }
-}

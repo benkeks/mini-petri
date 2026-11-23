@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Net, type NetSpec } from "../src/core/net";
 import { Simulation } from "../src/core/simulation";
-import { Game } from "../src/game/game";
+import { Game, STARTING_COINS, UPGRADE_COST } from "../src/game/game";
 import { endless } from "../src/game/endless";
 import { level2 } from "../src/game/level2";
 import { brushesOf, Controller } from "../src/input/controller";
@@ -244,6 +244,42 @@ describe("controller", () => {
     expect(controller.selected).toEqual({ tid, index: 0 });
   });
 
+  it("builds a one-to-one relay from a selected place and continues wiring its output", () => {
+    const { game, view, controller, tap, denied } = setup();
+    tap({ kind: "place", id: "pB" });
+    controller.sync();
+    expect(view.overlay.build).toMatchObject({ kind: "transition", fromPlace: "pB" });
+    expect(game.placementIssue("transition", 700, 400)).toBeUndefined();
+    for (const point of [{ x: 700, y: 400 }, { x: 280, y: 520 }, { x: 10, y: 10 }]) {
+      tap({ kind: "empty", ...point });
+    }
+    expect(denied).toHaveLength(3);
+    expect(controller.selectedPlace).toBe("pB");
+
+    tap({ kind: "empty", x: 400, y: 400 });
+    const tid = controller.selected!.tid;
+    expect(game.sim.net.inputs(tid)).toMatchObject([{ from: "pB", to: tid, count: 1 }]);
+    expect(game.sim.net.transitions.get(tid)?.open).toMatchObject([{ dir: "out", count: 1 }]);
+    expect(controller.selectedPlace).toBeUndefined();
+    expect(controller.selected).toEqual({ tid, index: 0 });
+    tap({ kind: "empty", x: 550, y: 400 });
+    const place = game.sim.net.outputs(tid)[0].to;
+    expect(game.playerFire(tid)).toBe(true);
+    run(game, 2);
+    expect(game.sim.net.places.get(place)?.marking).toEqual(["blue"]);
+  });
+
+  it("does not build a relay from a place when no one-to-one kit is available", () => {
+    const game = new Game({ ...level2, tools: { ...level2.tools, kits: [] } });
+    const { controller, view, tap } = setup(game);
+    tap({ kind: "place", id: "pB" });
+    controller.sync();
+    expect(view.overlay.build).toBeUndefined();
+    tap({ kind: "empty", x: 400, y: 400 });
+    expect(controller.selectedPlace).toBeUndefined();
+    expect(game.sim.net.transitions.size).toBe(level2.net.transitions.length);
+  });
+
   it("rejects invalid placement without losing the selected port or creating a place", () => {
     const { game, controller, tap, denied } = setup();
     tap({ kind: "port", tid: "sinkG", index: 0 });
@@ -276,21 +312,12 @@ describe("controller", () => {
     expect(game.sim.net.inputs("sinkG")).toHaveLength(0);
   });
 
-  it("highlights transitions with reachable loose ends when previewing a place", () => {
-    const { game, view, controller } = setup();
-    game.sim.net.addTransition({ id: "outside", x: 1000.001, y: 520, kind: "normal", open: [{ dir: "in", color: "red" }] });
-    controller.setBrush({ kind: "place" });
-    controller.sync();
-    const target = view.overlay.previewTarget!;
-    const point = { x: 700, y: 520 };
-    expect(target({ kind: "transition", id: "sinkG" }, point)).toBe(true);
-    expect(target({ kind: "port", tid: "sinkG", index: 0 }, point)).toBe(true);
-    expect(target({ kind: "transition", id: "outside" }, point)).toBe(false);
-    expect(target({ kind: "port", tid: "outside", index: 0 }, point)).toBe(false);
-    expect(target({ kind: "transition", id: "tDrain" }, point)).toBe(false);
-    game.sim.net.ghostTransition("sinkG");
-    expect(target({ kind: "transition", id: "sinkG" }, point)).toBe(false);
-    expect(target({ kind: "port", tid: "sinkG", index: 0 }, point)).toBe(false);
+  it("omits the place tool and puts removal last", () => {
+    const kinds = brushesOf(new Game(level2)).map((brush) => brush.kind);
+    expect(kinds).not.toContain("place");
+    expect(kinds.at(-1)).toBe("remove");
+    const names = brushesOf(new Game(level2)).map((brush) => brush.kind === "kit" ? brush.kit.id : brush.kind);
+    expect(names).toEqual(["fire", "relay", "auto", "capacity", "split", "mix", "remove"]);
   });
 
   it("highlights live places in range when previewing a transition", () => {
@@ -398,6 +425,14 @@ describe("ghosts", () => {
 });
 
 describe("building", () => {
+  it("allows nodes at the reduced clearance boundary", () => {
+    const game = new Game(level2);
+    expect(game.placementIssue("transition", 100, 267.999)).toBe("crowded");
+    expect(game.placementIssue("transition", 100, 268)).toBeUndefined();
+    expect(game.placementIssue("place", 100, 279.999)).toBe("crowded");
+    expect(game.placementIssue("place", 100, 280)).toBeUndefined();
+  });
+
   it("requires range and clearance", () => {
     const game = new Game(level2);
     expect(game.placementIssue("place", 380, 180)).toBe("crowded");
@@ -480,7 +515,147 @@ describe("building", () => {
   });
 });
 
+describe("idle small places", () => {
+  it("removes only unconnected size-1 places after two minutes", () => {
+    const game = new Game(level2);
+    const idle = game.buildPlace(580, 350, 1)!;
+    const upgraded = game.buildPlace(820, 350, 1)!;
+    expect(game.upgradeCapacity(upgraded)).toBe(true);
+    const connected = game.buildConnectedPlace("sinkG", 0, 820, 520)!;
+    game.step(119.9);
+    expect(game.sim.net.places.has(idle)).toBe(true);
+    game.step(0.2);
+    expect(game.sim.net.places.has(idle)).toBe(false);
+    expect(game.sim.net.places.has(upgraded)).toBe(true);
+    expect(game.sim.net.places.has(connected)).toBe(true);
+  });
+
+  it("resets the timer when an unconnected place is tapped", () => {
+    const game = new Game(level2);
+    const id = game.buildPlace(580, 350, 1)!;
+    const pick: Pick = { kind: "place", id };
+    const controller = new Controller(game, { overlay: {}, pick: () => pick, deny: () => {} });
+    game.step(119);
+    controller.tap({ x: 580, y: 350 });
+    game.step(119);
+    expect(game.sim.net.places.has(id)).toBe(true);
+    game.step(1.1);
+    controller.sync();
+    expect(game.sim.net.places.has(id)).toBe(false);
+    expect(controller.selectedPlace).toBeUndefined();
+  });
+
+  it("restarts the timer when a connected place is disconnected", () => {
+    const game = new Game(level2);
+    const id = game.buildPlace(820, 520, 1)!;
+    game.step(100);
+    expect(game.connect("sinkG", 0, id)).toBe(true);
+    game.step(50);
+    expect(game.sim.net.places.has(id)).toBe(true);
+    expect(game.remove(game.sim.net.inputs("sinkG")[0].id)).toBe(true);
+    game.step(119.9);
+    expect(game.sim.net.places.has(id)).toBe(true);
+    game.step(0.2);
+    expect(game.sim.net.places.has(id)).toBe(false);
+  });
+
+  it("uses the actual arrival time to reset the timer on a disconnected ghost arc", () => {
+    const game = new Game(level2);
+    const id = game.buildConnectedPlace("srcR2", 0, 800, 700)!;
+    expect(game.sim.fire("srcR2")).toBe(true);
+    expect(game.remove(game.sim.net.outputs("srcR2")[0].id)).toBe(true);
+    game.step(119);
+    expect(game.sim.net.places.get(id)?.marking).toEqual(["red"]);
+    game.step(1);
+    expect(game.sim.net.places.has(id)).toBe(true);
+    game.step(1);
+    expect(game.sim.net.places.has(id)).toBe(false);
+  });
+
+  it("does not revive a place when a token arrives after its idle deadline", () => {
+    const definition = structuredClone(level2);
+    definition.net.places.push({ id: "farPlace", x: 28640, y: 700, capacity: 1, marking: [] });
+    definition.net.transitions.find((t) => t.id === "srcR2")!.open = [];
+    definition.net.arcs.push({ id: "longArc", from: "srcR2", to: "farPlace", color: "red" });
+    const game = new Game(definition);
+    expect(game.sim.fire("srcR2")).toBe(true);
+    expect(game.remove("longArc")).toBe(true);
+    game.step(122);
+    expect(game.sim.net.places.has("farPlace")).toBe(false);
+  });
+});
+
 describe("upgrades", () => {
+  it("charges only successful upgrades and refunds half of purchased upgrades plus settled tokens", () => {
+    const game = new Game(level2);
+    const events: number[] = [];
+    game.onCoins((event) => events.push(event.amount));
+    const place = game.sim.net.places.get("pB")!;
+    const tokenCount = place.marking.length;
+    expect(game.upgradeCapacity("pB", false)).toBe(true);
+    expect(game.coins).toBe(STARTING_COINS);
+    expect(game.upgradeCapacity("pB")).toBe(true);
+    expect(game.upgradeCapacity("pB")).toBe(true);
+    expect(game.upgradeCapacity("pB")).toBe(false);
+    expect(game.coins).toBe(STARTING_COINS - 2 * UPGRADE_COST);
+    expect(game.remove("pB", false)).toBe(true);
+    expect(game.coins).toBe(STARTING_COINS - 2 * UPGRADE_COST);
+    expect(game.remove("pB")).toBe(true);
+    expect(game.coins).toBe(STARTING_COINS - 2 * UPGRADE_COST + 5 + tokenCount);
+    expect(game.remove("pB")).toBe(false);
+    expect(events).toEqual([-5, -5, ...(tokenCount ? [tokenCount] : []), 5]);
+  });
+
+  it("reimburses a single transition upgrade rounded up, not pre-existing automation", () => {
+    const game = new Game(level2);
+    expect(game.upgradeAuto("tDrain")).toBe(true);
+    expect(game.remove("tDrain")).toBe(true);
+    expect(game.coins).toBe(STARTING_COINS - 5 + 3);
+    expect(game.remove("tSplit")).toBe(true);
+    expect(game.coins).toBe(STARTING_COINS - 5 + 3);
+  });
+
+  it("denies upgrades without coins, including feasibility checks", () => {
+    const game = new Game(level2);
+    for (let i = 0; i < STARTING_COINS / UPGRADE_COST; i++) {
+      const id = `economy${i}`;
+      game.sim.net.addTransition({ id, x: -1000 - i * 100, y: 0, kind: "normal" });
+      expect(game.upgradeAuto(id)).toBe(true);
+    }
+    expect(game.coins).toBe(0);
+    expect(game.upgradeAuto("tSplit", false)).toBe(false);
+    expect(game.upgradeAuto("tSplit")).toBe(false);
+    expect(game.upgradeCapacity("pB", false)).toBe(false);
+    expect(game.upgradeCapacity("pB")).toBe(false);
+    expect(game.remove("economy0")).toBe(true);
+    expect(game.coins).toBe(3);
+    expect(game.upgradeAuto("tSplit")).toBe(false);
+  });
+
+  it("rewards a finite source once when its last token is emitted", () => {
+    const definition = structuredClone(level2);
+    definition.net.transitions.find((t) => t.id === "srcR")!.supply = 1;
+    const game = new Game(definition);
+    const events: number[] = [];
+    game.onCoins((event) => events.push(event.amount));
+    expect(game.sim.fire("srcR")).toBe(true);
+    expect(game.coins).toBe(STARTING_COINS + 5);
+    expect(game.sim.fire("srcR")).toBe(false);
+    game.step(2);
+    expect(game.coins).toBe(STARTING_COINS + 5);
+    expect(events).toEqual([5]);
+  });
+
+  it("only rewards settled tokens when a removed place swallows an incoming token", () => {
+    const game = new Game(level2);
+    expect(game.sim.fire("srcR")).toBe(true);
+    expect(game.sim.incoming("pR")).toEqual({ red: 1 });
+    expect(game.remove("pR")).toBe(true);
+    expect(game.coins).toBe(STARTING_COINS + 1);
+    game.step(2);
+    expect(game.coins).toBe(STARTING_COINS + 1);
+  });
+
   it("make transitions automatic, then faster, and places larger", () => {
     const game = new Game(level2);
     const t = game.sim.net.transitions.get("tSplit")!;
@@ -510,11 +685,11 @@ describe("upgrades", () => {
 
   it("rejects upgrades that would overlap a node", () => {
     const game = new Game(level2);
-    game.sim.net.addTransition({ id: "nearby", x: 370, y: 520, kind: "normal" });
+    game.sim.net.addTransition({ id: "nearby", x: 365.999, y: 520, kind: "normal" });
     expect(game.upgradeCapacity("pB", false)).toBe(false);
     expect(game.upgradeCapacity("pB")).toBe(false);
     expect(game.sim.net.places.get("pB")!.capacity).toBe(1);
-    game.sim.net.deleteNode("nearby");
+    game.sim.net.transitions.get("nearby")!.x = 366;
     expect(game.upgradeCapacity("pB")).toBe(true);
   });
 

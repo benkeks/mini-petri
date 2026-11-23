@@ -79,10 +79,12 @@ export class Controller {
     const game = this.game;
     if (game.complete) return;
     const pick = this.view.pick(p);
-    if (this.selectedPlace && pick.kind === "port") {
+    if (this.selectedPlace && (pick.kind === "port" || pick.kind === "transition")) {
       const place = this.selectedPlace;
+      const tid = pick.kind === "port" ? pick.tid : pick.id;
+      const index = pick.kind === "port" ? pick.index : this.firstConnectiblePort(tid, place);
       this.selectedPlace = undefined;
-      if (!game.connect(pick.tid, pick.index, place)) this.view.deny(pick);
+      if (index === undefined || !game.connect(tid, index, place)) this.view.deny(pick);
       return;
     }
     if (pick.kind === "port") {
@@ -132,8 +134,7 @@ export class Controller {
         : this.selectedPlace
           ? (pick) => pick.kind === "port"
             ? game.connect(pick.tid, pick.index, this.selectedPlace!, false)
-            : pick.kind === "transition" && (game.sim.net.transitions.get(pick.id)?.open?.some((_, index) =>
-              game.connect(pick.id, index, this.selectedPlace!, false)) ?? false)
+            : pick.kind === "transition" && this.firstConnectiblePort(pick.id, this.selectedPlace!) !== undefined
         : b.kind === "fire" || b.kind === "place" || b.kind === "kit"
           ? undefined
           : (pick) => this.act(pick, false),
@@ -161,16 +162,16 @@ export class Controller {
     if (this.selected) return this.game.level.tools?.place
       ? "Tap a place inside the ring, or empty space to build a small place."
       : "Tap a place inside the ring to connect this loose end.";
-    if (this.selectedPlace) return "Tap a loose end inside the ring to connect it to this place.";
+    if (this.selectedPlace) return "Tap a transition or loose end inside the ring to connect it to this place.";
     switch (this.brush.kind) {
       case "fire":
         return this.game.level.tools
           ? "Tap a dark transition to fire it. Connect a place and a loose end in either order. Pick a tool below to build, remove or upgrade."
           : "Tap a dark transition to fire it. Fill the empty circles next to each goal by delivering tokens of their color.";
       case "place":
-        return "Tap inside the shaded area to build a place.";
+        return "Tap inside the white area to build a place.";
       case "kit":
-        return "Tap inside the shaded area to build this transition, then connect its loose ends to places.";
+        return "Tap inside the white area to build this transition, then connect its loose ends to places.";
       case "remove":
         return "Tap an arc, place or transition to remove it. Sources and sinks cannot be removed.";
       case "auto":
@@ -178,6 +179,15 @@ export class Controller {
       case "capacity":
         return "Tap a place to let it hold more tokens.";
     }
+  }
+
+  private firstConnectiblePort(tid: string, pid: string): number | undefined {
+    const ports = this.game.sim.net.transitions.get(tid)?.open ?? [];
+    for (const dir of ["in", "out"] as const) {
+      const index = ports.findIndex((port, i) => port.dir === dir && this.game.connect(tid, i, pid, false));
+      if (index !== -1) return index;
+    }
+    return undefined;
   }
 
   /** Applies the active brush to `pick`, or only checks whether it would do something. */

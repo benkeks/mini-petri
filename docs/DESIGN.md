@@ -31,12 +31,12 @@ The [README](../README.md) covers gameplay.
 
 ## Building and upgrades
 - `Level.tools` declares which tools a level offers; usage is unlimited for now.
-- New nodes must be inside the world, within `BUILD_RANGE` (220) of a live node, and keep `CLEARANCE` (24) between node footprints (places reserve 48 for their largest size, transitions 36).
+- The buildable plane is unbounded; new nodes must be within `BUILD_RANGE` (220) of a live node and keep `CLEARANCE` (24) between node footprints (places reserve 48 for their largest size, transitions 36).
 - New connections must be at most `BUILD_RANGE + 80` (300) units between transition and place centers, including when building a place from a plug.
   Existing level arcs are unchanged.
 - Built transitions come from kits (`{ id, ports }`) and start with all ports open; built ids are fresh (`p1`, `t1`, `c1`, …).
 - Upgrades: auto (manual `normal` transition gets a 4 s interval; later upgrades multiply the interval by 0.6, down to 0.6 s), capacity (next of 1, 7 and 19).
-  A place cannot be upgraded if the larger footprint would overlap another node or extend beyond the world.
+  A place cannot be upgraded if the larger footprint would overlap another node.
 - All `Game` actions take `apply = false` to only check feasibility; the view uses this to highlight targets.
 
 ## Input
@@ -45,9 +45,14 @@ The [README](../README.md) covers gameplay.
   Plugs can be picked with any brush, switching to the firing brush; the next tap on a place connects them.
   Tapping empty space with a plug selected builds and connects a capacity-1 place, subject to the place tool and ordinary placement rules.
   In firing mode, tapping a place first and then a plug connects them in the other order.
+  Tapping a transition instead connects the selected place to its first eligible input port, then its first eligible output port; an explicitly tapped plug still takes precedence.
   After building a transition its first plug is selected, and after each connection the next one, so wiring is a sequence of taps on places.
   Build brushes revert to firing after a successful build; removal and upgrade brushes stay active.
 - Denied taps shake the node, or show a red ripple on empty space.
+- Background drags pan unless a placement brush is active; a tap is dispatched only after release without a drag or pinch.
+  Wheel and two-pointer pinch gestures zoom around the pointer or pinch midpoint.
+- The camera center stays within the live nodes' bounding box expanded by `BUILD_RANGE`.
+  Zoom is capped so a full connection-range circle fits inside the HUD-free viewport, and selecting a loose end or place pans enough to show that circle.
 
 ## Continuous-time firing semantics
 - Firing is atomic: input tokens are removed and output tokens are committed to their target places at the moment of firing.
@@ -75,7 +80,7 @@ The [README](../README.md) covers gameplay.
 - Sources with a `supply` show one dot per remaining firing upstream of them; exhausted sources show a check mark and fade away.
 - Open ports dangle as short stubs with a plug, against the flow for inputs and along it for outputs; plugs pulse softly, the selected one strongly, with a line to the pointer.
 - Ghosts are drawn at 30% opacity.
-- Build brushes shade the build range (clipped to the world) and preview the node under the pointer, red if it cannot go there.
+- Build brushes show the union of build ranges in white against a grey background, fading in and out over 250 ms, and preview the node under the pointer, red if it cannot go there.
 - A ring shows the connection range around the selected plug's transition or selected place, and around a node preview while building.
   Reachable places, or transitions with loose ends and their plugs, pulse within the ring.
 - Enabled player transitions are dark and pulse; disabled ones are grey and shake when tapped.

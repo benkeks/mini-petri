@@ -1,0 +1,97 @@
+import { BUILD_RANGE, CONNECTION_RANGE } from "../game/game";
+import type { Pt } from "../render/geometry";
+
+export interface Viewport {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface Bounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
+/** Screen-space transform bounded by the current live net. */
+export class Camera {
+  x = 0;
+  y = 0;
+  scale = 1;
+  private minScale = 1;
+  private maxScale = 1;
+  private bounds: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+  viewport: Viewport = { x: 0, y: 0, width: 1, height: 1 };
+
+  layout(viewport: Viewport, world: { width: number; height: number }, reset: boolean): void {
+    const previousCenter = this.toWorld({
+      x: this.viewport.x + this.viewport.width / 2,
+      y: this.viewport.y + this.viewport.height / 2,
+    });
+    this.viewport = viewport;
+    this.maxScale = Math.min(viewport.width, viewport.height) / (2 * CONNECTION_RANGE);
+    this.minScale = Math.min(this.maxScale, 0.96 * Math.min(viewport.width / world.width, viewport.height / world.height));
+    this.scale = reset ? this.minScale : clamp(this.scale, this.minScale, this.maxScale);
+    const center = reset ? { x: world.width / 2, y: world.height / 2 } : previousCenter;
+    this.x = viewport.x + viewport.width / 2 - center.x * this.scale;
+    this.y = viewport.y + viewport.height / 2 - center.y * this.scale;
+    this.clamp();
+  }
+
+  setNodes(nodes: readonly Pt[], world: { width: number; height: number }): void {
+    if (nodes.length === 0) {
+      this.bounds = { minX: 0, minY: 0, maxX: world.width, maxY: world.height };
+    } else {
+      this.bounds = {
+        minX: Math.min(...nodes.map((n) => n.x)) - BUILD_RANGE,
+        minY: Math.min(...nodes.map((n) => n.y)) - BUILD_RANGE,
+        maxX: Math.max(...nodes.map((n) => n.x)) + BUILD_RANGE,
+        maxY: Math.max(...nodes.map((n) => n.y)) + BUILD_RANGE,
+      };
+    }
+    this.clamp();
+  }
+
+  toWorld(point: Pt): Pt {
+    return { x: (point.x - this.x) / this.scale, y: (point.y - this.y) / this.scale };
+  }
+
+  pan(dx: number, dy: number): void {
+    this.x += dx;
+    this.y += dy;
+    this.clamp();
+  }
+
+  /** Zoom around a screen point, optionally moving that point as with a pinch. */
+  zoom(factor: number, from: Pt, to = from): void {
+    const anchor = this.toWorld(from);
+    this.scale = clamp(this.scale * factor, this.minScale, this.maxScale);
+    this.x = to.x - anchor.x * this.scale;
+    this.y = to.y - anchor.y * this.scale;
+    this.clamp();
+  }
+
+  /** Pan only as far as necessary to show the full connection circle. */
+  showConnection(center: Pt): void {
+    const v = this.viewport;
+    const radius = CONNECTION_RANGE * this.scale;
+    const x = center.x * this.scale + this.x;
+    const y = center.y * this.scale + this.y;
+    const dx = x - radius < v.x ? v.x - (x - radius) : x + radius > v.x + v.width ? v.x + v.width - (x + radius) : 0;
+    const dy = y - radius < v.y ? v.y - (y - radius) : y + radius > v.y + v.height ? v.y + v.height - (y + radius) : 0;
+    this.pan(dx, dy);
+  }
+
+  private clamp(): void {
+    const v = this.viewport;
+    const center = this.toWorld({ x: v.x + v.width / 2, y: v.y + v.height / 2 });
+    const x = clamp(center.x, this.bounds.minX, this.bounds.maxX);
+    const y = clamp(center.y, this.bounds.minY, this.bounds.maxY);
+    this.x = v.x + v.width / 2 - x * this.scale;
+    this.y = v.y + v.height / 2 - y * this.scale;
+  }
+}

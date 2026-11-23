@@ -10,7 +10,7 @@ export interface Goal {
 
 export interface Level {
   name: string;
-  /** World size; the view scales this rectangle to fit the screen. */
+  /** Initial framing size; the buildable plane extends beyond this rectangle. */
   width: number;
   height: number;
   net: NetSpec;

@@ -22,7 +22,7 @@ export const MIN_INTERVAL = 0.6;
 
 export type NodeKind = "place" | "transition";
 /** Why a placement is not allowed. */
-export type PlacementIssue = "far" | "crowded" | "outside";
+export type PlacementIssue = "far" | "crowded";
 
 export interface GoalStatus extends Goal {
   /** Matching tokens that have reached the sink, capped at `count`. */
@@ -91,8 +91,6 @@ export class Game {
   placementIssue(kind: NodeKind, x: number, y: number): PlacementIssue | undefined {
     const net = this.sim.net;
     const r = footprint(kind);
-    const { width, height } = this.size;
-    if (x < r || y < r || x > width - r || y > height - r) return "outside";
     const nodes = [...net.places.values(), ...net.transitions.values()];
     for (const n of nodes) {
       const other = net.places.has(n.id) ? PLACE_FOOTPRINT : TRANSITION_FOOTPRINT;
@@ -186,8 +184,6 @@ export class Game {
     const next = PLACE_CAPACITIES.find((capacity) => capacity > p.capacity!);
     if (next === undefined) return false;
     const radius = placeRadius(next) + 8;
-    const { width, height } = this.size;
-    if (p.x < radius || p.y < radius || p.x > width - radius || p.y > height - radius) return false;
     for (const n of [...this.sim.net.places.values(), ...this.sim.net.transitions.values()]) {
       if (n.id === pid) continue;
       const other = this.sim.net.places.has(n.id) ? placeRadius(this.sim.net.places.get(n.id)!.capacity) + 8 : TRANSITION_FOOTPRINT;
@@ -218,7 +214,7 @@ export class Game {
     }
   }
 
-  /** World size, matching the current orientation. */
+  /** Initial framing size, matching the current orientation. */
   get size(): { width: number; height: number } {
     const { width, height } = this.level;
     return this.portrait ? { width: height, height: width } : { width, height };

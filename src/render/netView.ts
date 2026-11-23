@@ -30,6 +30,7 @@ const PLUG_RADIUS = 8;
 /** Extra pick tolerance around targets, in screen pixels. */
 const PICK_SLOP = 12;
 const GHOST_ALPHA = 0.3;
+const BUILD_FADE_TIME = 0.25;
 
 /** What a tap at some point of the world hits. */
 export type Pick =
@@ -78,9 +79,13 @@ interface TransitionNode {
 export class NetView {
   readonly root = new Container();
   overlay: Overlay = {};
-  private readonly rangeLayer = new Graphics();
-  /** Clips the build range to the world. */
+  private readonly rangeLayer = new Container();
+  private readonly rangeBackground = new Graphics();
+  private readonly rangeArea = new Graphics();
   private readonly rangeMask = new Graphics();
+  private rangeFade = 0;
+  private rangeVersion = -1;
+  private rangeViewport?: { x: number; y: number; width: number; height: number };
   private readonly ghostLayer = new Container();
   private readonly ghostArcLayer = new Graphics();
   private readonly ghostPlaceLayer = new Graphics();
@@ -107,9 +112,9 @@ export class NetView {
     this.bar = game.portrait ? { w: TRANSITION_H, h: TRANSITION_W } : { w: TRANSITION_W, h: TRANSITION_H };
     this.ghostLayer.alpha = GHOST_ALPHA;
     this.ghostLayer.addChild(this.ghostArcLayer, this.ghostPlaceLayer);
-    this.rangeLayer.alpha = 0.07;
-    this.rangeLayer.mask = this.rangeMask;
-    this.root.addChild(this.rangeMask);
+    this.rangeArea.mask = this.rangeMask;
+    this.rangeLayer.addChild(this.rangeBackground, this.rangeArea, this.rangeMask);
+    this.rangeLayer.visible = false;
     this.root.addChild(
       this.rangeLayer,
       this.ghostLayer,
@@ -128,13 +133,36 @@ export class NetView {
     });
   }
 
-  update(): void {
+  update(dt: number, viewport: { x: number; y: number; width: number; height: number }): void {
     const now = this.game.sim.time;
     if (this.builtVersion !== this.game.sim.net.version) this.buildStatic();
+    this.updateBuildArea(dt, viewport);
     this.drawPlaces();
     for (const n of this.transitions.values()) this.drawTransition(n, now);
     this.drawInFlight();
     this.drawOverlay(now);
+  }
+
+  private updateBuildArea(dt: number, viewport: { x: number; y: number; width: number; height: number }): void {
+    const active = !!this.overlay.build && !this.game.complete;
+    this.rangeFade = Math.max(0, Math.min(1, this.rangeFade + (active ? dt : -dt) / BUILD_FADE_TIME));
+    this.rangeLayer.visible = this.rangeFade > 0;
+    if (!this.rangeLayer.visible) return;
+    this.rangeLayer.alpha = this.rangeFade;
+    if (this.rangeVersion !== this.game.sim.net.version) {
+      this.rangeVersion = this.game.sim.net.version;
+      const nodes = this.game.sim.net.liveNodes();
+      this.rangeMask.clear();
+      for (const n of nodes) this.rangeMask.circle(n.x, n.y, BUILD_RANGE).fill(0xffffff);
+      this.rangeArea.visible = nodes.length > 0;
+    }
+    const { x, y, width, height } = viewport;
+    const previous = this.rangeViewport;
+    if (!previous || previous.x !== x || previous.y !== y || previous.width !== width || previous.height !== height) {
+      this.rangeViewport = { ...viewport };
+      this.rangeBackground.clear().rect(x, y, width, height).fill(THEME.buildOutside);
+      this.rangeArea.clear().rect(x, y, width, height).fill(0xffffff);
+    }
   }
 
   /** Feedback for a tap that had no effect. */
@@ -431,7 +459,6 @@ export class NetView {
   /** Build range, preview, highlights of the active brush's targets and denied-tap ripples. */
   private drawOverlay(now: number): void {
     const g = this.overlayLayer.clear();
-    const range = this.rangeLayer.clear();
     const net = this.game.sim.net;
     const o = this.overlay;
     const pulse = 0.5 + 0.5 * Math.sin(now * 6);
@@ -447,9 +474,6 @@ export class NetView {
     }
 
     if (o.build) {
-      for (const n of net.liveNodes()) range.circle(n.x, n.y, BUILD_RANGE).fill(THEME.ink);
-      const { width, height } = this.game.size;
-      this.rangeMask.clear().rect(0, 0, width, height).fill(0xffffff);
       if (o.pointer && hover?.kind === "empty") {
         const { x, y } = o.pointer;
         if (!connectionOrigin) g.circle(x, y, CONNECTION_RANGE).stroke({ width: 3, color: THEME.arc, alpha: 0.7 });

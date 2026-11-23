@@ -9,6 +9,7 @@ export const TOKEN_COLORS: Record<Color, number> = {
 
 export const THEME = {
   background: 0xf4f1ea,
+  buildOutside: 0xd8d6d1,
   ink: 0x2b2b2b,
   muted: 0xb8b2a7,
   arc: 0x8c867c,

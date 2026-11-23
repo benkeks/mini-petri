@@ -93,6 +93,63 @@ describe("controller", () => {
     expect(game.sim.net.outputs("srcR2")[0].to).toBe(pR2);
   });
 
+  it("connects a selected place to the first eligible input, then output, when tapping a transition", () => {
+    const { game, view, controller, tap, denied } = setup();
+    game.sim.net.addTransition({
+      id: "multi", x: 450, y: 520, kind: "normal",
+      open: [
+        { dir: "out", color: "green" },
+        { dir: "in", color: "red" },
+        { dir: "out", color: "yellow" },
+        { dir: "in", color: "blue" },
+      ],
+    });
+    for (const [direction, color] of [["in", "red"], ["in", "blue"], ["out", "green"], ["out", "yellow"]] as const) {
+      tap({ kind: "place", id: "pB" });
+      controller.sync();
+      expect(view.overlay.target?.({ kind: "transition", id: "multi" })).toBe(true);
+      tap({ kind: "transition", id: "multi" });
+      const arcs = direction === "in" ? game.sim.net.inputs("multi") : game.sim.net.outputs("multi");
+      expect(arcs.at(-1)).toMatchObject(direction === "in" ? { from: "pB", color } : { to: "pB", color });
+      expect(controller.selectedPlace).toBeUndefined();
+    }
+    tap({ kind: "place", id: "pB" });
+    controller.sync();
+    expect(view.overlay.target?.({ kind: "transition", id: "multi" })).toBe(false);
+    tap({ kind: "transition", id: "multi" });
+    expect(denied).toHaveLength(1);
+    expect(game.sim.net.arcsOf("multi")).toHaveLength(4);
+  });
+
+  it("still lets a specific port override the default input-first order", () => {
+    const { game, tap } = setup();
+    game.sim.net.addTransition({
+      id: "multi", x: 450, y: 520, kind: "normal",
+      open: [{ dir: "out", color: "green" }, { dir: "in", color: "red" }],
+    });
+    tap({ kind: "place", id: "pB" });
+    tap({ kind: "port", tid: "multi", index: 0 });
+    expect(game.sim.net.outputs("multi")[0]).toMatchObject({ to: "pB", color: "green" });
+    expect(game.sim.net.transitions.get("multi")!.open).toMatchObject([{ dir: "in", color: "red" }]);
+  });
+
+  it("denies unavailable transition targets instead of firing them", () => {
+    const { game, view, controller, tap, denied } = setup();
+    expect(game.sim.isEnabled("tSplit")).toBe(true);
+    tap({ kind: "place", id: "pR" });
+    controller.sync();
+    expect(view.overlay.target?.({ kind: "transition", id: "tSplit" })).toBe(false);
+    tap({ kind: "transition", id: "tSplit" });
+    expect(denied).toHaveLength(1);
+    expect(game.sim.net.places.get("pR")!.marking).toEqual(["red"]);
+    tap({ kind: "place", id: "pB" });
+    controller.sync();
+    expect(view.overlay.target?.({ kind: "transition", id: "sinkG" })).toBe(false);
+    tap({ kind: "transition", id: "sinkG" });
+    expect(denied).toHaveLength(2);
+    expect(game.sim.net.inputs("sinkG")).toHaveLength(0);
+  });
+
   it("preserves port-first wiring and lets the player cancel or change tools", () => {
     const { game, controller, tap } = setup();
     const pG = game.buildPlace(820, 520)!;
@@ -325,13 +382,47 @@ describe("ghosts", () => {
 });
 
 describe("building", () => {
-  it("requires range, clearance and world bounds", () => {
+  it("requires range and clearance", () => {
     const game = new Game(level2);
     expect(game.placementIssue("place", 380, 180)).toBe("crowded");
-    expect(game.placementIssue("place", 10, 400)).toBe("outside");
+    expect(game.placementIssue("place", 10, 400)).toBeUndefined();
     expect(game.placementIssue("place", 850, 380)).toBeUndefined();
     expect(game.placementIssue("place", 1150, 800 - 60)).toBe("far");
     expect(game.buildPlace(380, 180)).toBeUndefined();
+  });
+
+  it.each([
+    { x: -70, y: 180 },
+    { x: 1210, y: 520 },
+    { x: 100, y: -30 },
+    { x: 640, y: 910 },
+  ])("builds places and transitions beyond the initial frame at ($x, $y), including in portrait", ({ x, y }) => {
+    for (const portrait of [false, true]) {
+      for (const kind of ["place", "transition"] as const) {
+        const game = new Game(level2);
+        game.setPortrait(portrait);
+        const point = portrait ? { x: y, y: x } : { x, y };
+        expect(game.placementIssue(kind, point.x, point.y)).toBeUndefined();
+        const kit = game.level.tools!.kits![0];
+        const id = kind === "place" ? game.buildPlace(point.x, point.y) : game.buildTransition(kit, point.x, point.y);
+        const node = kind === "place" ? game.sim.net.places.get(id!) : game.sim.net.transitions.get(id!);
+        expect(node).toMatchObject(point);
+      }
+    }
+  });
+
+  it("continues extending and connecting the net beyond the initial frame", () => {
+    const game = new Game(level2);
+    const first = game.buildConnectedPlace("sinkG", 0, 1220, 520)!;
+    expect(game.sim.net.inputs("sinkG")[0].from).toBe(first);
+    expect(game.upgradeCapacity(first)).toBe(true);
+    expect(game.sim.net.places.get(first)!.capacity).toBe(7);
+    const relay = game.level.tools!.kits!.find((kit) => kit.id === "relay")!;
+    const transition = game.buildTransition(relay, 1440, 520)!;
+    const last = game.buildConnectedPlace(transition, 1, 1660, 520)!;
+    expect(game.connect(transition, 0, first)).toBe(true);
+    expect(game.sim.net.outputs(transition)[0].to).toBe(last);
+    expect(game.placementIssue("place", 1880.001, 520)).toBe("far");
   });
 
   it("allows connections up to 300 units between centers, but no farther", () => {
@@ -401,17 +492,13 @@ describe("upgrades", () => {
     expect(game.upgradeCapacity("pB")).toBe(false);
   });
 
-  it("rejects upgrades that would overlap a node or leave the world", () => {
+  it("rejects upgrades that would overlap a node", () => {
     const game = new Game(level2);
     game.sim.net.addTransition({ id: "nearby", x: 370, y: 520, kind: "normal" });
     expect(game.upgradeCapacity("pB", false)).toBe(false);
     expect(game.upgradeCapacity("pB")).toBe(false);
     expect(game.sim.net.places.get("pB")!.capacity).toBe(1);
     game.sim.net.deleteNode("nearby");
-    const p = game.sim.net.places.get("pB")!;
-    p.x = 20;
-    expect(game.upgradeCapacity("pB")).toBe(false);
-    p.x = 280;
     expect(game.upgradeCapacity("pB")).toBe(true);
   });
 

@@ -158,7 +158,7 @@ export class Hud {
     this.hint.position.set(width / 2, height - toolbarH - 8);
     this.hint.visible = this.shownFor === undefined;
     this.hint.style.fontSize = width > 480 ? 13 : 11;
-    return { top: 64, bottom: toolbarH + HINT_SPACE };
+    return { top: width < 440 ? 80 : 64, bottom: toolbarH + HINT_SPACE };
   }
 
   /** One round button per level, left of the restart button; the current one is filled. */

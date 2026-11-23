@@ -24,16 +24,21 @@ The size of a place shows whether it holds 1, 7 or 19 tokens; the standard capac
 
 Some sources only hold a limited number of tokens, shown as dots behind them; once they are used up the source is checked off and disappears.
 
+Drag empty space to move around, and use the mouse wheel, trackpad or a two-finger pinch to zoom.
+Switch out of a placement tool before dragging.
+
 ### Building and upgrades
 A toolbar at the bottom offers tools.
 Everything works with a single tap; a tool says what a tap does where it cannot be told from what you tap.
 Tapping a tool again (or pressing Escape) goes back to firing.
 
-- **Place** and **transition** tools build new nodes inside the shaded area, which reaches a bit around the existing nodes; nodes need some room around them.
+- **Place** and **transition** tools build new nodes inside the white area, which reaches a bit around the existing nodes; nodes need some room around them.
+  The map can grow in any direction as you build.
   The transition tools show what the new transition consumes (left) and produces (right).
 - A new transition starts with **loose ends** (plugs) and cannot fire until all of them are connected: tap a plug and a place in either order.
   Some given transitions and goals have loose ends, too.
   Connections can only reach nearby places; a ring shows their maximum range while building or connecting, and reachable nodes are highlighted.
+  After selecting a place, tap a transition to connect its first available input, then its first available output; tap a specific plug to choose it instead.
   Tapping a plug switches back to the firing tool, even if another tool was active.
   With a plug selected, tap empty space in the building area to create and connect a one-token place, which can be upgraded.
 - **Remove** (red cross) takes away an arc, place or transition; sources and sinks cannot be removed.

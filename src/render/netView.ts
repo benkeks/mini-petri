@@ -435,8 +435,17 @@ export class NetView {
     if (t.kind === "sink") g.roundRect(-w / 2, -h / 2, w, h, 6).stroke({ width: 4, color: THEME.ink });
     if (shakeT < SHAKE_TIME) g.roundRect(-w / 2, -h / 2, w, h, 6).stroke({ width: 3, color: THEME.warn });
 
+    const failedAt = this.game.failed.get(t.id);
     const exhaustedAt = this.game.exhausted.get(t.id);
-    if (exhaustedAt !== undefined) this.drawResolved(n, now, exhaustedAt);
+    const countdown = this.game.countdownProgress(t.id);
+    if (countdown !== undefined && countdown > 0) {
+      const radius = Math.max(w, h) / 2 + 11;
+      if (countdown >= 1) g.circle(0, 0, radius);
+      else g.moveTo(0, -radius).arc(0, 0, radius, -Math.PI / 2, -Math.PI / 2 + countdown * Math.PI * 2);
+      g.stroke({ width: 4, color: THEME.warn, cap: "round" });
+    }
+    if (failedAt !== undefined) this.drawResolved(n, now, failedAt, true);
+    else if (exhaustedAt !== undefined) this.drawResolved(n, now, exhaustedAt);
     else if (t.kind === "sink") this.drawGoal(n, now);
   }
 
@@ -581,13 +590,18 @@ export class NetView {
     });
   }
 
-  private drawResolved(n: TransitionNode, now: number, at: number): void {
+  private drawResolved(n: TransitionNode, now: number, at: number, failed = false): void {
     const k = (now - at) / RESOLVED_LINGER;
     n.container.alpha = k < 0.6 ? 1 : Math.max(0, 1 - (k - 0.6) / 0.4);
     const s = 1 + 0.3 * Math.max(0, 1 - k * 4);
-    n.gfx.circle(0, 0, 20 * s).fill(THEME.ink);
-    n.gfx.moveTo(-9 * s, 0).lineTo(-3 * s, 7 * s).lineTo(10 * s, -7 * s)
-      .stroke({ width: 4, color: 0xffffff, cap: "round", join: "round" });
+    n.gfx.circle(0, 0, 20 * s).fill(failed ? THEME.warn : THEME.ink);
+    if (failed) {
+      n.gfx.moveTo(-7 * s, -7 * s).lineTo(7 * s, 7 * s)
+        .moveTo(-7 * s, 7 * s).lineTo(7 * s, -7 * s);
+    } else {
+      n.gfx.moveTo(-9 * s, 0).lineTo(-3 * s, 7 * s).lineTo(10 * s, -7 * s);
+    }
+    n.gfx.stroke({ width: 4, color: 0xffffff, cap: "round", join: "round" });
   }
 
   private drawInFlight(): void {

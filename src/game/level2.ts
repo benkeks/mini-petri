@@ -15,7 +15,7 @@ const mix: Kit = {
     { dir: "out", color: "green" },
   ],
 };
-const relay: Kit = {
+export const relay: Kit = {
   id: "relay",
   ports: [{ dir: "in" }, { dir: "out" }],
 };

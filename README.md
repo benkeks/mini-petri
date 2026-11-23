@@ -15,14 +15,21 @@ The current build of `main` is deployed to <https://benkeks.github.io/mini-petri
 Colored tokens appear at sources and need to reach the goals.
 Each goal shows how many tokens of which color it still wants as empty circles next to it; a circle disappears whenever a matching token arrives.
 A goal that has everything it wants is checked off and vanishes from the map.
-Clear all goals to win the level.
+In endless mode, new sources and goals appear near the network over time, tending towards the starting source, and your score is the number of matching tokens delivered.
+The starting blue source is unlimited; later red sources provide five tokens each.
+Each sink wants five tokens.
+Pan and zoom to find new arrivals, then connect them to your network.
 
 Tokens do not move on their own: **tap a transition** (the dark bars) to make it fire — taking tokens from the circles before it and sending new tokens on.
-Transitions can split, merge and recolor tokens, so pick the right ones at the right time.
+The starting relay passes a token through unchanged.
 A transition can only fire when the tokens it needs are there and its output circles have room; otherwise it is greyed out.
 The size of a place shows whether it holds 1, 7 or 19 tokens; the standard capacity is 7.
 
-Some sources only hold a limited number of tokens, shown as dots behind them; once they are used up the source is checked off and disappears.
+A sink left unfilled for three minutes starts a one-minute countdown, shown by a shrinking ring.
+Each token arriving during that countdown adds ten seconds.
+Red sources start a one-minute countdown after four minutes without emitting a token; an emission resets their timer.
+When a countdown runs out, the transition is crossed out and disappears.
+The initial blue source never expires.
 
 Drag empty space to move around, and use the mouse wheel, trackpad or a two-finger pinch to zoom.
 Switch out of a placement tool before dragging.
@@ -47,7 +54,7 @@ Tapping a tool again (or pressing Escape) goes back to firing.
 - **Auto** (clock) makes a transition fire on its own; tap it again with the same tool to make it faster.
 - **Capacity** (plus) grows a place to the next size, allowing it to hold more tokens.
 
-Levels can be picked with the numbered buttons at the top; `#2` in the URL opens level 2.
+Restarting begins a fresh run and resets the endless score.
 
 ## Petri nets behind the game
 The map *is* a colored Petri net:

@@ -123,6 +123,10 @@ export class Controller {
   sync(): void {
     const b = this.brush;
     const game = this.game;
+    if (this.selected) {
+      const t = game.sim.net.transitions.get(this.selected.tid);
+      if (!t || t.ghost || !t.open?.[this.selected.index]) this.selected = undefined;
+    }
     const selectedTransition = this.selected && this.game.sim.net.transitions.get(this.selected.tid);
     const canBuildConnected = this.selected && this.game.level.tools?.place && selectedTransition && !selectedTransition.ghost
       && selectedTransition.open?.[this.selected.index];

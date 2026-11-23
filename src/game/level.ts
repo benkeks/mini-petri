@@ -10,6 +10,8 @@ export interface Goal {
 
 export interface Level {
   name: string;
+  /** Endless games spawn new sources and goals and never complete. */
+  mode?: "endless";
   /** Initial framing size; the buildable plane extends beyond this rectangle. */
   width: number;
   height: number;

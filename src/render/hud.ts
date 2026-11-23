@@ -11,7 +11,6 @@ const HINT_SPACE = 34;
 
 export interface HudActions {
   restart(): void;
-  selectLevel(index: number): void;
   selectBrush(b: Brush): void;
 }
 
@@ -39,14 +38,13 @@ function easeOutBack(k: number): number {
   return 1 + (c + 1) * (k - 1) ** 3 + c * (k - 1) ** 2;
 }
 
-/** Screen-space overlay: time, goal progress, level picker, toolbar, hint and the level-won popup. */
+/** Screen-space overlay: time, goal progress, toolbar, hint and the level-won popup. */
 export class Hud {
   readonly root = new Container();
   private readonly title: Text;
   private readonly stats: Text;
   private readonly restart: Text;
   private readonly hint: Text;
-  private readonly levelPicker = new Container();
   private readonly toolbar = new Container();
   private tools: ToolButton[] = [];
   private toolSize = TOOL_SIZE;
@@ -57,7 +55,6 @@ export class Hud {
   private readonly heading: Text;
   private readonly detail: Text;
   private readonly againButton = new Container();
-  private readonly nextButton = new Container();
   private readonly confettiLayer = new Graphics();
   private confetti: Confetto[] = [];
   /** Real seconds since the popup appeared, or undefined while it is hidden. */
@@ -67,14 +64,13 @@ export class Hud {
 
   constructor(
     private game: Game,
-    private levelIndex: number,
-    private readonly levelCount: number,
     private readonly controller: Controller,
     private readonly actions: HudActions,
   ) {
     const onRestart = () => actions.restart();
     const style = { fontFamily: THEME.font, fill: THEME.ink };
     this.title = new Text({ text: game.level.name, style: { ...style, fontSize: 18, fontWeight: "bold" } });
+    this.title.visible = game.level.mode !== "endless";
     this.stats = new Text({ text: "", style: { ...style, fontSize: 15 } });
     this.restart = new Text({ text: "↻ restart", style: { ...style, fontSize: 16 } });
     this.restart.anchor.set(1, 0);
@@ -105,10 +101,9 @@ export class Hud {
       c.on("pointertap", onTap);
     };
     button(this.againButton, "↻ again", onRestart);
-    button(this.nextButton, "next →", () => actions.selectLevel(this.levelIndex + 1));
     this.card.roundRect(-170, -90, 340, 180, 18).fill(THEME.background).stroke({ width: 3, color: THEME.ink });
     this.card.eventMode = "static";
-    this.popup.addChild(this.card, this.againButton, this.nextButton, this.heading, this.detail);
+    this.popup.addChild(this.card, this.againButton, this.heading, this.detail);
 
     this.root.addChild(
       this.title,
@@ -118,17 +113,16 @@ export class Hud {
       this.shade,
       this.confettiLayer,
       this.popup,
-      this.levelPicker,
       this.restart,
     );
     this.buildToolbar();
     this.hidePopup();
   }
 
-  setGame(game: Game, levelIndex: number): void {
+  setGame(game: Game): void {
     this.game = game;
-    this.levelIndex = levelIndex;
     this.title.text = game.level.name;
+    this.title.visible = game.level.mode !== "endless";
     this.buildToolbar();
     this.hidePopup();
   }
@@ -138,9 +132,8 @@ export class Hud {
     this.width = width;
     this.height = height;
     this.title.position.set(16, 10);
-    this.stats.position.set(16, 36);
+    this.stats.position.set(16, this.title.visible ? 36 : 12);
     this.restart.position.set(width - 16, 12);
-    this.layoutLevelPicker();
     this.popup.position.set(width / 2, height / 2);
     this.shade.clear().rect(0, 0, width, height).fill(THEME.ink);
 
@@ -158,34 +151,7 @@ export class Hud {
     this.hint.position.set(width / 2, height - toolbarH - 8);
     this.hint.visible = this.shownFor === undefined;
     this.hint.style.fontSize = width > 480 ? 13 : 11;
-    return { top: width < 440 ? 80 : 64, bottom: toolbarH + HINT_SPACE };
-  }
-
-  /** One round button per level, left of the restart button; the current one is filled. */
-  private layoutLevelPicker(): void {
-    for (const c of this.levelPicker.removeChildren()) c.destroy({ children: true });
-    const r = 13;
-    // Beside the restart button if there is room next to the title, else in the row below.
-    const narrow = this.width < 440;
-    const right = narrow ? this.width - 16 : this.width - 16 - this.restart.width - 18;
-    const y = narrow ? 50 : 12 + r - 2;
-    for (let i = 0; i < this.levelCount; i++) {
-      const c = new Container();
-      const current = i === this.levelIndex;
-      c.addChild(new Graphics().circle(0, 0, r).fill(current ? THEME.ink : THEME.background).stroke({ width: 2, color: THEME.ink }));
-      const t = new Text({
-        text: String(i + 1),
-        style: { fontFamily: THEME.font, fontSize: 14, fontWeight: "bold", fill: current ? 0xffffff : THEME.ink },
-      });
-      t.anchor.set(0.5);
-      c.addChild(t);
-      c.position.set(right - (this.levelCount - 1 - i) * (2 * r + 8) - r, y);
-      c.eventMode = "static";
-      c.cursor = "pointer";
-      c.hitArea = new Rectangle(-r - 4, -r - 4, 2 * r + 8, 2 * r + 8);
-      c.on("pointertap", () => this.actions.selectLevel(i));
-      this.levelPicker.addChild(c);
-    }
+    return { top: this.title.visible ? 64 : 48, bottom: toolbarH + HINT_SPACE };
   }
 
   private buildToolbar(): void {
@@ -219,8 +185,10 @@ export class Hud {
     }
     const hint = this.controller.hint();
     if (this.hint.text !== hint) this.hint.text = hint;
-    const sinks = new Set(g.level.goals.map((goal) => goal.sinkId)).size;
-    this.stats.text = `goals ${g.resolved.size}/${sinks}   time ${g.sim.time.toFixed(0)}s`;
+    const progress = g.level.mode === "endless"
+      ? `score ${g.score}`
+      : `goals ${g.resolved.size}/${new Set(g.level.goals.map((goal) => goal.sinkId)).size}`;
+    this.stats.text = `${progress}   time ${g.sim.time.toFixed(0)}s`;
     if (g.complete && this.shownFor === undefined) this.showPopup();
     if (this.shownFor !== undefined) this.animatePopup(dt);
   }
@@ -238,10 +206,7 @@ export class Hud {
     this.shade.visible = this.popup.visible = true;
     this.hint.visible = false;
     this.detail.text = `all goals met in ${this.game.completedAt!.toFixed(0)}s`;
-    const hasNext = this.levelIndex + 1 < this.levelCount;
-    this.nextButton.visible = hasNext;
-    this.againButton.position.set(hasNext ? -78 : 0, 52);
-    this.nextButton.position.set(78, 52);
+    this.againButton.position.set(0, 52);
     const scale = Math.min(1, (this.width - 24) / 340);
     this.confetti = Array.from({ length: CONFETTI }, (_, i) => {
       const a = (i / CONFETTI) * Math.PI * 2 + Math.random() * 0.3;

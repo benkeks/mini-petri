@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Net, type NetSpec } from "../src/core/net";
 import { Simulation } from "../src/core/simulation";
 import { Game } from "../src/game/game";
+import { endless } from "../src/game/endless";
 import { level2 } from "../src/game/level2";
 import { brushesOf, Controller } from "../src/input/controller";
 import type { Overlay, Pick } from "../src/render/netView";
@@ -74,6 +75,21 @@ describe("controller", () => {
     };
     return { game, view, controller, tap, denied };
   }
+
+  it("clears a selected loose end when its goal times out", () => {
+    const game = new Game(endless, () => 0);
+    game.sim.net.transitions.get("starterSource")!.autoInterval = undefined;
+    game.step(60.1);
+    const sink = [...game.sim.net.transitions.values()].find((t) => t.kind === "sink" && t.open?.length)!;
+    const { controller, view, tap } = setup(game);
+    tap({ kind: "port", tid: sink.id, index: 0 });
+    expect(controller.selected?.tid).toBe(sink.id);
+    game.step(240);
+    expect(game.failed.has(sink.id)).toBe(true);
+    controller.sync();
+    expect(controller.selected).toBeUndefined();
+    expect(view.overlay.build).toBeUndefined();
+  });
 
   it("connects either input or output ports after selecting a place", () => {
     const { game, view, controller, tap } = setup();

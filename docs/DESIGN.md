@@ -67,7 +67,27 @@ The [README](../README.md) covers gameplay.
 - Consumed colors are reserved at firing time; once a sink's goals are fully reserved it is disabled, so it never over-consumes.
   Wrong-colored tokens taken through an any-arc are wasted.
 - A sink whose goals are met is marked resolved, shown with a check mark, and removed from the net (with its arcs) after `RESOLVED_LINGER` (1.2 s).
-  The level is complete when all goal sinks are resolved; `Game.step` and `playerFire` then do nothing (the game is frozen behind the win popup).
+  Tutorial levels complete when all goal sinks are resolved; `Game.step` and `playerFire` then do nothing (the game is frozen behind the win popup).
+
+## Endless mode
+- The app currently opens only endless mode, regardless of the URL hash.
+  The level definitions and completion rules remain available for future tutorials or quizzes.
+- Each game owns its goal list and score, so spawned goals and deliveries do not leak across restarts.
+  The score increases by matching goal tokens on arrival, and resolving every current goal does not end the game.
+- An unlimited blue source, two capacity-19 places, a manually fired color-preserving relay and a five-token blue sink form the initial network.
+  Endless mode offers the relay kit but no green or yellow transition kits.
+- Private progression gains one unit per elapsed second and ten units per token emitted by a source.
+  Every 60 units creates a goal; the first five epochs produce blue goals.
+  The sixth produces a red goal and source, and subsequent goals are randomly blue or red; each red goal has a paired five-token red source.
+  New nodes have open colored ports and appear near live nodes, with normal placement clearance and a random bias towards the starting source.
+  An outer-edge fallback allows growth when central areas are crowded.
+  A red pair has room for a place connecting both endpoints.
+- A sink's countdown starts after 180 seconds and expires 60 seconds later; every token arriving during the countdown extends its deadline by ten seconds.
+  A spawned source's countdown starts after 240 seconds without an emission and expires 60 seconds later; emission resets the entire timer.
+  The initial blue source has no countdown.
+  Timed-out transitions are disabled, crossed out, and removed after the same linger as completed goals; source tokens already in flight finish traveling.
+  Arrivals are processed before timeouts and automatic firing, and late sink arrivals cannot avert expiry or score.
+  Building and upgrades remain unlimited.
 
 ## Presentation
 - Mini Metro-like palette (`src/render/style.ts`); portrait screens (height > 1.1 × width) transpose node coordinates, so the flow runs top to bottom and transition bars lie horizontally.
@@ -78,6 +98,7 @@ The [README](../README.md) covers gameplay.
   Tokens hop (lift, grow, shadow) between their slot inside a place and the arc.
 - Place size shows its capacity: one central token, a ring of six, and a second ring of twelve.
 - Sources with a `supply` show one dot per remaining firing upstream of them; exhausted sources show a check mark and fade away.
+- Active expiry countdowns show a shrinking red ring; timed-out sources and sinks show a cross before disappearing.
 - Open ports dangle as short stubs with a plug, against the flow for inputs and along it for outputs; plugs pulse softly, the selected one strongly, with a line to the pointer.
 - Ghosts are drawn at 30% opacity.
 - Build brushes show the union of build ranges in white against a grey background, fading in and out over 250 ms, and preview the node under the pointer, red if it cannot go there.

@@ -66,6 +66,7 @@ export class Simulation {
   private readonly fireListeners: ((e: FireEvent) => void)[] = [];
   private readonly completeListeners: ((e: FireEvent) => void)[] = [];
   private readonly arriveListeners: ((t: InFlightToken, placeId: string) => void)[] = [];
+  private readonly beforeAutoListeners: (() => void)[] = [];
 
   constructor(
     readonly net: Net,
@@ -86,6 +87,11 @@ export class Simulation {
 
   onArrive(fn: (t: InFlightToken, placeId: string) => void): void {
     this.arriveListeners.push(fn);
+  }
+
+  /** Called after arrivals, before automatic transitions fire for this step. */
+  onBeforeAutoFire(fn: () => void): void {
+    this.beforeAutoListeners.push(fn);
   }
 
   /**
@@ -169,6 +175,7 @@ export class Simulation {
   step(dt: number): void {
     this.time += dt;
     this.advanceTokens(dt);
+    for (const fn of this.beforeAutoListeners) fn();
     this.runAutoFire(dt);
     this.collectGhosts();
   }

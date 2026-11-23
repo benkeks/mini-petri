@@ -1,6 +1,6 @@
 import { Application, Graphics } from "pixi.js";
+import { endless } from "./game/endless";
 import { Game } from "./game/game";
-import { levels } from "./game/levels";
 import { Camera } from "./input/camera";
 import { Controller } from "./input/controller";
 import { Navigation } from "./input/navigation";
@@ -10,12 +10,6 @@ import { NetView } from "./render/netView";
 import { THEME } from "./render/style";
 
 const STEP = 1 / 60;
-
-/** Level from the URL hash (`#2` is the second level), defaulting to the first. */
-function levelFromHash(): number {
-  const n = Number.parseInt(location.hash.slice(1), 10);
-  return Number.isInteger(n) && n >= 1 && n <= levels.length ? n - 1 : 0;
-}
 
 async function main(): Promise<void> {
   const app = new Application();
@@ -28,20 +22,15 @@ async function main(): Promise<void> {
   });
   document.getElementById("app")!.appendChild(app.canvas);
 
-  let levelIndex = levelFromHash();
-  let game = new Game(levels[levelIndex]);
+  let game = new Game(endless);
   const mask = new Graphics();
   const camera = new Camera();
   const navigation = new Navigation(camera);
   let boundsVersion = -1;
   let view = createView();
   const controller = new Controller(game, view);
-  const hud = new Hud(game, levelIndex, levels.length, controller, {
-    restart: () => load(levelIndex),
-    selectLevel: (i) => {
-      if (i === levelIndex) load(i);
-      else location.hash = `#${i + 1}`;
-    },
+  const hud = new Hud(game, controller, {
+    restart: () => load(),
     selectBrush: (b) => controller.setBrush(b),
   });
   app.stage.addChild(view.root, mask, hud.root);
@@ -60,11 +49,10 @@ async function main(): Promise<void> {
     controller.attach(game, view);
   }
 
-  function load(index: number): void {
-    levelIndex = index;
-    game = new Game(levels[index]);
+  function load(): void {
+    game = new Game(endless);
     rebuildView();
-    hud.setGame(game, index);
+    hud.setGame(game);
     boundsVersion = -1;
     layout(true);
   }
@@ -99,7 +87,6 @@ async function main(): Promise<void> {
   }
 
   app.renderer.on("resize", () => layout());
-  window.addEventListener("hashchange", () => load(levelFromHash()));
   layout(true);
 
   const screenPoint = (event: MouseEvent): Pt => {
@@ -196,7 +183,7 @@ async function main(): Promise<void> {
   });
 
   window.addEventListener("keydown", (e) => {
-    if (e.key === "r") load(levelIndex);
+    if (e.key === "r") load();
     if (e.key === "Escape") controller.cancel();
   });
 }

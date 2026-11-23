@@ -34,12 +34,12 @@ export const level2: Level = {
     { sinkId: "sinkG", color: "green", count: 5 },
   ],
   ramp: { every: Infinity, factor: 1, min: 1 },
-  tools: { place: true, kits: [split, mix, relay], remove: true, auto: true, faster: true, capacity: true },
+  tools: { place: true, kits: [split, mix, relay], remove: true, auto: true, capacity: true },
   net: {
     places: [
-      { id: "pR", x: 280, y: 180, capacity: 4, marking: ["red"] },
+      { id: "pR", x: 280, y: 180, marking: ["red"] },
       { id: "pY", x: 700, y: 180, marking: [] },
-      { id: "pB", x: 280, y: 520, capacity: 4, marking: ["blue"] },
+      { id: "pB", x: 280, y: 520, capacity: 1, marking: ["blue"] },
     ],
     transitions: [
       { id: "srcR", x: 100, y: 180, kind: "source", autoInterval: 3, supply: 6 },

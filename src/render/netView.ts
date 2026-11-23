@@ -1,13 +1,15 @@
 import { Container, Graphics, Text } from "pixi.js";
 import type { Color } from "../core/multiset";
 import { arcCount, type Arc, type Port, type Transition } from "../core/net";
-import { BUILD_RANGE, RESOLVED_LINGER, type NodeKind } from "../game/game";
+import { BUILD_RANGE, CONNECTION_RANGE, RESOLVED_LINGER, type NodeKind } from "../game/game";
 import type { Game } from "../game/game";
+import { placeRadius } from "../game/placeSize";
 import {
   arcRoute,
   distanceToPolyline,
   lerp,
   offsetPolyline,
+  outsidePlace,
   pointAt,
   polylineLength,
   subpath,
@@ -16,13 +18,11 @@ import {
   type BarSize,
   type Pt,
 } from "./geometry";
-import { PLACE_RADIUS, THEME, TOKEN_COLORS, TOKEN_RADIUS, TRANSITION_H, TRANSITION_W } from "./style";
+import { THEME, TOKEN_COLORS, TOKEN_RADIUS, TRANSITION_H, TRANSITION_W } from "./style";
 
 const FLASH_TIME = 0.35;
 const SHAKE_TIME = 0.3;
 const MAX_ARROWHEADS = 5;
-/** Tokens hop between their slot inside a place and this distance from its center along the arc. */
-const HOP_REACH = PLACE_RADIUS + 16;
 const HOP_HEIGHT = 18;
 /** Length of the dangling stub of an open port, beyond the transition's outline. */
 const STUB_LENGTH = 46;
@@ -44,13 +44,17 @@ export interface Overlay {
   /** Pointer position in world coordinates, if known. */
   pointer?: Pt;
   /** Shows the build range and a preview of the node to build under the pointer. */
-  build?: { kind: NodeKind; ports?: Port[] };
+  build?: { kind: NodeKind; ports?: Port[]; capacity?: number; connection?: { tid: string; index: number } };
   /** Picks the active brush can act on; they are highlighted. */
   target?: (pick: Pick) => boolean;
+  /** Nodes and ports reachable from a node preview at the given world position. */
+  previewTarget?: (pick: Pick, point: Pt) => boolean;
   /** The active brush removes things: the target under the pointer is tinted red. */
   removing?: boolean;
   /** The open port waiting to be connected to a place. */
   selected?: { tid: string; index: number };
+  /** The place waiting to be connected to an open port. */
+  selectedPlace?: string;
 }
 
 interface PortStub {
@@ -166,7 +170,7 @@ export class NetView {
       Infinity,
     );
     if (t) return { kind: "transition", id: t.id };
-    const place = closest(live(net.places), (q) => Math.hypot(q.x - p.x, q.y - p.y), PLACE_RADIUS + slop / 2);
+    const place = closest(live(net.places), (q) => Math.hypot(q.x - p.x, q.y - p.y) - placeRadius(q.capacity), slop / 2);
     if (place) return { kind: "place", id: place.id };
     const arc = closest(live(net.arcs), (a) => distanceToPolyline(p, this.visibleRoute(a)), 5 + slop);
     if (arc) return { kind: "arc", id: arc.id };
@@ -234,7 +238,7 @@ export class NetView {
   /** The drawn part of an arc: from the place's outline to the transition's outline, in arc direction. */
   private visibleRoute(arc: Arc): Pt[] {
     const route = this.routes.get(arc.id)!;
-    const pts = subpath(route.pts, PLACE_RADIUS);
+    const pts = outsidePlace(route.pts, placeRadius(this.game.sim.net.places.get(route.placeId)!.capacity));
     return route.fromPlace ? pts : pts.reverse();
   }
 
@@ -315,7 +319,8 @@ export class NetView {
       if (p.ghost) continue;
       const txt = new Text({ text: "", style: { fontFamily: THEME.font, fontSize: 13, fill: THEME.ink, fontWeight: "bold" } });
       txt.anchor.set(0.5);
-      txt.position.set(p.x + PLACE_RADIUS * 0.8, p.y - PLACE_RADIUS * 0.8);
+      const radius = placeRadius(p.capacity);
+      txt.position.set(p.x + radius * 0.8, p.y - radius * 0.8);
       this.labelLayer.addChild(txt);
       this.overflowTexts.set(p.id, txt);
     }
@@ -327,34 +332,16 @@ export class NetView {
     const sim = this.game.sim;
     const now = sim.time;
     for (const p of sim.net.places.values()) {
+      const radius = placeRadius(p.capacity);
       if (p.ghost) {
-        this.ghostPlaceLayer.circle(p.x, p.y, PLACE_RADIUS).fill(THEME.placeFill).stroke({ width: 5, color: THEME.ink });
+        this.ghostPlaceLayer.circle(p.x, p.y, radius).fill(THEME.placeFill).stroke({ width: 5, color: THEME.ink });
         continue;
       }
       const shakeT = this.game.complete ? Infinity : now - (this.placeDeniedAt.get(p.id) ?? -Infinity);
       const x = p.x + (shakeT < SHAKE_TIME ? Math.sin(shakeT * 60) * 5 * (1 - shakeT / SHAKE_TIME) : 0);
-      g.circle(x, p.y, PLACE_RADIUS)
+      g.circle(x, p.y, radius)
         .fill(THEME.placeFill)
         .stroke({ width: 5, color: shakeT < SHAKE_TIME ? THEME.warn : THEME.ink });
-
-      // Capacity ring, one segment per token: settled tokens in ink, tokens committed to this place in grey.
-      if (p.capacity !== undefined && Number.isFinite(p.capacity)) {
-        const r = PLACE_RADIUS + 8;
-        const settled = p.marking.length;
-        const occupied = sim.occupancy(p.id);
-        const full = occupied >= p.capacity;
-        const gap = Math.min(0.12, (Math.PI * 2) / p.capacity / 3);
-        for (let i = 0; i < p.capacity; i++) {
-          const a0 = -Math.PI / 2 + (i / p.capacity) * Math.PI * 2 + gap / 2;
-          const a1 = -Math.PI / 2 + ((i + 1) / p.capacity) * Math.PI * 2 - gap / 2;
-          let color: number = THEME.muted;
-          let alpha = 0.3;
-          if (i < settled) [color, alpha] = [full ? THEME.warn : THEME.ink, 1];
-          else if (i < occupied) [color, alpha] = [full ? THEME.warn : THEME.muted, full ? 0.5 : 1];
-          g.moveTo(x + Math.cos(a0) * r, p.y + Math.sin(a0) * r);
-          g.arc(x, p.y, r, a0, a1).stroke({ width: 4, color, alpha });
-        }
-      }
 
       const colors = p.marking;
       colors.slice(0, TOKEN_SLOTS.length).forEach((c, i) => {
@@ -420,7 +407,9 @@ export class NetView {
     if (t.kind === "sink") g.roundRect(-w / 2, -h / 2, w, h, 6).stroke({ width: 4, color: THEME.ink });
     if (shakeT < SHAKE_TIME) g.roundRect(-w / 2, -h / 2, w, h, 6).stroke({ width: 3, color: THEME.warn });
 
-    if (t.kind === "sink") this.drawGoal(n, now);
+    const exhaustedAt = this.game.exhausted.get(t.id);
+    if (exhaustedAt !== undefined) this.drawResolved(n, now, exhaustedAt);
+    else if (t.kind === "sink") this.drawGoal(n, now);
   }
 
   /** One dot per remaining firing, stacked upstream of a source. */
@@ -448,6 +437,14 @@ export class NetView {
     const pulse = 0.5 + 0.5 * Math.sin(now * 6);
     const { w, h } = this.bar;
     const hover = o.pointer && !this.game.complete ? this.pick(o.pointer) : undefined;
+    const selectedTransition = o.selected && net.transitions.get(o.selected.tid);
+    const selectedPlace = o.selectedPlace && net.places.get(o.selectedPlace);
+    const connectionOrigin = selectedTransition && !selectedTransition.ghost && selectedTransition.open?.[o.selected!.index]
+      ? selectedTransition
+      : selectedPlace && !selectedPlace.ghost ? selectedPlace : undefined;
+    if (connectionOrigin && !this.game.complete) {
+      g.circle(connectionOrigin.x, connectionOrigin.y, CONNECTION_RANGE).stroke({ width: 3, color: THEME.arc, alpha: 0.7 });
+    }
 
     if (o.build) {
       for (const n of net.liveNodes()) range.circle(n.x, n.y, BUILD_RANGE).fill(THEME.ink);
@@ -455,8 +452,12 @@ export class NetView {
       this.rangeMask.clear().rect(0, 0, width, height).fill(0xffffff);
       if (o.pointer && hover?.kind === "empty") {
         const { x, y } = o.pointer;
-        const color = this.game.placementIssue(o.build.kind, x, y) ? THEME.warn : THEME.ink;
-        if (o.build.kind === "place") g.circle(x, y, PLACE_RADIUS).fill({ color: THEME.placeFill, alpha: 0.6 }).stroke({ width: 5, color, alpha: 0.6 });
+        if (!connectionOrigin) g.circle(x, y, CONNECTION_RANGE).stroke({ width: 3, color: THEME.arc, alpha: 0.7 });
+        const connection = o.build.connection;
+        const invalid = this.game.placementIssue(o.build.kind, x, y)
+          || (connection && !this.game.canConnectAt(connection.tid, connection.index, x, y));
+        const color = invalid ? THEME.warn : THEME.ink;
+        if (o.build.kind === "place") g.circle(x, y, placeRadius(o.build.capacity)).fill({ color: THEME.placeFill, alpha: 0.6 }).stroke({ width: 5, color, alpha: 0.6 });
         else {
           for (const dir of [-1, 1]) {
             if (!o.build.ports?.some((port) => (port.dir === "in") === (dir < 0))) continue;
@@ -477,7 +478,7 @@ export class NetView {
         g.roundRect(t.x - w / 2 - 9, t.y - h / 2 - 9, w + 18, h + 18, 12).stroke({ width, color, alpha });
       } else if (pick.kind === "place") {
         const p = net.places.get(pick.id)!;
-        g.circle(p.x, p.y, PLACE_RADIUS + 15).stroke({ width, color, alpha });
+        g.circle(p.x, p.y, placeRadius(p.capacity) + 10).stroke({ width, color, alpha });
       } else if (pick.kind === "arc") {
         const pts = this.visibleRoute(net.arcs.get(pick.id)!);
         g.moveTo(pts[0].x, pts[0].y);
@@ -489,14 +490,28 @@ export class NetView {
       }
     };
 
-    if (o.target) {
+    if (o.target || (o.previewTarget && o.pointer && hover?.kind === "empty")) {
       const candidates: Pick[] = [
         ...net.liveNodes().map((n): Pick => (net.places.has(n.id) ? { kind: "place", id: n.id } : { kind: "transition", id: n.id })),
+        ...this.stubs.map((s): Pick => ({ kind: "port", tid: s.tid, index: s.index })),
       ];
-      for (const c of candidates) if (o.target(c)) ring(c, THEME.enabledGlow, 0.12 + 0.18 * pulse, 3);
+      for (const c of candidates) {
+        if (o.target?.(c) || (o.previewTarget && o.pointer && hover?.kind === "empty" && o.previewTarget(c, o.pointer))) {
+          ring(c, THEME.enabledGlow, 0.2 + 0.35 * pulse, 3 + pulse);
+        }
+      }
     }
     if (hover && hover.kind !== "empty" && (o.target?.(hover) ?? false)) {
-      ring(hover, o.removing ? THEME.warn : THEME.ink, 0.8, 4);
+      ring(hover, o.removing ? THEME.warn : THEME.ink, 0.5 + 0.35 * pulse, 4 + pulse);
+    }
+
+    if (selectedPlace && !selectedPlace.ghost) {
+      g.circle(selectedPlace.x, selectedPlace.y, placeRadius(selectedPlace.capacity) + 10 + 3 * pulse)
+        .stroke({ width: 3, color: THEME.ink, alpha: 0.65 + 0.25 * pulse });
+      if (o.pointer) {
+        g.moveTo(selectedPlace.x, selectedPlace.y).lineTo(o.pointer.x, o.pointer.y)
+          .stroke({ width: 3, color: THEME.ink, alpha: 0.35, cap: "round" });
+      }
     }
 
     // Open ports invite a tap; the selected one is waiting for a place.
@@ -522,11 +537,7 @@ export class NetView {
     const { w, h } = this.bar;
     const resolvedAt = this.game.resolved.get(n.t.id);
     if (resolvedAt !== undefined) {
-      const k = (now - resolvedAt) / RESOLVED_LINGER;
-      n.container.alpha = k < 0.6 ? 1 : Math.max(0, 1 - (k - 0.6) / 0.4);
-      const s = 1 + 0.3 * Math.max(0, 1 - k * 4);
-      g.circle(0, 0, 20 * s).fill(THEME.ink);
-      g.moveTo(-9 * s, 0).lineTo(-3 * s, 7 * s).lineTo(10 * s, -7 * s).stroke({ width: 4, color: 0xffffff, cap: "round", join: "round" });
+      this.drawResolved(n, now, resolvedAt);
       return;
     }
     const wanted: Color[] = [];
@@ -546,6 +557,15 @@ export class NetView {
     });
   }
 
+  private drawResolved(n: TransitionNode, now: number, at: number): void {
+    const k = (now - at) / RESOLVED_LINGER;
+    n.container.alpha = k < 0.6 ? 1 : Math.max(0, 1 - (k - 0.6) / 0.4);
+    const s = 1 + 0.3 * Math.max(0, 1 - k * 4);
+    n.gfx.circle(0, 0, 20 * s).fill(THEME.ink);
+    n.gfx.moveTo(-9 * s, 0).lineTo(-3 * s, 7 * s).lineTo(10 * s, -7 * s)
+      .stroke({ width: 4, color: 0xffffff, cap: "round", join: "round" });
+  }
+
   private drawInFlight(): void {
     const g = this.tokenLayer.clear();
     const net = this.game.sim.net;
@@ -557,7 +577,7 @@ export class NetView {
       // Tokens moved along the same arc by one firing travel side by side.
       const off = (tok.slot - (tok.batch - 1) / 2) * gap * (route.fromPlace ? 1 : -1);
       const routeLen = polylineLength(route.pts);
-      const lane = offsetPolyline(subpath(route.pts, Math.min(HOP_REACH, routeLen / 2)), off);
+      const lane = offsetPolyline(subpath(route.pts, Math.min(placeRadius(place.capacity) + 16, routeLen / 2)), off);
       // The token leaves from (or lands in) the slot it vacates (or will fill) inside the place.
       const slot = TOKEN_SLOTS[place.marking.length + tok.slot] ?? { x: 0, y: 0 };
       const home: Pt = { x: place.x + slot.x, y: place.y + slot.y };

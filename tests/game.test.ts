@@ -39,6 +39,48 @@ describe("goal sinks", () => {
     expect(game.goalsFor("sink")[0].delivered).toBe(1);
   });
 
+  describe("exhausted sources", () => {
+    function sourceLevel(supply: number): Level {
+      const lvl = level(true);
+      lvl.net.transitions[0].autoInterval = undefined;
+      lvl.net.places.push({ id: "destination", x: 1000, y: 0, marking: [] });
+      lvl.net.transitions.push({ id: "source", x: 0, y: 0, kind: "source", supply });
+      lvl.net.arcs.push({ id: "sourceArc", from: "source", to: "destination", color: "red" });
+      return lvl;
+    }
+
+    it("fades after exhaustion without becoming a goal or dropping its last token", () => {
+      const game = new Game(sourceLevel(1));
+      expect(game.sim.fire("source")).toBe(true);
+      expect(game.exhausted.get("source")).toBe(0);
+      game.step(RESOLVED_LINGER - 0.1);
+      expect(game.sim.net.transitions.get("source")?.ghost).toBeFalsy();
+      expect(game.resolved.size).toBe(0);
+      expect(game.complete).toBe(false);
+
+      game.step(0.2);
+      expect(game.sim.net.transitions.get("source")?.ghost).toBe(true);
+      expect(game.sim.inFlight).toHaveLength(1);
+      expect(game.sim.incoming("destination")).toEqual({ red: 1 });
+      game.step(4);
+      expect(game.sim.net.places.get("destination")?.marking).toEqual(["red"]);
+      expect(game.sim.net.transitions.has("source")).toBe(false);
+      expect(game.sim.net.arcs.has("sourceArc")).toBe(false);
+      expect(game.complete).toBe(false);
+    });
+
+    it("removes a source that starts exhausted", () => {
+      const game = new Game(sourceLevel(0));
+      expect(game.exhausted.get("source")).toBe(0);
+      expect(game.sim.fire("source")).toBe(false);
+      game.step(RESOLVED_LINGER + 0.1);
+      game.step(0.1);
+      expect(game.sim.net.transitions.has("source")).toBe(false);
+      expect(game.sim.net.arcs.has("sourceArc")).toBe(false);
+      expect(game.complete).toBe(false);
+    });
+  });
+
   it("stop consuming once enough matching tokens are on their way, then leave the map", () => {
     const game = new Game(level(true));
     run(game, 2);

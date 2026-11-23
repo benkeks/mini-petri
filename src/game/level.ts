@@ -32,12 +32,10 @@ export interface Tools {
   place?: boolean;
   /** Build new transitions. */
   kits?: Kit[];
-  /** Remove arcs, places and transitions (goal sinks excepted). */
+  /** Remove arcs, places and normal transitions. */
   remove?: boolean;
-  /** Make a manual transition fire automatically. */
+  /** Automate a transition or make an automatic transition faster. */
   auto?: boolean;
-  /** Shorten the interval of an automatic transition. */
-  faster?: boolean;
   /** Raise the capacity of a place. */
   capacity?: boolean;
 }

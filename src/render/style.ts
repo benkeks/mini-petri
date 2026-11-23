@@ -18,7 +18,6 @@ export const THEME = {
   font: "Helvetica Neue, Arial, sans-serif",
 };
 
-export const PLACE_RADIUS = 34;
 export const TOKEN_RADIUS = 6;
 export const TRANSITION_W = 22;
 export const TRANSITION_H = 64;

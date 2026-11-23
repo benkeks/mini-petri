@@ -19,9 +19,10 @@ Clear all goals to win the level.
 
 Tokens do not move on their own: **tap a transition** (the dark bars) to make it fire — taking tokens from the circles before it and sending new tokens on.
 Transitions can split, merge and recolor tokens, so pick the right ones at the right time.
-A transition can only fire when the tokens it needs are there and its output circles have room (at most 7 tokens each); otherwise it is greyed out.
+A transition can only fire when the tokens it needs are there and its output circles have room; otherwise it is greyed out.
+The size of a place shows whether it holds 1, 7 or 19 tokens; the standard capacity is 7.
 
-Some sources only hold a limited number of tokens, shown as dots behind them; once they are used up the source turns grey.
+Some sources only hold a limited number of tokens, shown as dots behind them; once they are used up the source is checked off and disappears.
 
 ### Building and upgrades
 A toolbar at the bottom offers tools.
@@ -30,13 +31,16 @@ Tapping a tool again (or pressing Escape) goes back to firing.
 
 - **Place** and **transition** tools build new nodes inside the shaded area, which reaches a bit around the existing nodes; nodes need some room around them.
   The transition tools show what the new transition consumes (left) and produces (right).
-- A new transition starts with **loose ends** (plugs) and cannot fire until all of them are connected: tap a plug, then a place.
+- A new transition starts with **loose ends** (plugs) and cannot fire until all of them are connected: tap a plug and a place in either order.
   Some given transitions and goals have loose ends, too.
-- **Remove** (red cross) takes away an arc, place or transition; goals cannot be removed.
+  Connections can only reach nearby places; a ring shows their maximum range while building or connecting, and reachable nodes are highlighted.
+  Tapping a plug switches back to the firing tool, even if another tool was active.
+  With a plug selected, tap empty space in the building area to create and connect a one-token place, which can be upgraded.
+- **Remove** (red cross) takes away an arc, place or transition; sources and sinks cannot be removed.
   Removed things fade out but finish what they are doing; a removed place loses its tokens.
   Cutting an arc leaves a loose end that can be connected elsewhere.
-- **Auto** (clock) makes a transition fire on its own; **faster** (double chevron) shortens its interval.
-- **Capacity** (plus) lets a place hold more tokens.
+- **Auto** (clock) makes a transition fire on its own; tap it again with the same tool to make it faster.
+- **Capacity** (plus) grows a place to the next size, allowing it to hold more tokens.
 
 Levels can be picked with the numbered buttons at the top; `#2` in the URL opens level 2.
 

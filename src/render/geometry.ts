@@ -1,5 +1,5 @@
 import type { Net } from "../core/net";
-import { PLACE_RADIUS } from "./style";
+import { placeRadius, TOKEN_SPACING } from "../game/placeSize";
 
 export interface Pt {
   x: number;
@@ -14,7 +14,8 @@ export interface BarSize {
 
 /** Distance from a node's center to its outline along unit direction (dx, dy). */
 function boundaryDistance(net: Net, bar: BarSize, id: string, dx: number, dy: number): number {
-  if (net.places.has(id)) return PLACE_RADIUS;
+  const place = net.places.get(id);
+  if (place) return placeRadius(place.capacity);
   const tx = Math.abs(dx) > 1e-9 ? bar.w / 2 / Math.abs(dx) : Infinity;
   const ty = Math.abs(dy) > 1e-9 ? bar.h / 2 / Math.abs(dy) : Infinity;
   return Math.min(tx, ty);
@@ -111,6 +112,25 @@ export function subpath(pts: Pt[], d: number): Pt[] {
   return pts.slice();
 }
 
+/** Clips a route beginning at a place's center to its circular outline. */
+export function outsidePlace(pts: Pt[], radius: number): Pt[] {
+  const center = pts[0];
+  for (let i = 1; i < pts.length; i++) {
+    const b = pts[i];
+    if (Math.hypot(b.x - center.x, b.y - center.y) < radius) continue;
+    const a = pts[i - 1];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const x = a.x - center.x;
+    const y = a.y - center.y;
+    const length2 = dx * dx + dy * dy;
+    const dot = x * dx + y * dy;
+    const t = (-dot + Math.sqrt(dot * dot - length2 * (x * x + y * y - radius * radius))) / length2;
+    return [lerp(a, b, t), ...pts.slice(i)];
+  }
+  return pts.slice(-1);
+}
+
 /** Polyline shifted sideways by `off` (to the left of the direction of travel), with mitered bends. */
 export function offsetPolyline(pts: Pt[], off: number): Pt[] {
   if (off === 0 || pts.length < 2) return pts;
@@ -145,16 +165,16 @@ export function lerp(a: Pt, b: Pt, t: number): Pt {
   return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
 }
 
-/** Slots for token dots inside a place: center, inner ring of 6, outer ring of 10. */
+/** Slots for token dots inside a place: center, inner ring of 6, outer ring of 12. */
 export const TOKEN_SLOTS: Pt[] = (() => {
   const slots: Pt[] = [{ x: 0, y: 0 }];
   for (let i = 0; i < 6; i++) {
     const a = (i / 6) * Math.PI * 2 - Math.PI / 2;
-    slots.push({ x: Math.cos(a) * 14, y: Math.sin(a) * 14 });
+    slots.push({ x: Math.cos(a) * TOKEN_SPACING, y: Math.sin(a) * TOKEN_SPACING });
   }
-  for (let i = 0; i < 10; i++) {
-    const a = (i / 10) * Math.PI * 2 - Math.PI / 2;
-    slots.push({ x: Math.cos(a) * 25, y: Math.sin(a) * 25 });
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * Math.PI * 2 - Math.PI / 2;
+    slots.push({ x: Math.cos(a) * TOKEN_SPACING * 2, y: Math.sin(a) * TOKEN_SPACING * 2 });
   }
   return slots;
 })();

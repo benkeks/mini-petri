@@ -308,12 +308,9 @@ function drawIcon(g: Graphics, b: Brush): void {
       for (const s of [1, -1]) g.moveTo(-10, -10 * s).lineTo(10, 10 * s).stroke({ width: 4, color: THEME.warn, cap: "round" });
       break;
     case "auto":
-      g.circle(0, 0, 14).stroke({ width: 3, color: ink });
-      g.moveTo(0, 0).lineTo(0, -9).stroke({ width: 3, color: ink, cap: "round" });
-      g.moveTo(0, 0).lineTo(6, 4).stroke({ width: 3, color: ink, cap: "round" });
-      break;
-    case "faster":
-      for (const x of [-7, 4]) g.moveTo(x - 4, -10).lineTo(x + 5, 0).lineTo(x - 4, 10).stroke({ width: 3.5, color: ink, cap: "round", join: "round" });
+      g.circle(-4, 0, 11).stroke({ width: 3, color: ink });
+      g.moveTo(-4, 0).lineTo(-4, -7).moveTo(-4, 0).lineTo(1, 3).stroke({ width: 2.5, color: ink, cap: "round" });
+      g.moveTo(10, -5).lineTo(15, 0).lineTo(10, 5).stroke({ width: 3, color: ink, cap: "round", join: "round" });
       break;
     case "capacity":
       g.circle(0, 0, 14).stroke({ width: 3, color: ink });

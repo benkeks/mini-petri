@@ -201,6 +201,24 @@ describe("survival mode", () => {
     expect(game.buyLife({ x: 0, y: 0 })).toBe(false);
   });
 
+  it("signals insufficient coins only for an attempted life purchase below the cap", () => {
+    const game = survivalGame();
+    let insufficient = 0;
+    game.onInsufficientCoins(() => { insufficient++; });
+    expect(game.buyLife({ x: 0, y: 0 })).toBe(false);
+    expect(insufficient).toBe(0);
+    game.sim.step(240);
+    expect(game.buyLife({ x: 0, y: 0 }, false)).toBe(false);
+    expect(insufficient).toBe(0);
+    expect(game.buyLife({ x: 0, y: 0 })).toBe(false);
+    expect(insufficient).toBe(1);
+    expect(game.coins).toBe(40);
+    expect(game.lives).toBe(9);
+    game.paused = true;
+    expect(game.buyLife({ x: 0, y: 0 })).toBe(false);
+    expect(insufficient).toBe(1);
+  });
+
   it("does not lose lives in ordinary endless mode or from source timeouts", () => {
     const game = new Game(endless, () => 0.5, { survival: true });
     const losses: { x: number; y: number }[] = [];

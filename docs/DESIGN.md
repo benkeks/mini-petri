@@ -36,16 +36,29 @@ The [README](../README.md) covers gameplay.
 
 ## Building and upgrades
 - `Level.tools` declares which actions a level offers; places are built from selected loose ends rather than a separate toolbar tool.
-- The buildable plane is unbounded; new nodes must be within `BUILD_RANGE` (220) of a live node and keep `CLEARANCE` (16) between node footprints (places reserve 48 for their largest size, transitions 36).
-- New connections must be at most `BUILD_RANGE + 80` (300) units between transition and place centers, including when building a place from a plug.
+- The buildable plane is unbounded; new nodes must be within a live node's build range and keep `CLEARANCE` (16) between node footprints (places reserve 48 for their largest size, transitions 36).
+  Transitions and capacity-1 places have the base `BUILD_RANGE` of 220.
+  Each place capacity level adds one fifth of that base: capacity 7 reaches 264, and capacity 19 reaches 308, including pre-upgraded starting places.
+  Capacity upgrades immediately update placement rules, the range overlay and camera bounds.
+- Arc reach is determined by the connected place's capacity level: 300, 360 or 420 units between centers, increasing by one fifth of the original 300-unit range per level.
+  Wiring works identically when selecting either endpoint; newly built one-token places retain the 300-unit limit.
+  Only selected places display and frame their upgraded reach.
+  Selected transitions and new transition previews show the primary 300-unit ring, but upgraded places beyond it remain highlighted and connectible.
   Existing level arcs are unchanged.
 - Built transitions come from kits (`{ id, ports }`) and start with all ports open; built ids are fresh (`p1`, `t1`, `c1`, …).
 - Upgrades: auto (manual `normal` transition gets a 4 s interval; later upgrades multiply the interval by 0.6, down to 0.6 s), capacity (next of 1, 7 and 19).
   A place cannot be upgraded if the larger footprint would overlap another node.
+  In endless and survival runs, the capacity toolbar button and capacity rewards unlock at completed epoch 10; fixed levels retain their declared tools.
 - Each run starts with 40 coins. Paid upgrades share a price starting at 5; each successful paid upgrade increases the next price by 1 for the rest of the run.
   Free upgrades, failed checks and removal do not change that price. Exhausting a finite source awards 5, and removing a place awards one per settled token.
   Removing a node refunds half of its total purchased upgrade costs, rounded to the nearest integer; existing upgrades and swallowed incoming tokens do not count.
   Ordinary node construction and connections are free; limited transition kits charge their displayed price when successfully built.
+  An otherwise valid paid action that fails for insufficient coins briefly shakes the coin counter and its circle, without shaking the heart; feasibility and hover checks remain silent.
+  A special kit can also convert an existing normal transition for the same stock and coin cost, preserving its identity, location, firing interval, timer and upgrade history.
+  Conversion requires no more live incoming or outgoing arcs than the kit has ports in that direction; missing ports become open connectors.
+  Existing arc endpoints are retained, matching colors are preferred, and weights/colors are changed to the kit's rules.
+  Already committed firings finish with their original concrete tokens; only subsequent firings use the new functionality.
+  Sources, sinks, incompatible connections and unavailable kits cannot be converted.
 - When a resolved sink disappears, two distinct randomly selected powerups appear at its position for 120 seconds.
   Collecting one discards the other. The available rewards and their unlocks are listed in [Epoch progression](#epoch-progression).
   Free upgrades stack on the existing upgrade tool and are consumed before paid uses; limited kits stack in separate toolbar buttons.
@@ -57,18 +70,23 @@ The [README](../README.md) covers gameplay.
 - `Controller` dispatches taps by brush: fire (default), kit, remove, auto, capacity.
   Plugs can be picked with any brush, switching to the firing brush; the next tap on a place connects them.
   Tapping empty space with a plug selected builds and connects a capacity-1 place, subject to the place tool and ordinary placement rules.
+  Tapping a connector while a plug is selected creates a nearby capacity-1 place connecting both ports, or just that port when tapped again.
+  Eligible transition bodies are highlighted too; tapping one chooses its first connectible input, then output, for the new place.
+  Placement checks both endpoints' reach and all build and clearance constraints before changing the net; a blocked action gives denial feedback and preserves the selection.
   In firing mode, tapping a place first and then a plug connects them in the other order.
   Tapping a transition instead connects the selected place to its first eligible input port, then its first eligible output port; an explicitly tapped plug still takes precedence.
   Tapping empty space with a place selected builds an available one-to-one relay with its input connected, then selects its output.
+  This ordinary relay has no redundant toolbar button; other transition kits retain theirs.
   After building a transition its first plug is selected, and after each connection the next one, so wiring is a sequence of taps on places.
   Build brushes revert to firing after a successful build; removal and upgrade brushes stay active.
+  Special-transition brushes highlight compatible normal transitions and convert them when tapped, selecting any new open ports for wiring.
 - Denied taps shake the node, or show a red ripple on empty space.
 - Background drags pan unless a placement brush is active; a tap is dispatched only after release without a drag or pinch.
   Wheel and two-pointer pinch gestures zoom around the pointer or pinch midpoint.
 - The world renders across the screen; compact HUD backplates protect text and controls, and those areas do not pass taps through to the net.
   Mouse hover highlights actionable targets and changes the cursor; empty draggable space uses a grab cursor.
-- The camera center stays within the live nodes' bounding box expanded by `BUILD_RANGE`.
-  Zoom is capped so a full connection-range circle fits inside the HUD-free viewport, and selecting a loose end or place pans enough to show that circle.
+- The camera center stays within the live nodes' bounds expanded by each node's build range.
+  Selecting a loose end or place pans enough to show its connection-range circle where it fits, and centers axes where the circle is too large for the HUD-free viewport at the current zoom.
 
 ## Continuous-time firing semantics
 - Firing is atomic: input tokens are removed and output tokens are committed to their target places at the moment of firing.
@@ -114,6 +132,8 @@ The [README](../README.md) covers gameplay.
   Pause, endless and restart form a horizontal row in landscape and a vertical stack in portrait, always against the right screen edge.
   The group is top-aligned with the score when space permits, or sits below the score metadata to avoid overlap.
   Subtle rounded boxes share the controls' clickable bounds.
+  Likely smartphones (mobile user agent, or a small coarse-pointer touch screen) also show a fullscreen toggle before pause.
+  Its label follows native fullscreen state; unavailable or denied fullscreen requests show a temporary HUD notice.
   Both confirmations pause the game while open, and cancellation restores its prior pause state.
 - Coins appear inside an orange coin circle next to the survival heart and life count.
   Portrait screens center the counters below the toolbar; landscape screens bottom-align counters and tools in adjacent areas.
@@ -126,6 +146,7 @@ The [README](../README.md) covers gameplay.
   Resolved or expired sinks lose their warnings.
   Warning rows wrap and reserve HUD space without overlapping the toolbar.
   The heart toolbar button buys a life immediately for 50 coins initially, increasing by 10 per successful purchase.
+  It appears after the first life loss and remains present even after recovering to the life cap, until survival ends.
   Lives are capped at 10; unaffordable purchases and purchases at the cap do nothing and do not increase the price.
 - From completed epoch 50, survival reward selections have a 2% chance of containing one heart, doubled to 4% at 3 lives or fewer.
   Hearts are offered only below the life cap and add one life immediately when collected.
@@ -157,12 +178,14 @@ Red counts are adjusted when needed so cumulative red supply never falls below c
 ### Powerup unlocks
 
 These are available after the stated number of epochs have completed. A kit's price is paid when it is built, not when it is collected.
+Below 50 coins, each unlocked coin reward has three times the selection weight of other non-heart rewards, for both choices without duplicates.
+At 50 coins or more, non-heart rewards retain equal weights; survival heart probabilities are unchanged.
 The table is checked against the powerup definitions by the tests.
 
 | Completed epochs | ID | Reward | Kit cost |
 | --- | --- | --- | --- |
 | 0 | `coins5` | 5 coins | — |
-| 0 | `capacity` | Free place upgrade | — |
+| 10 | `capacity` | Free place upgrade | — |
 | 0 | `auto` | Free time upgrade | — |
 | 15 | `blueMultiply` | Blue 2→3 | 7 |
 | 20 | `coins10` | 10 coins | — |
@@ -174,17 +197,23 @@ The table is checked against the powerup definitions by the tests.
 | 60 | `redToGreen` | Red→green | 5 |
 | 90 | `redBlueToYellow` | Red+blue→yellow | 10 |
 | 120 | `redTwoBlueToYellow` | Red+2 blue→2 yellow | 20 |
+| 150 | `coins20` | 20 coins | — |
 
 When changing progression, update this overview and the boundary tests in [game.test.ts](../tests/game.test.ts) and [powerups.test.ts](../tests/powerups.test.ts).
 
 ## Presentation
-- Transitions with connected arcs all predominantly above or below them use horizontal bars; mixed connections retain the screen orientation.
+- Transitions with connected arcs all predominantly above or below them use horizontal bars; arcs all predominantly left/right use vertical bars, including in portrait mode.
+  Mixed or unconnected transitions retain the screen's default orientation.
   Arc routing, connectors, upgrade marks, hover bounds and picking use that same per-node orientation.
   Source/sink balances use the clear vertical side opposite their connections.
 - Endless and survival runs begin with source-to-sink guidance until the first effective click (including selecting a tool or connector), or two completed epochs.
   Ineffective or denied clicks do not dismiss it.
   Default firing/wiring help disappears from epoch 11, and all tool help disappears from epoch 101.
   Pause status remains available, and hidden help releases its HUD space.
+  At screen aspect ratios of at least 2:1, visible help sits to the right of the toolbar instead of above it.
+  Standard landscape toolbar rows remain centered on the screen, aligned with their centered help text; symmetric side space keeps resource counters clear.
+  These ultra-wide layouts use screen width for the zoom-in limit, allowing larger nodes on phones in landscape.
+  When a connection circle cannot fit vertically at that zoom, its selected node stays centered on that axis rather than panning to an impossible fit.
 - Finite source supply dots and sink goal circles share five-per-line grouping, spacing and distance from the node, mirrored upstream/downstream and transposed in portrait.
   Source dots remain smaller and filled; sink circles remain larger and outlined.
   Open connectors and balances prefer their normal flow side but flip to the opposite side if it has fewer live attached arcs.
@@ -197,7 +226,7 @@ When changing progression, update this overview and the boundary tests in [game.
   Hearts use a darker red and removal crosses a browner red, distinct from red tokens.
 - The survival-over card avoids the fatal sink's current screen position and its camera-scroll destination when space allows.
   It retains a clear position while the camera moves, accounts for its appearance overshoot and gentle bob, and falls back to the center if the screen is too constrained.
-- Mini Metro-like palette (`src/render/style.ts`); portrait screens (height > 1.1 × width) transpose node coordinates, so the flow runs top to bottom and transition bars lie horizontally.
+- Mini Metro-like palette (`src/render/style.ts`); portrait screens (height > 1.1 × width) transpose node coordinates, so the flow runs top to bottom and transition bars default to horizontal.
 - Arcs are octilinear: a diagonal leg at the place and a straight leg (≥ 44 units where possible) along the flow axis into the transition; steep arcs get an extra leg perpendicular to the flow at the place.
   Several arcs on the same side of a transition attach at spread-out points on the bar.
 - Arcs are drawn in the color of the tokens they move (ink for "any"), with one chevron per token moved (up to 5, then a "×n" label).
@@ -206,7 +235,8 @@ When changing progression, update this overview and the boundary tests in [game.
 - Place size shows its capacity: one central token, a ring of six, and a second ring of twelve.
 - Sources with a `supply` show one dot per remaining firing upstream of them; exhausted sources show a check mark and fade away.
 - Spawned sources and sinks fade and scale in, and shrink and fade out when resolved or timed out. Reward choices similarly animate in and out without delaying collection or expiry.
-- Active expiry countdowns show a shrinking red ring; timed-out sources and sinks show a cross before disappearing.
+- Active expiry countdowns show a shrinking ring: black for sources, which cost no lives, and red for sinks.
+  Timed-out sources and sinks show a cross before disappearing.
 - Open ports dangle as short stubs with a plug, against the flow for inputs and along it for outputs; plugs pulse softly, the selected one strongly, with a line to the pointer.
 - Ghosts are drawn at 30% opacity.
 - Build brushes show the union of build ranges in white against a grey background, with blocked clearance areas around all nodes greyed out for the selected node kind. The overlay fades in and out over 250 ms and previews the node under the pointer, red if it cannot go there.
@@ -225,5 +255,5 @@ When changing progression, update this overview and the boundary tests in [game.
 - Reward choices use compact toolbar icons without text on pulsing grey backgrounds and remain screen-sized when zooming, with a shrinking expiry bar; numbers show coin amounts and kit prices.
   A collected choice is highlighted and flies toward its toolbar button or the coin balance; the unchosen item fades away.
   Camera bounds include uncollected rewards.
-  The toolbar places upgrades after the ordinary relay and before other transition kits, with removal last and a little extra space before it.
+  The toolbar places unlocked upgrades after firing and before transition kits, with removal last and a little extra space before it.
   It wraps into rows as needed and shows stock in green (free) or black (limited paid) badges, and prices in orange badges.

@@ -269,13 +269,15 @@ describe("controller", () => {
     }
   });
 
-  it("keeps the firing tool when a loose-end selection is cancelled", () => {
-    const { controller, tap } = setup();
+  it("builds a nearby place when tapping the selected connector and keeps the firing tool", () => {
+    const { game, controller, tap } = setup();
     controller.setBrush({ kind: "remove" });
     tap({ kind: "port", tid: "sinkG", index: 0 });
     tap({ kind: "port", tid: "sinkG", index: 0 });
     expect(controller.selected).toBeUndefined();
     expect(controller.brush.kind).toBe("fire");
+    const id = game.sim.net.inputs("sinkG")[0].from;
+    expect(game.sim.net.places.get(id)?.capacity).toBe(1);
   });
 
   it.each([
@@ -385,7 +387,153 @@ describe("controller", () => {
     expect(kinds).not.toContain("place");
     expect(kinds.at(-1)).toBe("remove");
     const names = brushesOf(new Game(level2)).map((brush) => brush.kind === "kit" ? brush.kit.id : brush.kind);
-    expect(names).toEqual(["fire", "relay", "auto", "capacity", "split", "mix", "remove"]);
+    expect(names).toEqual(["fire", "auto", "capacity", "split", "mix", "remove"]);
+  });
+
+  it("reveals the life tool after the first loss and retains it after recovering to ten lives", () => {
+    const definition = structuredClone(endless);
+    definition.net.transitions.find((t) => t.id === "starterSource")!.autoInterval = undefined;
+    const game = new Game(definition, () => 0.5, { survival: true });
+    const visible = () => brushesOf(game).some((brush) => brush.kind === "life");
+    expect(visible()).toBe(false);
+    game.sim.step(239.9);
+    expect(visible()).toBe(false);
+    game.sim.step(0.1);
+    expect(visible()).toBe(true);
+    game.sim.net.addPlace({ id: "funds", x: -1000, y: 0, capacity: 19, marking: Array(10).fill("blue") });
+    expect(game.remove("funds")).toBe(true);
+    expect(game.buyLife({ x: 0, y: 0 })).toBe(true);
+    expect(game.lives).toBe(10);
+    expect(visible()).toBe(true);
+    game.continueEndless();
+    expect(visible()).toBe(false);
+    expect(brushesOf(new Game(definition, () => 0.5, { survival: true })).some((brush) => brush.kind === "life")).toBe(false);
+  });
+
+  it("signals money-constrained upgrade taps, but not invalid targets or feasibility checks", () => {
+    const { game, controller, tap } = setup();
+    for (let i = 0; i < 5; i++) {
+      game.sim.net.addTransition({ id: `spend${i}`, x: -2000 - i * 100, y: 0, kind: "normal" });
+      expect(game.upgradeAuto(`spend${i}`)).toBe(true);
+    }
+    game.sim.net.addPlace({ id: "small", x: 4000, y: 4000, capacity: 1, marking: [] });
+    let insufficient = 0;
+    game.onInsufficientCoins(() => { insufficient++; });
+    expect(game.upgradeAuto("tSplit", false)).toBe(false);
+    expect(game.upgradeCapacity("small", false)).toBe(false);
+    controller.setBrush({ kind: "auto" });
+    tap({ kind: "transition", id: "srcB" });
+    expect(insufficient).toBe(0);
+    tap({ kind: "transition", id: "tSplit" });
+    expect(insufficient).toBe(1);
+    controller.setBrush({ kind: "capacity" });
+    tap({ kind: "place", id: "small" });
+    expect(insufficient).toBe(2);
+    expect(game.coins).toBe(5);
+    expect(game.sim.net.places.get("small")!.capacity).toBe(1);
+    expect(game.sim.net.transitions.get("tSplit")!.autoInterval).toBeUndefined();
+  });
+
+  function connectorGame(distance = 220, portrait = false) {
+    const game = new Game({
+      ...level2, goals: [], net: {
+        places: [], arcs: [],
+        transitions: [
+          { id: "left", x: 1000, y: 1000, kind: "source", supply: 1, open: [{ dir: "out", color: "blue" }] },
+          { id: "right", x: 1000 + distance, y: 1000, kind: "sink", open: [{ dir: "in", color: "blue" }] },
+        ],
+      },
+    });
+    game.setPortrait(portrait);
+    return game;
+  }
+
+  it.each([false, true].flatMap((portrait) => [false, true].map((reverse) => ({ portrait, reverse }))))(
+    "bridges connectors with a location, portrait=$portrait, reverse=$reverse", ({ portrait, reverse }) => {
+      const { game, view, controller, tap, denied } = setup(connectorGame(220, portrait));
+      const first = { kind: "port", tid: reverse ? "right" : "left", index: 0 } as const;
+      const second = { kind: "port", tid: reverse ? "left" : "right", index: 0 } as const;
+      tap(first);
+      controller.sync();
+      expect(view.overlay.target?.(second)).toBe(true);
+      expect(view.overlay.target?.({ kind: "transition", id: second.tid })).toBe(true);
+      expect(controller.interactive(second)).toBe(true);
+      expect(game.sim.net.places.size).toBe(0);
+      expect(game.sim.net.arcs.size).toBe(0);
+      tap(second);
+      expect(denied).toHaveLength(0);
+      const place = [...game.sim.net.places.values()][0];
+      expect(place.capacity).toBe(1);
+      expect(game.sim.net.outputs("left")[0]).toMatchObject({ to: place.id, color: "blue", count: 1 });
+      expect(game.sim.net.inputs("right")[0]).toMatchObject({ from: place.id, color: "blue", count: 1 });
+      expect(controller.selected).toBeUndefined();
+      expect(game.sim.fire("left")).toBe(true);
+      expect(game.sim.fire("right")).toBe(false);
+      game.sim.step(2);
+      expect(game.sim.fire("right")).toBe(true);
+    });
+
+  it("finds a narrow nearby gap between clearance circles instead of missing it with angular sampling", () => {
+    const game = connectorGame(300);
+    const target = game.sim.net.transitions.get("right")!;
+    for (let i = 0; i < 10; i++) {
+      const x = target.x + 190.3 * Math.cos(i * Math.PI / 5);
+      const y = target.y + 190.3 * Math.sin(i * Math.PI / 5);
+      expect(game.placementIssue("transition", x, y)).toBeUndefined();
+      game.sim.net.addTransition({ id: `block${i}`, x, y, kind: "normal" });
+    }
+    expect(game.connectPorts({ tid: "left", index: 0 }, { tid: "right", index: 0 }, true, { x: target.x - 57, y: target.y })).toBe(true);
+    const place = [...game.sim.net.places.values()][0];
+    expect(Math.hypot(place.x - target.x, place.y - target.y)).toBeLessThan(101);
+    for (const node of game.sim.net.transitions.values()) {
+      expect(Math.hypot(place.x - node.x, place.y - node.y)).toBeGreaterThanOrEqual(100);
+    }
+  });
+
+  it.each([false, true])("denies impossible connector bridges without partial creation, crowded=%s", (crowded) => {
+    const { game, controller, view, tap, denied } = setup(connectorGame(crowded ? 220 : 700));
+    if (crowded) for (let x = 700; x <= 1600; x += 80) for (let y = 700; y <= 1300; y += 80) {
+      game.sim.net.addTransition({ id: `block${x}-${y}`, x, y, kind: "normal" });
+    }
+    tap({ kind: "port", tid: "left", index: 0 });
+    controller.sync();
+    const target = { kind: "port", tid: "right", index: 0 } as const;
+    expect(view.overlay.target?.(target)).toBe(false);
+    expect(controller.interactive(target)).toBe(false);
+    tap(target);
+    expect(denied).toHaveLength(1);
+    expect(game.sim.net.places.size).toBe(0);
+    expect(game.sim.net.arcs.size).toBe(0);
+    expect(controller.selected).toEqual({ tid: "left", index: 0 });
+    if (crowded) {
+      for (const id of [...game.sim.net.transitions.keys()]) if (id.startsWith("block")) game.sim.net.deleteNode(id);
+      expect(view.overlay.target?.(target)).toBe(true);
+    }
+  });
+
+  it("preserves port identities when bridging two connectors on the same transition", () => {
+    const { game, controller, tap } = setup(connectorGame());
+    const transition = game.sim.net.transitions.get("left")!;
+    transition.open = [{ dir: "out", color: "blue" }, { dir: "in", color: "blue" }, { dir: "in", color: "red", count: 2 }];
+    tap({ kind: "port", tid: "left", index: 0 });
+    tap({ kind: "port", tid: "left", index: 2 });
+    const place = [...game.sim.net.places.values()][0];
+    expect(game.sim.net.outputs("left")[0]).toMatchObject({ to: place.id, color: "blue" });
+    expect(game.sim.net.inputs("left")[0]).toMatchObject({ from: place.id, color: "red", count: 2 });
+    expect(transition.open).toEqual([{ dir: "in", color: "blue" }]);
+    expect(controller.selected).toEqual({ tid: "left", index: 0 });
+  });
+
+  it("highlights and connects an eligible transition body during connector wiring", () => {
+    const { game, controller, view, tap } = setup(connectorGame());
+    tap({ kind: "port", tid: "left", index: 0 });
+    controller.sync();
+    const target = { kind: "transition", id: "right" } as const;
+    expect(view.overlay.target?.(target)).toBe(true);
+    expect(controller.interactive(target)).toBe(true);
+    tap(target);
+    expect(game.sim.net.inputs("right")[0].from).toBe(game.sim.net.outputs("left")[0].to);
+    expect(controller.selected).toBeUndefined();
   });
 
   it("highlights live places in range when previewing a transition", () => {
@@ -493,6 +641,25 @@ describe("ghosts", () => {
 });
 
 describe("building", () => {
+  it.each([false, true])("increases location build range by 44 per capacity upgrade, portrait=%s", (portrait) => {
+    const game = new Game(level2);
+    game.setPortrait(portrait);
+    game.sim.net.addPlace({ id: "range", x: 1600, y: 1000, capacity: 1, marking: [] });
+    for (const range of [220, 264, 308]) {
+      for (const kind of ["place", "transition"] as const) {
+        expect(game.placementIssue(kind, 1600 + range, 1000)).toBeUndefined();
+        expect(game.placementIssue(kind, 1600 + range + 0.001, 1000)).toBe("far");
+      }
+      if (range < 308) expect(game.upgradeCapacity("range")).toBe(true);
+    }
+    expect(game.upgradeCapacity("range")).toBe(false);
+    expect(game.buildPlace(1908, 1000, 1)).toBeDefined();
+    game.sim.net.addTransition({ id: "fixedRange", x: 2400, y: 1000, kind: "normal" });
+    expect(game.upgradeAuto("fixedRange")).toBe(true);
+    expect(game.placementIssue("place", 2620, 1000)).toBeUndefined();
+    expect(game.placementIssue("place", 2620.001, 1000)).toBe("far");
+  });
+
   it("allows nodes at the reduced clearance boundary", () => {
     const game = new Game(level2);
     expect(game.placementIssue("transition", 100, 267.999)).toBe("crowded");
@@ -546,14 +713,42 @@ describe("building", () => {
 
   it("allows connections up to 300 units between centers, but no farther", () => {
     const game = new Game(level2);
-    game.sim.net.addPlace({ id: "boundary", x: 700, y: 520, marking: [] });
-    game.sim.net.addPlace({ id: "tooFar", x: 699.999, y: 520, marking: [] });
+    game.sim.net.addPlace({ id: "boundary", x: 700, y: 520, capacity: 1, marking: [] });
+    game.sim.net.addPlace({ id: "tooFar", x: 699.999, y: 520, capacity: 1, marking: [] });
     expect(game.connect("sinkG", 0, "tooFar", false)).toBe(false);
     expect(game.connect("sinkG", 0, "tooFar")).toBe(false);
     expect(game.connect("sinkG", 0, "boundary", false)).toBe(true);
     expect(game.sim.net.inputs("sinkG")).toHaveLength(0);
     expect(game.connect("sinkG", 0, "boundary")).toBe(true);
   });
+
+  it.each([false, true].flatMap((portrait) => (["in", "out"] as const).map((dir) => ({ portrait, dir }))))(
+    "uses upgraded place arc reach for $dir arcs, portrait=$portrait", ({ portrait, dir }) => {
+      const game = new Game(level2);
+      game.setPortrait(portrait);
+      game.sim.net.addPlace({ id: "reach", x: 1600, y: 1000, capacity: 1, marking: [] });
+      const place = game.sim.net.places.get("reach")!;
+      const axis = portrait ? "y" : "x";
+      for (const radius of [300, 360, 420]) {
+        const id = `reach${radius}`;
+        game.sim.net.addTransition({
+          id, x: place.x + (portrait ? 0 : radius), y: place.y + (portrait ? radius : 0),
+          kind: "normal", open: [{ dir, color: "blue" }],
+        });
+        const transition = game.sim.net.transitions.get(id)!;
+        expect(game.connect(id, 0, place.id, false)).toBe(true);
+        transition[axis] += 0.001;
+        expect(game.connect(id, 0, place.id, false)).toBe(false);
+        transition[axis] -= 0.001;
+        expect(game.connect(id, 0, place.id)).toBe(true);
+        if (dir === "in") expect(game.sim.net.inputs(id)[0].from).toBe(place.id);
+        else expect(game.sim.net.outputs(id)[0].to).toBe(place.id);
+        if (radius < 420) expect(game.upgradeCapacity(place.id)).toBe(true);
+      }
+      const sink = game.sim.net.transitions.get("sinkG")!;
+      expect(game.canConnectAt(sink.id, 0, sink.x, sink.y + 300)).toBe(true);
+      expect(game.canConnectAt(sink.id, 0, sink.x, sink.y + 300.001)).toBe(false);
+    });
 
   it("builds a place and a transition and wires them into the net", () => {
     const game = new Game(level2);

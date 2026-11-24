@@ -89,6 +89,24 @@ describe("camera", () => {
     expect(c.scale).toBeCloseTo(0.64);
   });
 
+  it("allows width-based zoom on ultra-wide phones and keeps selected connections visible", () => {
+    const c = camera();
+    const wide = { x: 0, y: 68, width: 844, height: 180 };
+    const anchor = { x: 422, y: 158 };
+    c.layout(wide, world, true, true);
+    c.zoom(100, anchor);
+    expect(c.scale).toBeCloseTo(844 / (2 * CONNECTION_RANGE));
+    expect(c.scale).toBeGreaterThan(4 * wide.height / (2 * CONNECTION_RANGE));
+    c.showConnection({ x: 1100, y: 700 });
+    expect(1100 * c.scale + c.x).toBeCloseTo(anchor.x);
+    expect(700 * c.scale + c.y).toBeCloseTo(anchor.y);
+    const position = { x: c.x, y: c.y };
+    c.showConnection({ x: 1100, y: 700 });
+    expect({ x: c.x, y: c.y }).toEqual(position);
+    c.layout(viewport, world, false);
+    expect(c.scale).toBeCloseTo(viewport.height / (2 * CONNECTION_RANGE));
+  });
+
   it("clamps the camera center to the current live-node bounds plus build range", () => {
     const c = camera();
     const center = { x: 400, y: 364 };
@@ -112,6 +130,17 @@ describe("camera", () => {
     expect(c.toWorld({ x: 400, y: 364 }).x).toBeCloseTo(-500 - BUILD_RANGE);
   });
 
+  it("includes expanded place build ranges in the reachable camera bounds", () => {
+    const c = camera();
+    c.setNodes([{ x: 100, y: 100, range: 308 }, { x: 1100, y: 700, range: 264 }], world);
+    c.pan(100000, 100000);
+    expect(c.toWorld({ x: 400, y: 364 }).x).toBeCloseTo(-208);
+    expect(c.toWorld({ x: 400, y: 364 }).y).toBeCloseTo(-208);
+    c.pan(-100000, -100000);
+    expect(c.toWorld({ x: 400, y: 364 }).x).toBeCloseTo(1364);
+    expect(c.toWorld({ x: 400, y: 364 }).y).toBeCloseTo(964);
+  });
+
   it("pans enough to fit a connection circle without moving an already visible circle", () => {
     const c = camera();
     c.zoom(100, { x: 400, y: 364 });
@@ -125,6 +154,16 @@ describe("camera", () => {
     const position = { x: c.x, y: c.y };
     c.showConnection({ x: 1100, y: 700 });
     expect({ x: c.x, y: c.y }).toEqual(position);
+  });
+
+  it("frames an upgraded connection ring without panning to an impossible fit or changing zoom", () => {
+    const c = camera();
+    c.zoom(100, { x: 400, y: 364 });
+    const scale = c.scale;
+    c.showConnection({ x: 1100, y: 700 }, 420);
+    expect(1100 * c.scale + c.x).toBeCloseTo(400);
+    expect(700 * c.scale + c.y).toBeCloseTo(364);
+    expect(c.scale).toBe(scale);
   });
 
   it("preserves the world center on resize and clamps zoom to the new viewport", () => {

@@ -1,10 +1,10 @@
 import { Application } from "pixi.js";
 import { endless } from "./game/endless";
-import { Game } from "./game/game";
+import { buildRange, Game } from "./game/game";
 import { Camera } from "./input/camera";
 import { Controller } from "./input/controller";
 import { Navigation } from "./input/navigation";
-import type { Pt } from "./render/geometry";
+import { isUltraWide, type Pt } from "./render/geometry";
 import { Hud } from "./render/hud";
 import { NetView } from "./render/netView";
 import { THEME } from "./render/style";
@@ -30,7 +30,11 @@ async function main(): Promise<void> {
   let boundsOfferVersion = -1;
   let view = createView();
   const controller = new Controller(game, view);
+  const smartphone = /iPhone|iPod|Android.*Mobile/i.test(navigator.userAgent)
+    || (navigator.maxTouchPoints > 0 && window.matchMedia("(pointer: coarse)").matches
+      && Math.min(window.screen.width, window.screen.height) <= 600);
   const hud = new Hud(game, controller, {
+    toggleFullscreen: smartphone ? () => { void toggleFullscreen(); } : undefined,
     restart: () => load(),
     requestRestart: () => requestRestart(),
     togglePause: () => {
@@ -47,8 +51,21 @@ async function main(): Promise<void> {
       camera.focus(sink, 0.3);
     },
   });
+  const updateFullscreen = () => hud.setFullscreenActive(Boolean(document.fullscreenElement));
+  document.addEventListener("fullscreenchange", updateFullscreen);
+  updateFullscreen();
   app.stage.addChild(view.root, hud.root);
   listenForGameOver();
+
+  async function toggleFullscreen(): Promise<void> {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await document.documentElement.requestFullscreen({ navigationUI: "hide" });
+    } catch (error) {
+      console.error("Unable to toggle fullscreen", error);
+      hud.showNotice("Fullscreen is unavailable. Try your browser's fullscreen mode.");
+    }
+  }
 
   function listenForGameOver(): void {
     const observed = game;
@@ -95,7 +112,8 @@ async function main(): Promise<void> {
     if (boundsVersion === game.sim.net.version && boundsOfferVersion === game.offerVersion) return;
     boundsVersion = game.sim.net.version;
     boundsOfferVersion = game.offerVersion;
-    camera.setNodes([...game.sim.net.liveNodes(), ...game.offers.values()], game.size);
+    camera.setNodes([...game.sim.net.liveNodes().map((node) => ({ ...node, range: buildRange(node) })),
+      ...game.offers.values()], game.size);
   }
 
   function applyCamera(): void {
@@ -116,7 +134,7 @@ async function main(): Promise<void> {
     const { top, bottom } = hud.layout(w, h);
     const viewport = { x: 0, y: top, width: Math.max(1, w), height: Math.max(1, h - top - bottom) };
     updateBounds();
-    camera.layout(viewport, game.size, reset);
+    camera.layout(viewport, game.size, reset, isUltraWide(w, h));
     applyCamera();
   }
 
@@ -181,10 +199,10 @@ async function main(): Promise<void> {
       const place = controller.selectedPlace;
       if (selected && (selected.tid !== oldTransition || oldPlace)) {
         const transition = game.sim.net.transitions.get(selected.tid);
-        if (transition && !transition.ghost && transition.open?.[selected.index]) camera.showConnection(transition);
+        if (transition && !transition.ghost && transition.open?.[selected.index]) camera.showConnection(transition, game.connectionRange(transition));
       } else if (place && (place !== oldPlace || oldTransition)) {
         const node = game.sim.net.places.get(place);
-        if (node && !node.ghost) camera.showConnection(node);
+        if (node && !node.ghost) camera.showConnection(node, game.connectionRange(node));
       }
       updatePointer(tap);
     }

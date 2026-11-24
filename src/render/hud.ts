@@ -1,9 +1,9 @@
 import { Container, Graphics, Rectangle, Text } from "pixi.js";
 import { COLORS } from "../core/multiset";
-import type { CoinEvent, Game } from "../game/game";
+import { MAX_LIVES, type CoinEvent, type Game } from "../game/game";
 import type { Powerup } from "../game/powerups";
 import { brushesOf, sameBrush, type Brush, type Controller } from "../input/controller";
-import type { Pt } from "./geometry";
+import { isUltraWide, type Pt } from "./geometry";
 import { THEME, TOKEN_COLORS } from "./style";
 import { drawHeart, drawToolIcon } from "./toolIcon";
 
@@ -11,6 +11,7 @@ const TOOL_SIZE = 48;
 const TOOL_GAP = 8;
 const REMOVE_EXTRA_GAP = 8;
 const COIN_ROW = 48;
+const COIN_SHAKE_TIME = 0.35;
 const WARNING_START = 124;
 const WARNING_GAP = 24;
 const WARNING_ROW = 44;
@@ -18,6 +19,7 @@ const WARNING_ROW = 44;
 const HINT_SPACE = 34;
 
 export interface HudActions {
+  toggleFullscreen?(): void;
   restart(): void;
   requestRestart(): void;
   togglePause(): void;
@@ -142,10 +144,13 @@ export class Hud {
   private readonly pause: Text;
   private readonly restart: Text;
   private readonly skip: Text;
+  private readonly fullscreen?: Text;
   private readonly hint: Text;
   private readonly toolbar = new Container();
   private readonly coinLayer = new Graphics();
   private coinFlights: CoinFlight[] = [];
+  private coinBaseX = 0;
+  private coinShakeAge?: number;
   private readonly heartLayer = new Graphics();
   private heartFlights: { position: Pt; age: number }[] = [];
   private readonly deathFlash = new Graphics();
@@ -180,6 +185,7 @@ export class Hud {
   private navigationState = "";
   private navigationWidth?: number;
   private navigationHeight = 0;
+  private notice?: { text: string; remaining: number };
 
   constructor(
     private game: Game,
@@ -199,7 +205,13 @@ export class Hud {
     this.restart = new Text({ text: "RESTART", style: { ...style, fontSize: 15, fontWeight: "bold" } });
     this.pause = new Text({ text: "PAUSE", style: { ...style, fontSize: 15, fontWeight: "bold" } });
     this.skip = new Text({ text: "SKIP TO ENDLESS", style: { ...style, fontSize: 15, fontWeight: "bold" } });
-    for (const control of [this.pause, this.restart, this.skip]) {
+    const toggleFullscreen = actions.toggleFullscreen;
+    if (toggleFullscreen) {
+      this.fullscreen = new Text({ text: "FULLSCREEN", style: { ...style, fontSize: 15, fontWeight: "bold" } });
+      this.fullscreen.label = "meta-fullscreen";
+      this.fullscreen.on("pointertap", toggleFullscreen);
+    }
+    for (const control of this.metaControls()) {
       control.anchor.set(1, 0);
       control.eventMode = "static";
       control.cursor = "pointer";
@@ -278,6 +290,7 @@ export class Hud {
       this.shade,
       this.confettiLayer,
       this.popup,
+      ...(this.fullscreen ? [this.fullscreen] : []),
       this.pause,
       this.restart,
       this.skip,
@@ -295,10 +308,12 @@ export class Hud {
     this.confirming = false;
     this.confirmationShade.visible = this.confirmation.visible = false;
     this.coinFlights = [];
+    this.coinShakeAge = undefined;
     this.coinLayer.clear();
     this.heartFlights = [];
     this.heartLayer.clear();
     this.flash = undefined;
+    this.notice = undefined;
     this.deathFlash.clear();
     for (const warning of this.warnings.values()) warning.text.destroy();
     this.warnings.clear();
@@ -307,6 +322,18 @@ export class Hud {
     this.title.visible = game.level.mode !== "endless";
     this.buildToolbar();
     this.hidePopup();
+  }
+
+  setFullscreenActive(active: boolean): void {
+    if (this.fullscreen) this.fullscreen.text = active ? "EXIT FULLSCREEN" : "FULLSCREEN";
+  }
+
+  showNotice(message: string): void {
+    this.notice = { text: message.toUpperCase(), remaining: 5 };
+  }
+
+  private metaControls(): Text[] {
+    return [...(this.fullscreen ? [this.fullscreen] : []), this.pause, this.skip, this.restart];
   }
 
   showRestartConfirmation(): void {
@@ -388,7 +415,7 @@ export class Hud {
       }
     }
     this.regions.push(new Rectangle(this.coins.x - 24, this.coins.y - COIN_ROW / 2, this.lives.visible ? 106 : 48, COIN_ROW));
-    for (const control of [this.pause, this.restart, this.skip]) {
+    for (const control of this.metaControls()) {
       if (!control.visible) continue;
       const box = this.controlBox(control);
       const rect = new Rectangle(control.x + box.x, control.y + box.y, box.width, box.height);
@@ -399,6 +426,9 @@ export class Hud {
   }
 
   private listenForResources(game: Game): void {
+    game.onInsufficientCoins(() => {
+      if (this.game === game) this.coinShakeAge = 0;
+    });
     game.onCoins((event) => {
       if (this.game === game) this.coinFlights.push({ event, age: 0 });
     });
@@ -420,7 +450,7 @@ export class Hud {
 
   private navigationKey(): string {
     return [this.title.visible ? this.title.width : 0, this.stats.width, this.meta.width,
-      this.pause.text, this.pause.visible, this.skip.text, this.skip.visible].join(":");
+      this.fullscreen?.text, this.pause.text, this.pause.visible, this.skip.text, this.skip.visible].join(":");
   }
 
   private controlBox(control: Text): Rectangle {
@@ -470,12 +500,13 @@ export class Hud {
     this.stats.position.set(16, this.title.visible ? 34 : 8);
     this.meta.position.set(16, this.title.visible ? 64 : 38);
     const resourceY = height - COIN_ROW / 2 - (portrait ? 0 : 5);
-    this.coins.position.set(portrait ? width / 2 - (this.lives.visible ? 27 : 0) : 34, resourceY);
+    this.coinBaseX = portrait ? width / 2 - (this.lives.visible ? 27 : 0) : 34;
+    this.coins.position.set(this.coinBaseX + this.coinShakeOffset(), resourceY);
     this.lives.position.set(portrait ? width / 2 + 27 : 88, resourceY);
     this.skip.text = portrait ? "ENDLESS" : "SKIP TO ENDLESS";
     this.pause.visible = !this.game.complete;
     this.skip.visible = this.game.survival && !this.game.complete;
-    const controls = [this.pause, this.skip, this.restart].filter((control) => control.visible);
+    const controls = this.metaControls().filter((control) => control.visible);
     const scoreRight = 16 + Math.max(this.stats.width, this.meta.width, this.title.visible ? this.title.width : 0);
     const controlWidth = Math.max(...controls.map((control) => control.width));
     const stacked = portrait;
@@ -510,6 +541,12 @@ export class Hud {
     this.confirmation.scale.set(Math.max(0, Math.min(1, (width - 24) / 340, (height - 24) / 180)));
 
     const n = this.tools.length;
+    this.hint.visible = !!this.notice || (this.shownFor === undefined && (this.game.paused || this.controller.hint() !== ""));
+    this.hint.style.fontSize = width > 480 ? 13 : 11;
+    const sideHint = isUltraWide(width, height) && n > 1 && this.hint.visible;
+    const hintWidth = sideHint ? Math.min(280, width * 0.28) : 0;
+    this.hint.style.wordWrapWidth = sideHint ? hintWidth : Math.min(600, width - 32);
+    this.hint.style.align = sideHint ? "left" : "center";
     const warningStart = this.lives.visible ? this.lives.x + 36 : this.coins.x + 36;
     const resourceWidth = Math.min(width / 3, (this.lives.visible ? WARNING_START : 70) + this.warnings.size * WARNING_GAP);
     const warningColumns = Math.max(1, Math.floor(((portrait ? width : resourceWidth) - warningStart - 12) / WARNING_GAP) + 1);
@@ -519,7 +556,9 @@ export class Hud {
       warning.baseY = resourceY - Math.floor(i / warningColumns) * WARNING_ROW;
       warning.text.position.set(warningStart + (i % warningColumns) * WARNING_GAP, warning.baseY);
     });
-    const layout = toolbarLayout(portrait ? width : width - resourceWidth, this.tools.map((tool) => tool.brush));
+    const rightSpace = isUltraWide(width, height) ? (sideHint ? hintWidth + 24 : 0) : resourceWidth;
+    const layout = toolbarLayout(portrait ? width : width - resourceWidth - rightSpace,
+      this.tools.map((tool) => tool.brush));
     this.toolSize = layout.size;
     const size = this.toolSize;
     const toolbarH = n > 1 ? layout.rows * (size + TOOL_GAP) + 8 : 0;
@@ -531,14 +570,11 @@ export class Hud {
     });
     this.toolbar.visible = n > 1;
 
-    this.hint.style.wordWrapWidth = Math.min(600, width - 32);
-    const bottom = portrait ? resourceHeight + toolbarH : Math.max(resourceHeight, toolbarH);
-    this.hint.position.set(width / 2, height - bottom - 8);
-    this.hint.visible = this.shownFor === undefined && (this.game.paused || this.controller.hint() !== "");
-    this.hint.style.fontSize = width > 480 ? 13 : 11;
+    const bottom = portrait ? resourceHeight + toolbarH : Math.max(resourceHeight, toolbarH, sideHint ? this.hint.height + 16 : 0);
+    this.hint.position.set(sideHint ? width - 12 - hintWidth / 2 : width / 2, sideHint ? height - 8 : height - bottom - 8);
     const top = Math.max(width < 600 ? 102 : this.title.visible ? 92 : 68,
       ...controls.map((control) => control.y - 6 + this.navigationHeight + 12));
-    const reservedBottom = bottom + (this.hint.visible ? HINT_SPACE : 0);
+    const reservedBottom = bottom + (this.hint.visible && !sideHint ? HINT_SPACE : 0);
     this.viewportCenter = { x: width / 2, y: top + Math.max(1, height - top - reservedBottom) / 2 };
     return { top, bottom: reservedBottom };
   }
@@ -577,6 +613,10 @@ export class Hud {
   /** `dt` is real elapsed time; the popup keeps animating while the game is frozen. */
   update(dt: number, toScreen: (point: Pt) => Pt): boolean {
     const g = this.game;
+    if (this.notice) {
+      this.notice.remaining -= dt;
+      if (this.notice.remaining <= 0) this.notice = undefined;
+    }
     const brushes = brushesOf(g);
     const toolsChanged = brushes.length !== this.tools.length || brushes.some((brush, i) => !sameBrush(brush, this.tools[i].brush));
     const changed = this.updateWarnings() || toolsChanged;
@@ -588,9 +628,10 @@ export class Hud {
     }
     for (const b of this.tools) {
       const unavailable = b.brush.kind === "life" && !g.buyLife({ x: 0, y: 0 }, false);
+      const blocked = b.brush.kind === "life" && (g.complete || g.paused || g.lives >= MAX_LIVES);
       b.root.alpha = unavailable ? 0.45 : 1;
-      b.root.eventMode = unavailable ? "none" : "static";
-      b.root.cursor = unavailable ? "default" : "pointer";
+      b.root.eventMode = blocked ? "none" : "static";
+      b.root.cursor = blocked ? "default" : "pointer";
       const active = sameBrush(b.brush, this.controller.brush);
       const h = TOOL_SIZE / 2;
       b.bg.clear().roundRect(-h, -h, 2 * h, 2 * h, 12).fill(active || b.hovered ? 0xffffff : THEME.background).stroke({
@@ -609,9 +650,10 @@ export class Hud {
       b.count.text = stock ? String(stock) : "";
       b.price.text = price ? String(price) : "";
     }
-    const hint = g.paused ? "PAUSED — TAP RESUME TO CONTINUE." : this.controller.hint().toUpperCase();
-    if (this.hint.text !== hint) this.hint.text = hint;
-    const helpVisible = !g.complete && hint !== "";
+    const hint = this.notice?.text ?? (g.paused ? "PAUSED — TAP RESUME TO CONTINUE." : this.controller.hint().toUpperCase());
+    const hintChanged = this.hint.text !== hint;
+    if (hintChanged) this.hint.text = hint;
+    const helpVisible = (!!this.notice || !g.complete) && hint !== "";
     const helpChanged = this.hint.visible !== helpVisible;
     this.hint.visible = helpVisible;
     const survivalResult = g.survivalResult;
@@ -627,10 +669,6 @@ export class Hud {
     this.coins.text = String(g.coins);
     this.lives.text = g.survival ? String(g.lives) : "\u221e";
     this.lives.visible = g.level.mode === "endless";
-    this.resources.clear().circle(this.coins.x, this.coins.y, 20).fill(0xdd8a25).stroke({ width: 2, color: 0xa97717 });
-    if (this.lives.visible) {
-      drawHeart(this.resources, this.lives.x, this.lives.y + 1, 1.4);
-    }
     this.skip.visible = g.survival && !g.complete;
     this.pause.visible = !g.complete;
     const pauseLabel = g.paused ? "RESUME" : "PAUSE";
@@ -639,6 +677,13 @@ export class Hud {
     }
     const navigationChanged = this.navigationKey() !== this.navigationState;
     if (navigationChanged) this.layout(this.width, this.height);
+    if (this.coinShakeAge !== undefined) {
+      this.coinShakeAge += dt;
+      if (this.coinShakeAge >= COIN_SHAKE_TIME) this.coinShakeAge = undefined;
+    }
+    this.coins.x = this.coinBaseX + this.coinShakeOffset();
+    this.resources.clear().circle(this.coins.x, this.coins.y, 20).fill(0xdd8a25).stroke({ width: 2, color: 0xa97717 });
+    if (this.lives.visible) drawHeart(this.resources, this.lives.x, this.lives.y + 1, 1.4);
     this.drawCoins(dt, toScreen);
     this.drawHearts(dt, toScreen);
     if (!g.complete && this.shownFor !== undefined) this.hidePopup();
@@ -652,7 +697,12 @@ export class Hud {
       else this.flash = undefined;
     }
     this.drawBackplates();
-    return changed || helpChanged || navigationChanged;
+    return changed || helpChanged || navigationChanged || (hintChanged && isUltraWide(this.width, this.height));
+  }
+
+  private coinShakeOffset(): number {
+    return this.coinShakeAge === undefined ? 0
+      : Math.sin(this.coinShakeAge * 80) * 5 * (1 - this.coinShakeAge / COIN_SHAKE_TIME);
   }
 
   private drawCoins(dt: number, toScreen: (point: Pt) => Pt): void {
@@ -698,7 +748,7 @@ export class Hud {
     this.fatalSink = undefined;
     this.popupCenter = undefined;
     this.shade.visible = this.popup.visible = false;
-    this.hint.visible = this.game.paused || this.controller.hint() !== "";
+    this.hint.visible = !!this.notice || this.game.paused || this.controller.hint() !== "";
     this.confetti = [];
     this.confettiLayer.clear();
   }

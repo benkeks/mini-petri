@@ -1,16 +1,23 @@
 import { COLORS, expand, total, type Color } from "../core/multiset";
-import { Net, type Transition } from "../core/net";
+import { arcCount, Net, type Place, type Transition } from "../core/net";
 import { Simulation } from "../core/simulation";
 import type { Goal, Kit, Level } from "./level";
-import { PLACE_CAPACITIES, placeRadius } from "./placeSize";
+import { PLACE_CAPACITIES, placeLevel, placeRadius } from "./placeSize";
 import { POWERUPS, type Powerup } from "./powerups";
 
-/** New nodes must be within this distance of a live node. */
+/** Base build distance for transitions and the smallest places. */
 export const BUILD_RANGE = 220;
-/** Maximum center-to-center distance for a new arc. */
+export function buildRange(node: Place | Transition): number {
+  return "kind" in node ? BUILD_RANGE : BUILD_RANGE + (BUILD_RANGE / 5) * placeLevel(node.capacity);
+}
+/** Base center-to-center arc reach for a one-token place. */
 export const CONNECTION_RANGE = BUILD_RANGE + 80;
-export function withinConnectionRange(a: { x: number; y: number }, b: { x: number; y: number }): boolean {
-  return Math.hypot(a.x - b.x, a.y - b.y) <= CONNECTION_RANGE;
+export function connectionRange(node: { x: number; y: number; capacity?: number }): number {
+  return node.capacity === undefined ? CONNECTION_RANGE : CONNECTION_RANGE + (CONNECTION_RANGE / 5) * placeLevel(node.capacity);
+}
+
+export function withinConnectionRange(a: { x: number; y: number; capacity?: number }, b: { x: number; y: number; capacity?: number }): boolean {
+  return Math.hypot(a.x - b.x, a.y - b.y) <= Math.max(connectionRange(a), connectionRange(b));
 }
 /** Radii nodes claim for themselves; footprints plus `CLEARANCE` must not overlap. */
 export const PLACE_FOOTPRINT = placeRadius(PLACE_CAPACITIES[PLACE_CAPACITIES.length - 1]) + 8;
@@ -109,11 +116,13 @@ export class Game {
   private survivalActive: boolean;
   private survivalBaseline?: { score: number; epoch: number };
   private lifeBalance = MAX_LIVES;
+  private lostLife = false;
   private purchasedLives = 0;
   survivalFailed = false;
   private coinBalance = STARTING_COINS;
   private paidUpgrades = 0;
   private readonly coinListeners: ((event: CoinEvent) => void)[] = [];
+  private readonly insufficientCoinsListeners: (() => void)[] = [];
   private readonly lifeLostListeners: ((position: { x: number; y: number }) => void)[] = [];
   private readonly sinkDeathListeners: ((sink: SinkNotice) => void)[] = [];
   private readonly upgradeSpending = new Map<string, number>();
@@ -139,6 +148,8 @@ export class Game {
   private readonly countdowns = new Map<string, Countdown>();
   private readonly unusedPlaces = new Map<string, number>();
   private unusedPlacesVersion = -1;
+  private connectorSpaceVersion = -1;
+  private readonly connectorSpace = new Map<string, boolean>();
   private readonly endlessCenter?: Transition;
   private endlessProgress = 0;
   private endlessEpoch = 0;
@@ -238,12 +249,17 @@ export class Game {
     return this.lifeBalance;
   }
 
+  get hasLostLife(): boolean {
+    return this.lostLife;
+  }
+
   get lifePrice(): number {
     return LIFE_COST + this.purchasedLives * LIFE_PRICE_INCREASE;
   }
 
   buyLife(position: { x: number; y: number }, apply = true): boolean {
-    if (!this.survival || this.complete || this.paused || this.lives >= MAX_LIVES || this.coins < this.lifePrice) return false;
+    if (!this.survival || this.complete || this.paused || this.lives >= MAX_LIVES) return false;
+    if (!this.canAfford(this.lifePrice, apply)) return false;
     if (apply) {
       const price = this.lifePrice;
       this.purchasedLives++;
@@ -274,6 +290,10 @@ export class Game {
 
   onCoins(fn: (event: CoinEvent) => void): void {
     this.coinListeners.push(fn);
+  }
+
+  onInsufficientCoins(fn: () => void): void {
+    this.insufficientCoinsListeners.push(fn);
   }
 
   onLifeLost(fn: (position: { x: number; y: number }) => void): void {
@@ -339,8 +359,15 @@ export class Game {
     const expiresAt = at + POWERUP_LIFETIME;
     if (this.sim.time >= expiresAt) return;
     const eligible = POWERUPS.filter((powerup) => powerup.kind !== "life" && this.endlessEpoch >= powerup.afterEpoch);
-    const first = eligible.splice(Math.floor(this.random() * eligible.length), 1)[0];
-    let second = eligible[Math.floor(this.random() * eligible.length)];
+    const draw = (): Powerup => {
+      const weights = eligible.map((powerup) => powerup.kind === "coins" && this.coins < 50 ? 3 : 1);
+      let roll = this.random() * weights.reduce((sum, weight) => sum + weight, 0);
+      let index = 0;
+      while (index < eligible.length - 1 && roll >= weights[index]) roll -= weights[index++];
+      return eligible.splice(index, 1)[0];
+    };
+    const first = draw();
+    let second = draw();
     const life = POWERUPS.find((powerup) => powerup.kind === "life")!;
     if (this.survival && this.lives < MAX_LIVES && this.epoch >= life.afterEpoch
       && this.random() < LIFE_OFFER_CHANCE * (this.lives <= 3 ? 2 : 1)) second = life;
@@ -361,6 +388,12 @@ export class Game {
     if (amount === 0) return;
     this.coinBalance += amount;
     for (const fn of this.coinListeners) fn({ amount, x: position.x, y: position.y });
+  }
+
+  private canAfford(price: number, notify: boolean): boolean {
+    if (this.coins >= price) return true;
+    if (notify) for (const fn of this.insufficientCoinsListeners) fn();
+    return false;
   }
 
   private buyUpgrade(node: { id: string; x: number; y: number }): void {
@@ -397,7 +430,7 @@ export class Game {
       const otherKind = net.places.has(n.id) ? "place" : "transition";
       if (Math.hypot(n.x - x, n.y - y) < placementClearance(kind, otherKind)) return "crowded";
     }
-    if (!net.liveNodes().some((n) => Math.hypot(n.x - x, n.y - y) <= BUILD_RANGE)) return "far";
+    if (!net.liveNodes().some((n) => Math.hypot(n.x - x, n.y - y) <= buildRange(n))) return "far";
     return undefined;
   }
 
@@ -419,6 +452,77 @@ export class Game {
     net.connect(tid, index, id);
     this.syncUnusedPlaces();
     return id;
+  }
+
+  /** Connects open ports through a new nearby place, or checks placement without mutation. */
+  connectPorts(from: { tid: string; index: number }, to: { tid: string; index: number }, apply = true, near?: { x: number; y: number }): boolean {
+    const net = this.sim.net;
+    const source = net.transitions.get(from.tid);
+    const target = net.transitions.get(to.tid);
+    if (this.complete || this.paused || !this.level.tools?.place || !source || !target
+      || source.ghost || target.ghost || !source.open?.[from.index] || !target.open?.[to.index]
+      || Math.hypot(source.x - target.x, source.y - target.y) > CONNECTION_RANGE * 2) return false;
+    if (this.connectorSpaceVersion !== net.version) {
+      this.connectorSpace.clear();
+      this.connectorSpaceVersion = net.version;
+    }
+    const key = JSON.stringify([from.tid, from.index, to.tid, to.index]);
+    if (!apply && this.connectorSpace.has(key)) return this.connectorSpace.get(key) === true;
+    const pointer = near ?? target;
+    const valid = (p: { x: number; y: number }) => this.canConnectAt(from.tid, from.index, p.x, p.y)
+      && this.canConnectAt(to.tid, to.index, p.x, p.y) && !this.placementIssue("place", p.x, p.y);
+    const direction = pointer.x === target.x && pointer.y === target.y ? source : pointer;
+    const angle = Math.atan2(direction.y - target.y, direction.x - target.x);
+    const distance = placementClearance("place", "transition") + 4;
+    let position = { x: target.x + Math.cos(angle) * distance, y: target.y + Math.sin(angle) * distance };
+    if (!valid(position)) {
+      // A free region is bounded by reach, build or clearance circles. Check their boundary arcs,
+      // split at intersections, so narrow gaps are not missed by a fixed angular sampling grid.
+      const circles = (source === target ? [target] : [target, source]).map((t) => ({ x: t.x, y: t.y, r: CONNECTION_RANGE, angles: [angle] }));
+      for (const node of [...net.places.values(), ...net.transitions.values()]) {
+        const clearance = placementClearance("place", "kind" in node ? "transition" : "place");
+        if (Math.hypot(node.x - target.x, node.y - target.y) > CONNECTION_RANGE + Math.max(clearance, buildRange(node))) continue;
+        circles.push({ x: node.x, y: node.y, r: clearance, angles: [Math.atan2(pointer.y - node.y, pointer.x - node.x)] });
+        if (!node.ghost) circles.push({ x: node.x, y: node.y, r: buildRange(node), angles: [angle] });
+      }
+      for (let i = 0; i < circles.length; i++) for (let j = i + 1; j < circles.length; j++) {
+        const a = circles[i], b = circles[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const d = Math.hypot(dx, dy);
+        if (d === 0 || d > a.r + b.r || d < Math.abs(a.r - b.r)) continue;
+        const along = (a.r * a.r - b.r * b.r + d * d) / (2 * d);
+        const across = Math.sqrt(Math.max(0, a.r * a.r - along * along));
+        for (const sign of [-1, 1]) {
+          const x = a.x + (dx * along - dy * across * sign) / d;
+          const y = a.y + (dy * along + dx * across * sign) / d;
+          a.angles.push(Math.atan2(y - a.y, x - a.x));
+          b.angles.push(Math.atan2(y - b.y, x - b.x));
+        }
+      }
+      const candidates = circles.flatMap((circle) => {
+        const angles = circle.angles.map((a) => (a + Math.PI * 2) % (Math.PI * 2)).sort((a, b) => a - b);
+        // Tiny radial offsets avoid rejecting valid boundaries due to floating-point roundoff.
+        return angles.flatMap((a, i) => [a, (a + (angles[i + 1] ?? angles[0] + Math.PI * 2)) / 2])
+          .flatMap((a) => [circle.r, circle.r + 1e-6, circle.r - 1e-6].map((r) =>
+            ({ x: circle.x + Math.cos(a) * r, y: circle.y + Math.sin(a) * r })));
+      });
+      const found = candidates.sort((a, b) => Math.hypot(a.x - pointer.x, a.y - pointer.y) - Math.hypot(b.x - pointer.x, b.y - pointer.y)).find(valid);
+      if (!found) {
+        this.connectorSpace.set(key, false);
+        return false;
+      }
+      position = found;
+    }
+    if (!apply) {
+      this.connectorSpace.set(key, true);
+      return true;
+    }
+    const id = this.buildPlace(position.x, position.y, 1);
+    if (id === undefined) throw new Error("Could not build a validated connector place");
+    const ports = from.tid === to.tid && from.index === to.index ? [from] : [from, to];
+    for (const port of ports.sort((a, b) => b.index - a.index)) net.connect(port.tid, port.index, id);
+    this.syncUnusedPlaces();
+    return true;
   }
 
   /** Available color-preserving one-to-one kit, if building it is enabled. */
@@ -447,40 +551,86 @@ export class Game {
     return id;
   }
 
-  /** Whether an open port can reach a point in the current world coordinates. */
-  canConnectAt(tid: string, index: number, x: number, y: number): boolean {
+  /** Only place selections display their upgraded reach; transition rings retain the base radius. */
+  connectionRange(node?: Place | Transition): number {
+    if (node && !("kind" in node)) return connectionRange(node);
+    return CONNECTION_RANGE;
+  }
+
+  /** Whether an open port can reach a place of this capacity in current world coordinates. */
+  canConnectAt(tid: string, index: number, x: number, y: number, capacity = 1): boolean {
     const t = this.sim.net.transitions.get(tid);
     return !!t && !this.complete && !t.ghost && !!t.open?.[index]
-      && withinConnectionRange(t, { x, y });
+      && withinConnectionRange(t, { x, y, capacity });
   }
 
   /** Builds a transition from `kit` with all ports open; it is enabled once they are connected. */
   canBuildTransition(kit: Kit, x: number, y: number): boolean {
     if (this.complete || this.placementIssue("transition", x, y)) return false;
+    return this.canUseKit(kit);
+  }
+
+  private canUseKit(kit: Kit, notify = false): boolean {
     if (this.level.tools?.kits?.includes(kit)) return true;
     const powerup = this.kitPowerup(kit);
-    return !!this.level.tools && !!powerup && this.powerupStock(powerup.id) > 0 && this.coins >= powerup.price;
+    return !!this.level.tools && !!powerup && this.powerupStock(powerup.id) > 0 && this.canAfford(powerup.price, notify);
   }
 
   buildTransition(kit: Kit, x: number, y: number): string | undefined {
-    if (!this.canBuildTransition(kit, x, y)) return undefined;
+    if (this.complete || this.placementIssue("transition", x, y) || !this.canUseKit(kit, true)) return undefined;
     const net = this.sim.net;
     const id = net.freshId("t");
     net.addTransition({ id, x, y, kind: "normal", open: kit.ports, copyInputColor: kit.copyInputColor });
     net.validateTransition(id);
+    this.useKit(kit, { x, y });
+    return id;
+  }
+
+  private useKit(kit: Kit, position: { x: number; y: number }): void {
     const powerup = this.kitPowerup(kit);
     if (powerup && !this.level.tools?.kits?.includes(kit)) {
       this.inventory.set(powerup.id, this.powerupStock(powerup.id) - 1);
-      this.changeCoins(-powerup.price, { x, y });
+      this.changeCoins(-powerup.price, position);
     }
-    return id;
+  }
+
+  /** Retypes connected arcs in place so committed firings retain their endpoints and concrete tokens. */
+  convertTransition(tid: string, kit: Kit, apply = true): boolean {
+    const net = this.sim.net;
+    const transition = net.transitions.get(tid);
+    if (this.complete || this.paused || !transition || transition.ghost || transition.kind !== "normal") return false;
+    const ports = kit.ports.map((port) => ({ ...port, count: arcCount(port) }));
+    const bindings = [];
+    for (const dir of ["in", "out"] as const) {
+      const arcs = [...(dir === "in" ? net.inputs(tid) : net.outputs(tid))];
+      if (arcs.length > ports.filter((port) => port.dir === dir).length) return false;
+      // Assign explicitly colored arcs first, preserving matching colors when the new kit permits.
+      arcs.sort((a, b) => Number(!!b.color) - Number(!!a.color));
+      for (const arc of arcs) {
+        let index = ports.findIndex((port) => port.dir === dir && port.color === arc.color);
+        if (index === -1) index = ports.findIndex((port) => port.dir === dir);
+        bindings.push({ arc, port: ports.splice(index, 1)[0] });
+      }
+    }
+    if (!this.canUseKit(kit, apply)) return false;
+    if (!apply) return true;
+    for (const { arc, port } of bindings) {
+      arc.color = port.color;
+      arc.count = port.count;
+    }
+    transition.open = ports;
+    transition.copyInputColor = kit.copyInputColor;
+    net.validateTransition(tid);
+    net.version++;
+    this.useKit(kit, transition);
+    return true;
   }
 
   /** Connects open port `index` of transition `tid` to place `pid`; only checks if `apply` is false. */
   connect(tid: string, index: number, pid: string, apply = true): boolean {
     const net = this.sim.net;
     const p = net.places.get(pid);
-    if (!p || p.ghost || !this.canConnectAt(tid, index, p.x, p.y)) return false;
+    if (!p || p.ghost || !this.canConnectAt(tid, index, p.x, p.y, p.capacity)) return false;
     if (apply) {
       this.syncUnusedPlaces();
       net.connect(tid, index, pid);
@@ -532,9 +682,9 @@ export class Game {
   /** Automates a manual transition, or speeds up one that is already automatic. */
   upgradeAuto(tid: string, apply = true): boolean {
     const t = this.sim.net.transitions.get(tid);
-    if (this.complete || !this.level.tools?.auto || !t || t.ghost || t.kind !== "normal"
-      || (this.powerupStock("auto") === 0 && this.coins < this.upgradePrice)) return false;
+    if (this.complete || !this.level.tools?.auto || !t || t.ghost || t.kind !== "normal") return false;
     if (t.autoInterval && t.autoInterval <= MIN_INTERVAL) return false;
+    if (this.powerupStock("auto") === 0 && !this.canAfford(this.upgradePrice, apply)) return false;
     if (apply) {
       t.autoInterval = t.autoInterval ? Math.max(MIN_INTERVAL, t.autoInterval * FASTER_FACTOR) : AUTO_INTERVAL;
       this.useUpgrade("auto", t);
@@ -545,8 +695,7 @@ export class Game {
 
   upgradeCapacity(pid: string, apply = true): boolean {
     const p = this.sim.net.places.get(pid);
-    if (this.complete || !this.level.tools?.capacity || !p || p.ghost
-      || (this.powerupStock("capacity") === 0 && this.coins < this.upgradePrice)) return false;
+    if (this.complete || !this.level.tools?.capacity || !p || p.ghost) return false;
     const next = PLACE_CAPACITIES.find((capacity) => capacity > p.capacity!);
     if (next === undefined) return false;
     const radius = placeRadius(next) + 8;
@@ -555,6 +704,7 @@ export class Game {
       const other = this.sim.net.places.has(n.id) ? placeRadius(this.sim.net.places.get(n.id)!.capacity) + 8 : TRANSITION_FOOTPRINT;
       if (Math.hypot(n.x - p.x, n.y - p.y) < radius + other + CLEARANCE) return false;
     }
+    if (this.powerupStock("capacity") === 0 && !this.canAfford(this.upgradePrice, apply)) return false;
     if (!apply) return true;
     p.capacity = next;
     this.useUpgrade("capacity", p);
@@ -731,6 +881,7 @@ export class Game {
       for (const fn of this.sinkDeathListeners) fn(sink);
     }
     if (t.kind === "sink" && this.survival && this.lives > 0) {
+      this.lostLife = true;
       this.lifeBalance--;
       for (const fn of this.lifeLostListeners) fn({ x: t.x, y: t.y });
       if (this.lives === 0) {

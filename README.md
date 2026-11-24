@@ -19,6 +19,7 @@ In survival and endless modes, new sources and goals appear near the network ove
 The starting blue source is unlimited; red sources and sinks initially supply or want five tokens.
 Finite sources and sinks arrange their remaining circles in matching groups of five, mirrored on opposite sides of the node; source circles are smaller.
 When all connections run up or down, a transition uses a horizontal bar, with its balance on the clear vertical side.
+Connections running left/right use vertical bars even in portrait mode.
 Their circles switch to the clearer side when connected arcs occupy their usual side, and gently tween into place when flipping or consuming tokens.
 Later red pairs appear farther apart and can have different quantities, occasionally 10 or 15.
 From epoch 25, some blue sinks consume two tokens per firing; after epoch 50, some consume three.
@@ -46,6 +47,8 @@ Drag empty space to move around, and use the mouse wheel, trackpad or a two-fing
 Switch out of a placement tool before dragging.
 The initial hint explains the source-to-sink objective until your first effective click or epoch 2.
 Default tool hints stop after epoch 10; all tool hints stop after epoch 100.
+Ultra-wide landscape screens place hints beside the toolbar and allow stronger zoom-in.
+Likely smartphones show a fullscreen toggle before pause; browser support and permissions determine whether fullscreen is available.
 
 ### Building and upgrades
 A toolbar at the bottom offers tools.
@@ -55,19 +58,26 @@ Tapping a tool again (or pressing Escape) goes back to firing.
 - **Transition** tools build new nodes inside the white area, which reaches a bit around the existing nodes; gray areas around nodes show where placement is blocked.
   The map can grow in any direction as you build.
   The transition tools show what the new transition consumes (left) and produces (right).
+  A special-transition tool can also convert a highlighted normal transition, keeping its connections and firing-speed upgrades for the same kit price and stock.
+  Existing connections must fit the new input/output port counts; any additional ports remain open.
 - A new transition starts with **loose ends** (plugs) and cannot fire until all of them are connected: tap a plug and a place in either order.
   Some given transitions and goals have loose ends, too.
   Loose ends flip away from connected arcs on the same side; the arrow still shows whether the port consumes or produces tokens.
-  Connections can only reach nearby places; a ring shows their maximum range while building or connecting, reachable nodes are highlighted, and out-of-range plugs are dimmed.
+  Connections can only reach nearby places; a ring indicates connection range while building or connecting, reachable nodes are highlighted, and out-of-range plugs are dimmed.
+  Transition-side rings stay at the primary 300-unit radius; upgraded places beyond that ring are still highlighted when connectible.
   After selecting a place, tap a transition to connect its first available input, then its first available output; tap a specific plug to choose it instead.
   Or tap empty space to build a one-to-one relay connected to that place, then connect its output.
+  This ordinary relay has no separate toolbar button.
   Tapping a plug switches back to the firing tool, even if another tool was active.
   With a plug selected, tap empty space in the building area to create and connect a one-token place, which can be upgraded.
+  Tapping another connector instead creates a nearby one-token place and wires both connectors when space and reach allow; tapping the selected connector creates a place for that connector alone.
+  You can also tap a highlighted transition to choose its first connectible input, then output.
 - **Remove** (red cross, just after the other tools) takes away an arc, place or transition; sources and sinks cannot be removed.
   Removed things fade out but finish what they are doing; a removed place loses its tokens.
   Cutting an arc leaves a loose end that can be connected elsewhere.
 - **Auto** (clock) makes a transition fire on its own; tap it again with the same tool to make it faster. Small bars on the transition show the upgrades applied.
-- **Capacity** (plus) grows a place to the next size, allowing it to hold more tokens.
+- **Capacity** (plus) grows a place to the next size, allowing it to hold more tokens, extending its build range (220, 264, then 308) and its arc reach (300, 360, then 420 units).
+  The tool and free capacity rewards unlock at epoch 10.
 
 You start in survival mode with 10 lives and 40 coins, shown as a heart and coin circle.
 Each timed-out sink costs a life; at zero lives, the game freezes and shows your score.
@@ -80,15 +90,18 @@ In survival mode, each sink in its countdown adds a colored exclamation mark bes
 The warning jumps during its final 15 seconds, and losing your last life triggers a slightly slower scroll to the dying sink.
 Sink deaths briefly tint the screen in the sink's color.
 The toolbar heart buys a life for 50 coins initially, rising by 10 per purchase, up to a maximum of 10 lives.
+It appears only after your first lost life, then stays available in survival even if you recover to 10 lives.
 From epoch 50, hearts rarely appear among rewards (2% of selections, doubled when you have 3 lives or fewer).
 
 Paid automation, speed and capacity upgrades share a price starting at 5 coins; each successful paid upgrade increases the next price by 1 for the rest of the run.
+If a build, conversion, upgrade or life purchase fails because you lack coins, the coin counter briefly shakes.
 Exhausting a finite source earns 5 coins; removing a place earns one coin per settled token on it.
 Removing an upgraded node refunds half its total upgrade costs, rounded to the nearest coin.
 Flying coins show spending and earnings; ordinary building and wiring are free.
 
 When a filled sink disappears, choose one of the two rewards at its position within two minutes.
 Rewards include coins, free upgrades and limited-use transition tools; the selection grows as epochs progress.
+From epoch 150, rewards can include 20 coins; below 50 coins, coin rewards have triple their normal selection weight.
 The generic 2-to-3 transition preserves both input colors and duplicates the oldest token's color.
 Free upgrades are used before paid upgrades. Limited transition tools still cost their displayed coin price when placed.
 Tool badges show remaining free uses in green, limited paid uses in black, and the current coin price in orange.

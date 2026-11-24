@@ -6,6 +6,10 @@ export interface Pt {
   y: number;
 }
 
+export function isUltraWide(width: number, height: number): boolean {
+  return width >= height * 2;
+}
+
 /** Drawn size of a transition bar. */
 export interface BarSize {
   w: number;

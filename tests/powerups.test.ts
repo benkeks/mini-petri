@@ -127,7 +127,7 @@ describe("sink rewards", () => {
     game.step(1.3);
     expect(game.sim.net.transitions.has("goal0")).toBe(false);
     const offer = [...game.offers.values()][0];
-    expect(offer.choices.map((choice) => choice.id)).toEqual(["coins5", "capacity"]);
+    expect(offer.choices.map((choice) => choice.id)).toEqual(["coins5", "auto"]);
     expect(offer.expiresAt).toBeCloseTo(resolvedAt + RESOLVED_LINGER + POWERUP_LIFETIME);
     expect(game.collectOffer(offer.id, 0)).toBe(true);
     expect(game.coins).toBe(STARTING_COINS + 5);
@@ -159,7 +159,8 @@ describe("sink rewards", () => {
   });
 
   it("collects rewards through the controller without losing an existing wiring selection", () => {
-    const { game, finish, setRandom } = setup();
+    const { game, finish, reachEpoch, setRandom } = setup();
+    reachEpoch(10);
     setRandom(0);
     const offer = finish(0);
     let pick: Pick = { kind: "port", tid: "starterRelay", index: 0 };
@@ -194,7 +195,7 @@ describe("sink rewards", () => {
     [24, "coins10"], [25, "blueToRed"], [29, "blueToRed"], [30, "redToBlue"],
     [34, "redToBlue"], [35, "blueToGreen"], [39, "blueToGreen"], [40, "splitAny"],
     [59, "splitAny"], [60, "redToGreen"], [89, "redToGreen"], [90, "redBlueToYellow"],
-    [119, "redBlueToYellow"], [120, "redTwoBlueToYellow"],
+    [119, "redBlueToYellow"], [120, "redTwoBlueToYellow"], [149, "redTwoBlueToYellow"], [150, "coins20"],
   ])("unlocks the latest offer at epoch %i", (epoch, expected) => {
     const { game, finish, reachEpoch, setRandom } = setup();
     reachEpoch(epoch);
@@ -205,8 +206,19 @@ describe("sink rewards", () => {
     expect(game.offers.size).toBe(1);
   });
 
+  it.each([[9, false], [10, true]] as const)("unlocks capacity rewards and the tool at epoch %i: %s", (epoch, unlocked) => {
+    const { game, finish, reachEpoch, setRandom } = setup();
+    reachEpoch(epoch);
+    setRandom(0);
+    const offer = finish(0);
+    expect(offer.choices.some((choice) => choice.kind === "capacity")).toBe(unlocked);
+    expect(brushesOf(game).some((brush) => brush.kind === "capacity")).toBe(unlocked);
+    expect(brushesOf(game).some((brush) => brush.kind === "kit" && brush.kit === game.relayKit())).toBe(false);
+  });
+
   it("stacks free upgrades, uses them before coins, and never refunds free upgrades", () => {
-    const { game, finish, setRandom } = setup(3);
+    const { game, finish, reachEpoch, setRandom } = setup(3);
+    reachEpoch(10);
     setRandom(0.999);
     for (let i = 0; i < 2; i++) {
       const offer = finish(i);
@@ -250,6 +262,41 @@ describe("sink rewards", () => {
     expect(game.coins).toBe(STARTING_COINS + 10);
   });
 
+  it("awards twenty coins after the hundred-and-fiftieth epoch", () => {
+    const { game, finish, reachEpoch, setRandom } = setup();
+    reachEpoch(150);
+    setRandom(0.999);
+    const offer = finish(0);
+    expect(offer.choices[0].id).toBe("coins20");
+    expect(game.collectOffer(offer.id, 0)).toBe(true);
+    expect(game.coins).toBe(STARTING_COINS + 20);
+  });
+
+  it.each([
+    [49, 0.3, ["coins5", "auto"]],
+    [50, 0.3, ["capacity", "auto"]],
+    [51, 0.3, ["capacity", "auto"]],
+    [49, 0.65, ["blueMultiply", "coins10"]],
+    [50, 0.65, ["blueMultiply", "auto"]],
+    [51, 0.65, ["blueMultiply", "auto"]],
+  ])("weights both reward choices at %i coins with roll %f", (balance, roll, expected) => {
+    const { game, finish, reachEpoch, setRandom } = setup();
+    game.offers.set("balance", {
+      id: "balance", x: 0, y: 0, expiresAt: 120,
+      choices: [
+        { id: "balance", label: "Coins", afterEpoch: 0, kind: "coins", amount: balance - STARTING_COINS },
+        POWERUPS[0],
+      ],
+    });
+    expect(game.collectOffer("balance", 0)).toBe(true);
+    reachEpoch(20);
+    expect(game.coins).toBe(balance);
+    setRandom(roll);
+    const offer = finish(0);
+    expect(offer.choices.map((choice) => choice.id)).toEqual(expected);
+    expect(offer.choices[0].id).not.toBe(offer.choices[1].id);
+  });
+
   it("keeps a limited kit until a valid affordable placement and charges each use", () => {
     const { game, finish, reachEpoch, buildPoint, setRandom } = setup(2);
     reachEpoch(40);
@@ -265,7 +312,7 @@ describe("sink rewards", () => {
     expect(game.powerupStock(powerup.id)).toBe(2);
     expect(brushesOf(game).some((brush) => brush.kind === "kit" && brush.kit === kit)).toBe(true);
     expect(brushesOf(game).map((brush) => brush.kind === "kit" ? brush.kit.id : brush.kind))
-      .toEqual(["fire", "relay", "auto", "capacity", "splitAny", "remove"]);
+      .toEqual(["fire", "auto", "capacity", "splitAny", "remove"]);
     expect(game.buildTransition(kit, 400, 400)).toBeUndefined();
     expect(game.powerupStock(powerup.id)).toBe(2);
     expect(game.coins).toBe(STARTING_COINS);
@@ -283,7 +330,139 @@ describe("sink rewards", () => {
     expect(game.coins).toBe(2);
     const nextPoint = buildPoint()!;
     expect(nextPoint).toBeDefined();
+    let insufficient = 0;
+    game.onInsufficientCoins(() => { insufficient++; });
+    expect(game.canBuildTransition(kit, nextPoint.x, nextPoint.y)).toBe(false);
+    expect(game.buildTransition(kit, 400, 400)).toBeUndefined();
+    expect(insufficient).toBe(0);
     expect(game.buildTransition(kit, nextPoint.x, nextPoint.y)).toBeUndefined();
+    expect(insufficient).toBe(1);
+    expect(game.powerupStock(powerup.id)).toBe(1);
+  });
+
+  it("converts a wired relay through the tool, retaining speed upgrades and already committed tokens", () => {
+    const { game, finish, reachEpoch, setRandom } = setup();
+    reachEpoch(15);
+    setRandom(0.999);
+    const offer = finish(0);
+    const powerup = offer.choices[0];
+    if (powerup.kind !== "kit") throw new Error("Expected blue multiplier kit");
+    expect(game.collectOffer(offer.id, 0)).toBe(true);
+    const transition = game.sim.net.transitions.get("starterRelay")!;
+    expect(game.upgradeAuto(transition.id)).toBe(true);
+    expect(game.upgradeAuto(transition.id)).toBe(true);
+    const interval = transition.autoInterval;
+    const upgradePrice = game.upgradePrice;
+    const coins = game.coins;
+    const arcs = game.sim.net.arcsOf(transition.id);
+    game.sim.net.places.get("starterPlace")!.marking = ["red", "blue", "blue"];
+    expect(game.sim.fire(transition.id)).toBe(true);
+    game.sim.step(0.2);
+    const timer = game.sim.autoProgress(transition.id);
+    const denied: Pick[] = [];
+    const view = { overlay: {} as Overlay, pick: (): Pick => ({ kind: "transition", id: transition.id }), deny: (pick: Pick) => denied.push(pick) };
+    const controller = new Controller(game, view);
+    controller.setBrush({ kind: "kit", kit: powerup.kit });
+    controller.sync();
+    expect(view.overlay.target?.({ kind: "transition", id: transition.id })).toBe(true);
+    expect(game.coins).toBe(coins);
+    expect(game.powerupStock(powerup.id)).toBe(1);
+    controller.tap({ x: transition.x, y: transition.y });
+    expect(denied).toHaveLength(0);
+    expect(controller.brush.kind).toBe("fire");
+    expect(controller.selected).toBeUndefined();
+    expect(game.sim.net.transitions.get(transition.id)).toBe(transition);
+    expect(transition.autoInterval).toBe(interval);
+    expect(game.sim.autoProgress(transition.id)).toBe(timer);
+    expect(game.autoUpgradeLevel(transition.id)).toBe(2);
+    expect(game.upgradePrice).toBe(upgradePrice);
+    expect(game.coins).toBe(coins - 7);
+    expect(game.powerupStock(powerup.id)).toBe(0);
+    for (const arc of arcs) expect(game.sim.net.arcs.get(arc.id)).toBe(arc);
+    expect(game.sim.net.inputs(transition.id)[0]).toMatchObject({ color: "blue", count: 2 });
+    expect(game.sim.net.outputs(transition.id)[0]).toMatchObject({ color: "blue", count: 3 });
+    expect(game.sim.incoming("starterDestination")).toEqual({ red: 1 });
+    expect(game.sim.fire(transition.id)).toBe(true);
+    expect(game.sim.incoming("starterDestination")).toEqual({ red: 1, blue: 3 });
+    game.sim.step(2);
+    expect(game.sim.net.places.get("starterDestination")!.marking).toEqual(["red", "blue", "blue", "blue"]);
+  });
+
+  it("preserves matching arc colors and selects newly required ports after a partial conversion", () => {
+    const { game, finish, reachEpoch, setRandom } = setup();
+    reachEpoch(90);
+    setRandom(0.999);
+    const offer = finish(0);
+    const powerup = offer.choices[0];
+    if (powerup.kind !== "kit") throw new Error("Expected red/blue to yellow kit");
+    expect(game.collectOffer(offer.id, 0)).toBe(true);
+    game.sim.net.arcs.get("starterRelayInput")!.color = "blue";
+    const view = { overlay: {} as Overlay, pick: (): Pick => ({ kind: "transition", id: "starterRelay" }), deny: () => { throw new Error("Conversion denied"); } };
+    const controller = new Controller(game, view);
+    controller.setBrush({ kind: "kit", kit: powerup.kit });
+    controller.tap({ x: 600, y: 400 });
+    expect(game.sim.net.inputs("starterRelay")[0]).toMatchObject({ color: "blue", count: 1 });
+    expect(game.sim.net.outputs("starterRelay")[0]).toMatchObject({ color: "yellow", count: 1 });
+    expect(game.sim.net.transitions.get("starterRelay")!.open).toEqual([{ dir: "in", color: "red", count: 1 }]);
+    expect(controller.selected).toEqual({ tid: "starterRelay", index: 0 });
+    expect(controller.brush.kind).toBe("fire");
+  });
+
+  it("switches color-copy functionality without altering tokens committed by the previous type", () => {
+    const { game, finish, reachEpoch, setRandom } = setup(2);
+    reachEpoch(15);
+    setRandom(0.999);
+    const blue = finish(0);
+    expect(game.collectOffer(blue.id, 0)).toBe(true);
+    reachEpoch(25);
+    const copy = finish(1);
+    expect(game.collectOffer(copy.id, 0)).toBe(true);
+    const kit = (id: string) => game.availableKits().find((kit) => kit.id === id)!;
+    expect(game.convertTransition("starterRelay", kit("splitAny"))).toBe(true);
+    expect(game.sim.net.transitions.get("starterRelay")!.copyInputColor).toBe(true);
+    game.sim.net.places.get("starterPlace")!.marking = ["red", "blue"];
+    expect(game.sim.fire("starterRelay")).toBe(true);
+    expect(game.convertTransition("starterRelay", kit("blueMultiply"))).toBe(true);
+    expect(game.sim.net.transitions.get("starterRelay")!.copyInputColor).toBeUndefined();
+    game.sim.step(2);
+    expect(game.sim.net.places.get("starterDestination")!.marking).toEqual(["red", "blue", "red"]);
+  });
+
+  it("rejects source, sink, incompatible and unaffordable conversions without spending", () => {
+    const { game, finish, reachEpoch, setRandom } = setup();
+    reachEpoch(15);
+    setRandom(0.999);
+    const offer = finish(0);
+    const powerup = offer.choices[0];
+    if (powerup.kind !== "kit") throw new Error("Expected multiplier kit");
+    expect(game.collectOffer(offer.id, 0)).toBe(true);
+    game.sim.net.addTransition({ id: "incompatible", x: 2000, y: 0, kind: "normal" });
+    for (let i = 0; i < 2; i++) game.sim.net.addArc({ id: `extra${i}`, from: "starterPlace", to: "incompatible", color: "blue" });
+    const coins = game.coins;
+    const version = game.sim.net.version;
+    for (const id of ["starterSource", "starterSink", "incompatible", "missing"]) {
+      expect(game.convertTransition(id, powerup.kit, false)).toBe(false);
+      expect(game.convertTransition(id, powerup.kit)).toBe(false);
+    }
+    game.paused = true;
+    expect(game.convertTransition("starterRelay", powerup.kit)).toBe(false);
+    game.paused = false;
+    expect(game.sim.net.version).toBe(version);
+    expect(game.coins).toBe(coins);
+    expect(game.powerupStock(powerup.id)).toBe(1);
+    for (let i = 0; i < 5; i++) {
+      game.sim.net.addTransition({ id: `spend${i}`, x: -2000 - i * 100, y: 0, kind: "normal" });
+      expect(game.upgradeAuto(`spend${i}`)).toBe(true);
+    }
+    expect(game.coins).toBe(5);
+    let insufficient = 0;
+    game.onInsufficientCoins(() => { insufficient++; });
+    expect(game.convertTransition("starterRelay", powerup.kit, false)).toBe(false);
+    expect(game.convertTransition("incompatible", powerup.kit)).toBe(false);
+    expect(game.convertTransition("starterSource", powerup.kit)).toBe(false);
+    expect(insufficient).toBe(0);
+    expect(game.convertTransition("starterRelay", powerup.kit)).toBe(false);
+    expect(insufficient).toBe(1);
     expect(game.powerupStock(powerup.id)).toBe(1);
   });
 
@@ -291,8 +470,9 @@ describe("sink rewards", () => {
     const { game, finish, reachEpoch, buildPoint, setRandom } = setup(3);
     setRandom(0.999);
     const auto = finish(0);
+    reachEpoch(10);
     const capacity = finish(1);
-    reachEpoch(25);
+    reachEpoch(15);
     const kitOffer = finish(2);
     expect(kitOffer.choices[0].id).toBe("blueToRed");
     expect(game.collectOffer(kitOffer.id, 0)).toBe(true);
@@ -305,6 +485,8 @@ describe("sink rewards", () => {
       expect(game.upgradeAuto(`buyer${i}`)).toBe(true);
     }
     expect(game.coins).toBe(0);
+    let insufficient = 0;
+    game.onInsufficientCoins(() => { insufficient++; });
     expect(game.collectOffer(auto.id, 0)).toBe(true);
     expect(game.collectOffer(capacity.id, 1)).toBe(true);
     expect(game.upgradeCapacity("starterPlace")).toBe(false);
@@ -313,7 +495,9 @@ describe("sink rewards", () => {
     expect(game.upgradeCapacity("freePlace")).toBe(true);
     expect(game.upgradeAuto("starterRelay")).toBe(true);
     expect(game.coins).toBe(0);
+    expect(insufficient).toBe(0);
     expect(game.upgradeAuto("starterRelay")).toBe(false);
+    expect(insufficient).toBe(1);
   });
 
   it.each([

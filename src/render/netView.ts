@@ -1,6 +1,6 @@
 import { Container, Graphics, Text } from "pixi.js";
 import { arcCount, type Arc, type Port, type Transition } from "../core/net";
-import { BUILD_RANGE, CONNECTION_RANGE, placementClearance, POWERUP_LIFETIME, RESOLVED_LINGER, type NodeKind, type PowerupOffer } from "../game/game";
+import { buildRange, connectionRange, placementClearance, POWERUP_LIFETIME, RESOLVED_LINGER, type NodeKind, type PowerupOffer } from "../game/game";
 import type { Game } from "../game/game";
 import type { Powerup } from "../game/powerups";
 import { placeRadius } from "../game/placeSize";
@@ -187,7 +187,7 @@ export class NetView {
       const net = this.game.sim.net;
       const nodes = net.liveNodes();
       this.rangeMask.clear();
-      for (const n of nodes) this.rangeMask.circle(n.x, n.y, BUILD_RANGE).fill(0xffffff);
+      for (const n of nodes) this.rangeMask.circle(n.x, n.y, buildRange(n)).fill(0xffffff);
       this.rangeArea.visible = nodes.length > 0;
       this.collisionArea.clear();
       if (kind) {
@@ -393,10 +393,14 @@ export class NetView {
     for (const t of net.transitions.values()) {
       const arcs = net.arcsOf(t.id);
       const live = arcs.filter((arc) => !arc.ghost);
-      const portrait = this.game.portrait || (live.length > 0 && live.every((arc) => {
+      const directions = live.map((arc) => {
         const place = net.pos(arc.from === t.id ? arc.to : arc.from);
-        return Math.abs(place.y - t.y) > Math.abs(place.x - t.x);
-      }));
+        const dx = Math.abs(place.x - t.x);
+        const dy = Math.abs(place.y - t.y);
+        return dy > dx ? "vertical" : dx > dy ? "horizontal" : "diagonal";
+      });
+      const portrait = directions.length && directions.every((direction) => direction === "vertical") ? true
+        : directions.length && directions.every((direction) => direction === "horizontal") ? false : this.game.portrait;
       const bar = portrait ? { w: TRANSITION_H, h: TRANSITION_W } : { w: TRANSITION_W, h: TRANSITION_H };
       this.layouts.set(t.id, { portrait, bar });
       const length = portrait ? bar.w : bar.h;
@@ -636,7 +640,7 @@ export class NetView {
       const radius = Math.max(w, h) / 2 + 11;
       if (countdown >= 1) g.circle(0, 0, radius);
       else g.moveTo(0, -radius).arc(0, 0, radius, -Math.PI / 2, -Math.PI / 2 + countdown * Math.PI * 2);
-      g.stroke({ width: 4, color: THEME.warn, cap: "round" });
+      g.stroke({ width: 4, color: t.kind === "source" ? THEME.ink : THEME.warn, cap: "round" });
     }
     if (failedAt !== undefined) this.drawResolved(n, now, failedAt, true);
     else if (exhaustedAt !== undefined) this.drawResolved(n, now, exhaustedAt);
@@ -697,13 +701,14 @@ export class NetView {
       ? selectedTransition
       : selectedPlace && !selectedPlace.ghost ? selectedPlace : undefined;
     if (connectionOrigin && !this.game.complete) {
-      g.circle(connectionOrigin.x, connectionOrigin.y, CONNECTION_RANGE).stroke({ width: 3, color: THEME.arc, alpha: 0.7 });
+      g.circle(connectionOrigin.x, connectionOrigin.y, this.game.connectionRange(connectionOrigin)).stroke({ width: 3, color: THEME.arc, alpha: 0.7 });
     }
 
     if (o.build) {
       if (o.pointer && hover?.kind === "empty") {
         const { x, y } = o.pointer;
-        if (!connectionOrigin) g.circle(x, y, CONNECTION_RANGE).stroke({ width: 3, color: THEME.arc, alpha: 0.7 });
+        if (!connectionOrigin) g.circle(x, y, o.build.kind === "transition" ? this.game.connectionRange()
+          : connectionRange({ x, y, capacity: o.build.capacity ?? 1 })).stroke({ width: 3, color: THEME.arc, alpha: 0.7 });
         const connection = o.build.connection;
         const invalid = this.game.placementIssue(o.build.kind, x, y)
           || (o.build.canPlace && !o.build.canPlace(x, y))
@@ -768,14 +773,15 @@ export class NetView {
       }
     }
 
-    // Open ports invite a tap; the selected one is waiting for a place.
+    // Keep the selected port clear, but dim connectors that cannot accept the current wiring.
     for (const s of this.stubs) {
-      if (selectedPlace && !o.target?.({ kind: "port", tid: s.tid, index: s.index })) {
+      const selected = o.selected?.tid === s.tid && o.selected.index === s.index;
+      if ((selectedPlace || (selectedTransition && !selected && this.game.level.tools?.place))
+        && !o.target?.({ kind: "port", tid: s.tid, index: s.index })) {
         g.circle(s.plug.x, s.plug.y, PLUG_RADIUS + 2).fill(THEME.background)
           .stroke({ width: 2, color: THEME.muted });
         continue;
       }
-      const selected = o.selected?.tid === s.tid && o.selected.index === s.index;
       const r = PLUG_RADIUS + 4 + (selected ? 4 + 3 * pulse : 2 * pulse);
       g.circle(s.plug.x, s.plug.y, r).stroke({ width: selected ? 3 : 2, color: THEME.ink, alpha: selected ? 0.9 : 0.25 });
       if (selected && o.pointer) {

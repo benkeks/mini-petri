@@ -28,10 +28,9 @@ export function brushesOf(game: Game): Brush[] {
   const brushes: Brush[] = [FIRE];
   const kits = game.availableKits();
   const relay = game.relayKit();
-  for (const kit of kits) if (kit === relay) brushes.push({ kind: "kit", kit });
   if (tools.auto) brushes.push({ kind: "auto" });
-  if (tools.capacity) brushes.push({ kind: "capacity" });
-  if (game.survival) brushes.push({ kind: "life" });
+  if (tools.capacity && (game.level.mode !== "endless" || game.epoch >= 10)) brushes.push({ kind: "capacity" });
+  if (game.survival && game.hasLostLife) brushes.push({ kind: "life" });
   for (const kit of kits) if (kit !== relay) brushes.push({ kind: "kit", kit });
   if (tools.remove) brushes.push({ kind: "remove" });
   return brushes;
@@ -89,14 +88,16 @@ export class Controller {
   interactive(pick: Pick): boolean {
     if (this.game.complete || this.game.paused) return false;
     if (pick.kind === "port" && this.selectedPlace) return this.game.connect(pick.tid, pick.index, this.selectedPlace, false);
+    if (pick.kind === "port" && this.selected && this.game.level.tools?.place) return this.game.connectPorts(this.selected, pick, false, this.pointer);
     if (pick.kind === "transition" && this.selectedPlace) return this.firstConnectiblePort(pick.id, this.selectedPlace) !== undefined;
+    if (pick.kind === "transition" && this.selected && this.game.level.tools?.place) return this.firstBridgeablePort(pick.id) !== undefined;
     if (pick.kind === "reward" || pick.kind === "port" || pick.kind === "place") return true;
     if (this.selected || this.selectedPlace) return true;
     switch (this.brush.kind) {
       case "fire":
         return pick.kind === "transition" && this.game.sim.net.transitions.get(pick.id)?.kind === "normal";
       case "kit":
-        return pick.kind === "empty" || pick.kind === "transition";
+        return pick.kind === "empty" || (pick.kind === "transition" && this.game.convertTransition(pick.id, this.brush.kit, false));
       case "remove":
         return pick.kind === "transition" || pick.kind === "arc";
       case "auto":
@@ -139,11 +140,27 @@ export class Controller {
       if (index === undefined || !this.effect(game.connect(tid, index, place))) this.view.deny(pick);
       return;
     }
-    if (pick.kind === "port") {
+    if (pick.kind === "port" || (pick.kind === "transition" && this.selected && game.level.tools?.place)) {
+      const tid = pick.kind === "port" ? pick.tid : pick.id;
+      const index = pick.kind === "port" ? pick.index : this.firstBridgeablePort(tid);
+      if (index === undefined) {
+        this.view.deny(pick);
+        return;
+      }
       this.brush = FIRE;
       this.selectedPlace = undefined;
-      const same = this.selected?.tid === pick.tid && this.selected.index === pick.index;
-      this.selected = same ? undefined : { tid: pick.tid, index: pick.index };
+      if (this.selected && game.level.tools?.place) {
+        const from = this.selected;
+        if (!this.effect(game.connectPorts(from, { tid, index }, true, p))) {
+          this.view.deny(pick);
+          return;
+        }
+        const remaining = [from.tid, tid].find((tid) => game.sim.net.transitions.get(tid)?.open?.length);
+        this.selected = remaining ? { tid: remaining, index: 0 } : undefined;
+        return;
+      }
+      const same = this.selected?.tid === tid && this.selected.index === index;
+      this.selected = same ? undefined : { tid, index };
       this.hasInteracted = true;
       return;
     }
@@ -198,12 +215,17 @@ export class Controller {
         : relay ? { kind: "transition", ports: relay.ports.filter((port) => port.dir === "out"), fromPlace: this.selectedPlace }
         : b.kind === "kit" ? { kind: "transition", ports: b.kit.ports, canPlace: (x, y) => game.canBuildTransition(b.kit, x, y) } : undefined,
       target: this.selected
-        ? (pick) => pick.kind === "place" && this.game.connect(this.selected!.tid, this.selected!.index, pick.id, false)
+        ? (pick) => pick.kind === "place"
+          ? this.game.connect(this.selected!.tid, this.selected!.index, pick.id, false)
+          : pick.kind === "port" ? !!game.level.tools?.place && game.connectPorts(this.selected!, pick, false, this.pointer)
+            : pick.kind === "transition" && this.firstBridgeablePort(pick.id) !== undefined
         : this.selectedPlace
           ? (pick) => pick.kind === "port"
             ? game.connect(pick.tid, pick.index, this.selectedPlace!, false)
             : pick.kind === "transition" && this.firstConnectiblePort(pick.id, this.selectedPlace!) !== undefined
-        : b.kind === "fire" || b.kind === "kit"
+        : b.kind === "kit"
+          ? (pick) => pick.kind === "transition" && game.convertTransition(pick.id, b.kit, false)
+        : b.kind === "fire"
           ? undefined
           : (pick) => this.act(pick, false),
       previewTarget: !this.selected && !this.selectedPlace && b.kind === "kit"
@@ -227,7 +249,7 @@ export class Controller {
       if (this.game.epoch > 10 && this.brush.kind === "fire") return "";
     }
     if (this.selected) return this.game.level.tools?.place
-      ? "Tap a place inside the ring, or empty space to build a small place."
+      ? "Tap a place to connect, a connector to add a nearby place, or empty space to build a small place."
       : "Tap a place inside the ring to connect this loose end.";
     if (this.selectedPlace) return this.game.relayKit()
       ? "Tap a transition or loose end, or empty space to build a relay."
@@ -238,7 +260,7 @@ export class Controller {
           ? "Tap a dark transition to fire it. Tap a completed sink's reward to choose one. Pick a tool below to build, remove or upgrade."
           : "Tap a dark transition to fire it. Fill the empty circles next to each goal by delivering tokens of their color.";
       case "kit":
-        return "Tap inside the white area to build this transition, then connect its loose ends to places.";
+        return "Tap inside the white area to build, or tap a compatible transition to convert it and keep its speed upgrades.";
       case "remove":
         return "Tap an arc, place or transition to remove it. Sources and sinks cannot be removed.";
       case "auto":
@@ -256,9 +278,20 @@ export class Controller {
   }
 
   private firstConnectiblePort(tid: string, pid: string): number | undefined {
+    return this.firstPort(tid, (index) => this.game.connect(tid, index, pid, false));
+  }
+
+  private firstBridgeablePort(tid: string): number | undefined {
+    const from = this.selected;
+    return from && this.game.level.tools?.place
+      ? this.firstPort(tid, (index) => this.game.connectPorts(from, { tid, index }, false, this.pointer))
+      : undefined;
+  }
+
+  private firstPort(tid: string, connect: (index: number) => boolean): number | undefined {
     const ports = this.game.sim.net.transitions.get(tid)?.open ?? [];
     for (const dir of ["in", "out"] as const) {
-      const index = ports.findIndex((port, i) => port.dir === dir && this.game.connect(tid, i, pid, false));
+      const index = ports.findIndex((port, i) => port.dir === dir && connect(i));
       if (index !== -1) return index;
     }
     return undefined;
@@ -277,6 +310,15 @@ export class Controller {
         return apply ? this.effect(game.playerFire(pick.id)) : game.sim.isEnabled(pick.id);
       }
       case "kit": {
+        if (pick.kind === "transition") {
+          if (!game.convertTransition(pick.id, b.kit, apply)) return false;
+          if (apply) {
+            this.hasInteracted = true;
+            this.brush = FIRE;
+            this.selected = game.sim.net.transitions.get(pick.id)?.open?.length ? { tid: pick.id, index: 0 } : undefined;
+          }
+          return true;
+        }
         if (pick.kind !== "empty") return false;
         if (!apply) return game.canBuildTransition(b.kit, pick.x, pick.y);
         const id = game.buildTransition(b.kit, pick.x, pick.y);

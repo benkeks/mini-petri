@@ -28,14 +28,14 @@ export class Camera {
   private scroll?: { from: Pt; to: Pt; elapsed: number; duration: number };
   viewport: Viewport = { x: 0, y: 0, width: 1, height: 1 };
 
-  layout(viewport: Viewport, world: { width: number; height: number }, reset: boolean): void {
+  layout(viewport: Viewport, world: { width: number; height: number }, reset: boolean, ultraWide = false): void {
     if (reset) this.scroll = undefined;
     const previousCenter = this.toWorld({
       x: this.viewport.x + this.viewport.width / 2,
       y: this.viewport.y + this.viewport.height / 2,
     });
     this.viewport = viewport;
-    this.maxScale = Math.min(viewport.width, viewport.height) / (2 * CONNECTION_RANGE);
+    this.maxScale = (ultraWide ? viewport.width : Math.min(viewport.width, viewport.height)) / (2 * CONNECTION_RANGE);
     this.minScale = Math.min(this.maxScale, 0.96 * Math.min(viewport.width / world.width, viewport.height / world.height));
     this.scale = reset ? this.minScale : clamp(this.scale, this.minScale, this.maxScale);
     const center = reset ? { x: world.width / 2, y: world.height / 2 } : previousCenter;
@@ -44,15 +44,15 @@ export class Camera {
     this.clamp();
   }
 
-  setNodes(nodes: readonly Pt[], world: { width: number; height: number }): void {
+  setNodes(nodes: readonly (Pt & { range?: number })[], world: { width: number; height: number }): void {
     if (nodes.length === 0) {
       this.bounds = { minX: 0, minY: 0, maxX: world.width, maxY: world.height };
     } else {
       this.bounds = {
-        minX: Math.min(...nodes.map((n) => n.x)) - BUILD_RANGE,
-        minY: Math.min(...nodes.map((n) => n.y)) - BUILD_RANGE,
-        maxX: Math.max(...nodes.map((n) => n.x)) + BUILD_RANGE,
-        maxY: Math.max(...nodes.map((n) => n.y)) + BUILD_RANGE,
+        minX: Math.min(...nodes.map((n) => n.x - (n.range ?? BUILD_RANGE))),
+        minY: Math.min(...nodes.map((n) => n.y - (n.range ?? BUILD_RANGE))),
+        maxX: Math.max(...nodes.map((n) => n.x + (n.range ?? BUILD_RANGE))),
+        maxY: Math.max(...nodes.map((n) => n.y + (n.range ?? BUILD_RANGE))),
       };
     }
     this.clamp();
@@ -110,14 +110,16 @@ export class Camera {
     this.clamp();
   }
 
-  /** Pan only as far as necessary to show the full connection circle. */
-  showConnection(center: Pt): void {
+  /** Reveal the connection circle, centering axes on which it cannot fit. */
+  showConnection(center: Pt, range = CONNECTION_RANGE): void {
     const v = this.viewport;
-    const radius = CONNECTION_RANGE * this.scale;
+    const radius = range * this.scale;
+    const rx = Math.min(radius, v.width / 2);
+    const ry = Math.min(radius, v.height / 2);
     const x = center.x * this.scale + this.x;
     const y = center.y * this.scale + this.y;
-    const dx = x - radius < v.x ? v.x - (x - radius) : x + radius > v.x + v.width ? v.x + v.width - (x + radius) : 0;
-    const dy = y - radius < v.y ? v.y - (y - radius) : y + radius > v.y + v.height ? v.y + v.height - (y + radius) : 0;
+    const dx = x - rx < v.x ? v.x - (x - rx) : x + rx > v.x + v.width ? v.x + v.width - (x + rx) : 0;
+    const dy = y - ry < v.y ? v.y - (y - ry) : y + ry > v.y + v.height ? v.y + v.height - (y + ry) : 0;
     this.pan(dx, dy);
   }
 

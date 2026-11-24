@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { Graphics } from "pixi.js";
+import { describe, expect, it, vi } from "vitest";
+import { EventBoundary, FederatedPointerEvent, Graphics, Text } from "pixi.js";
 import { Game, placementClearance } from "../src/game/game";
 import { endless } from "../src/game/endless";
 import { level2 } from "../src/game/level2";
@@ -20,6 +20,42 @@ function balancePositions(view: NetView, game: Game, id: string, radius: number)
 }
 
 describe("endpoint token layouts", () => {
+  it("turns a portrait transition vertically for horizontal arcs, including its connector and hit area", () => {
+    const game = new Game(level2);
+    game.setPortrait(true);
+    game.sim.net.addPlace({ id: "left", x: 250, y: 520, capacity: 1, marking: [] });
+    game.sim.net.addTransition({ id: "turn", x: 450, y: 520, kind: "normal", open: [{ dir: "in", color: "blue" }] });
+    const view = new NetView(game);
+    expect(view.pick({ x: 450, y: 463 })).toEqual({ kind: "port", tid: "turn", index: 0 });
+    game.sim.net.addArc({ id: "sideways", from: "left", to: "turn", color: "blue" });
+    expect(view.pick({ x: 507, y: 520 })).toEqual({ kind: "port", tid: "turn", index: 0 });
+    expect(view.pick({ x: 450, y: 545 })).toEqual({ kind: "transition", id: "turn" });
+    expect(view.pick({ x: 475, y: 520 }).kind).not.toBe("transition");
+    expect(game.remove("sideways")).toBe(true);
+    expect(view.pick({ x: 450, y: 463 })).toEqual({ kind: "port", tid: "turn", index: 0 });
+    view.root.destroy({ children: true });
+  });
+
+  it.each(["source", "sink"])("turns the portrait %s balance to the clear horizontal side", (kind) => {
+    const game = new Game(level2);
+    game.setPortrait(true);
+    const source = kind === "source";
+    const id = source ? "srcR2" : "sinkG";
+    const t = game.sim.net.transitions.get(id)!;
+    const side = source ? -1 : 1;
+    game.sim.net.addPlace({ id: "sideways", x: t.x + side * 200, y: t.y, capacity: 7, marking: [] });
+    const view = new NetView(game);
+    const viewport = { x: 0, y: 0, width: 1400, height: 1400 };
+    view.update(0, viewport);
+    expect(game.connect(id, 0, "sideways")).toBe(true);
+    view.update(0.25, viewport);
+    const dots = balancePositions(view, game, id, source ? 3.2 : 7);
+    expect(dots.length).toBeGreaterThan(0);
+    expect(dots.every(([x]) => Math.sign(x) === -side)).toBe(true);
+    expect(view.pick({ x: t.x, y: t.y + 25 })).toEqual({ kind: "transition", id });
+    view.root.destroy({ children: true });
+  });
+
   it.each(["source", "sink"].flatMap((kind) => [false, true].map((portrait) => ({ kind, portrait }))))(
     "tweens the $kind balance to the clear side, portrait=$portrait",
     ({ kind, portrait }) => {
@@ -188,6 +224,34 @@ describe("toolbar layout", () => {
   });
 
   describe("restart confirmation", () => {
+    it("provides a fullscreen toggle when requested and updates its enter/exit label", () => {
+      const game = new Game(endless);
+      const view = new NetView(game);
+      const controller = new Controller(game, view);
+      let toggles = 0;
+      const hud = new Hud(game, controller, {
+        toggleFullscreen: () => { toggles++; },
+        restart: () => {},
+        requestRestart: () => {},
+        togglePause: () => {},
+        selectBrush: () => {},
+        focusSink: () => {},
+      });
+      const button = hud.root.children.find((child) => child.label === "meta-fullscreen");
+      if (!(button instanceof Text)) throw new Error("Fullscreen control missing");
+      const event = new FederatedPointerEvent(new EventBoundary(hud.root));
+      button.emit("pointertap", event);
+      expect(toggles).toBe(1);
+      hud.setFullscreenActive(true);
+      expect(button.text).toBe("EXIT FULLSCREEN");
+      button.emit("pointertap", event);
+      expect(toggles).toBe(2);
+      hud.setFullscreenActive(false);
+      expect(button.text).toBe("FULLSCREEN");
+      hud.root.destroy({ children: true });
+      view.root.destroy({ children: true });
+    });
+
     it("confirms endless skipping, preserves pause on cancellation and does not restart", () => {
       const game = new Game(endless, Math.random, { survival: true });
       const view = new NetView(game);
@@ -200,7 +264,7 @@ describe("toolbar layout", () => {
         selectBrush: (brush) => controller.setBrush(brush),
         focusSink: () => {},
       });
-      expect(brushesOf(game).some((brush) => brush.kind === "life")).toBe(true);
+      expect(brushesOf(game).some((brush) => brush.kind === "life")).toBe(false);
       game.paused = true;
       hud.showEndlessConfirmation();
       hud.cancelRestart();
@@ -268,6 +332,65 @@ describe("toolbar layout", () => {
 });
 
 describe("build area", () => {
+  it("updates connection rings and reachable targets from either selected endpoint after capacity upgrades", () => {
+    const definition = structuredClone(level2);
+    for (const place of definition.net.places) {
+      place.capacity = 1;
+      place.marking = [];
+    }
+    const game = new Game(definition);
+    game.sim.net.addPlace({ id: "reach", x: 1600, y: 1000, capacity: 1, marking: [] });
+    game.sim.net.addTransition({ id: "target", x: 1940, y: 1000, kind: "normal", open: [{ dir: "in", color: "blue" }] });
+    const view = new NetView(game);
+    const controller = new Controller(game, view);
+    const overlay = view.root.children[8] as Graphics;
+    const circles = () => overlay.context.instructions.flatMap((instruction) =>
+      instruction.action === "stroke" ? instruction.data.path.instructions : [])
+      .filter((instruction) => instruction.action === "circle")
+      .map((instruction) => instruction.data.slice(0, 3));
+    for (const radius of [300, 360, 420]) {
+      controller.selected = undefined;
+      controller.selectedPlace = "reach";
+      controller.sync();
+      view.update(0, { x: 0, y: 0, width: 2400, height: 1600 });
+      expect(circles()).toContainEqual([1600, 1000, radius]);
+      expect(view.overlay.target?.({ kind: "port", tid: "target", index: 0 })).toBe(radius > 300);
+      controller.selectedPlace = undefined;
+      controller.selected = { tid: "target", index: 0 };
+      controller.sync();
+      view.update(0, { x: 0, y: 0, width: 2400, height: 1600 });
+      expect(circles()).toContainEqual([1940, 1000, 300]);
+      expect(view.overlay.target?.({ kind: "place", id: "reach" })).toBe(radius > 300);
+      const highlightedPlace = overlay.context.instructions.some((instruction) =>
+        instruction.action === "stroke" && instruction.data.style.color === THEME.enabledGlow
+        && instruction.data.path.instructions.some((shape) =>
+          shape.action === "circle" && shape.data[0] === 1600 && shape.data[1] === 1000));
+      expect(highlightedPlace).toBe(radius > 300);
+      if (radius < 420) expect(game.upgradeCapacity("reach")).toBe(true);
+    }
+    view.root.destroy({ children: true });
+  });
+
+  it("refreshes the build-range mask to match successive place upgrades", () => {
+    const game = new Game(level2);
+    game.sim.net.addPlace({ id: "range", x: 1600, y: 1000, capacity: 1, marking: [] });
+    const view = new NetView(game);
+    view.overlay = { build: { kind: "transition" } };
+    const viewport = { x: 0, y: 0, width: 2400, height: 1400 };
+    const mask = view.root.children[0].children[2] as Graphics;
+    for (const range of [220, 264, 308]) {
+      view.update(0.25, viewport);
+      const circles = mask.context.instructions.flatMap((instruction) =>
+        instruction.action === "fill" ? instruction.data.path.instructions : [])
+        .filter((instruction) => instruction.action === "circle")
+        .map((instruction) => instruction.data.slice(0, 3));
+      expect(circles).toContainEqual([1600, 1000, range]);
+      expect(circles).toContainEqual([1000, 520, 220]);
+      if (range < 308) expect(game.upgradeCapacity("range")).toBe(true);
+    }
+    view.root.destroy({ children: true });
+  });
+
   it("greys out placement clearance for the selected kind, including ghost nodes during fade-out", () => {
     const game = new Game(level2);
     const view = new NetView(game);
@@ -382,6 +505,30 @@ describe("build area", () => {
 
   describe("endless lifecycle animations", () => {
     const viewport = { x: -300, y: -300, width: 1800, height: 1400 };
+
+    it.each([
+      { id: "srcB", color: THEME.ink },
+      { id: "sinkG", color: THEME.warn },
+    ])("draws the $id expiry countdown in the appropriate color", ({ id, color }) => {
+      const game = new Game(level2);
+      const countdown = vi.spyOn(game, "countdownProgress").mockImplementation((tid) => tid === id ? 0.5 : undefined);
+      const view = new NetView(game);
+      try {
+        view.update(0, viewport);
+        const transition = game.sim.net.transitions.get(id)!;
+        const node = view.root.children[5].children.find((child) => child.x === transition.x && child.y === transition.y)!;
+        const graphics = node.children[0] as Graphics;
+        const rings = graphics.context.instructions.filter((instruction) =>
+          instruction.action === "stroke" && instruction.data.path.instructions.some((shape) => shape.action === "arc"));
+        expect(rings).toHaveLength(1);
+        const ring = rings[0];
+        expect(ring.action).toBe("stroke");
+        if (ring.action === "stroke") expect(ring.data.style.color).toBe(color);
+      } finally {
+        countdown.mockRestore();
+        view.root.destroy({ children: true });
+      }
+    });
 
     it("animates spawned sinks in and failed sinks out", () => {
       const game = new Game(endless, () => 0.9);

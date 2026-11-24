@@ -3,6 +3,7 @@ import type { Color } from "../core/multiset";
 import { arcCount, type Arc, type Port, type Transition } from "../core/net";
 import { BUILD_RANGE, CONNECTION_RANGE, POWERUP_LIFETIME, RESOLVED_LINGER, type NodeKind, type PowerupOffer } from "../game/game";
 import type { Game } from "../game/game";
+import type { Powerup } from "../game/powerups";
 import { placeRadius } from "../game/placeSize";
 import {
   arcRoute,
@@ -38,6 +39,7 @@ const REWARD_GAP = 8;
 const REWARD_PICK_SLOP = 4;
 const APPEAR_TIME = 0.4;
 const REWARD_EXIT_TIME = 0.3;
+const REWARD_FLIGHT_TIME = 0.75;
 
 /** What a tap at some point of the world hits. */
 export type Pick =
@@ -52,6 +54,8 @@ export type Pick =
 export interface Overlay {
   /** Pointer position in world coordinates, if known. */
   pointer?: Pt;
+  /** Picks whose tap would have an effect or give feedback. */
+  hoverAction?: (pick: Pick) => boolean;
   /** Shows the build range and a preview of the node to build under the pointer. */
   build?: { kind: NodeKind; ports?: Port[]; capacity?: number; connection?: { tid: string; index: number }; fromPlace?: string; canPlace?: (x: number, y: number) => boolean };
   /** Picks the active brush can act on; they are highlighted. */
@@ -87,14 +91,16 @@ interface RewardNode {
   offer: PowerupOffer;
   root: Container;
   timer: Graphics;
-  backgrounds: Graphics[];
+  choices: { root: Container; background: Graphics; border: Graphics }[];
   removedAt?: number;
+  selected?: number;
 }
 
 /** Draws the net in world coordinates and tells which part of it lies under a point. */
 export class NetView {
   readonly root = new Container();
   overlay: Overlay = {};
+  rewardTarget?: (choice: Powerup) => Pt;
   private readonly rangeLayer = new Container();
   private readonly rangeBackground = new Graphics();
   private readonly rangeArea = new Graphics();
@@ -196,9 +202,18 @@ export class NetView {
     else if (pick.kind === "empty") this.ripples.push({ x: pick.x, y: pick.y, at: now });
   }
 
+  rewardCollected(offer: PowerupOffer, index: number): void {
+    const reward = this.rewards.find((item) => item.offer.id === offer.id);
+    if (reward) {
+      reward.selected = index;
+      reward.removedAt = this.game.sim.time;
+    }
+  }
+
   /** The topmost live part of the net at world point `p`: plugs, then transitions, places and arcs. */
   pick(p: Pt): Pick {
     const net = this.game.sim.net;
+    if (this.builtVersion !== net.version) this.buildStatic();
     const scale = this.root.scale.x || 1;
     for (const offer of [...this.game.offers.values()].reverse()) {
       if (this.game.sim.time >= offer.expiresAt) continue;
@@ -250,54 +265,78 @@ export class NetView {
         if (this.rewards.some((reward) => reward.offer.id === offer.id)) continue;
         const root = new Container();
         const timer = new Graphics();
-        const backgrounds: Graphics[] = [];
+        const choices: RewardNode["choices"] = [];
         for (const [index, choice] of offer.choices.entries()) {
           const x = (index - 0.5) * (REWARD_WIDTH + REWARD_GAP);
-          const background = new Graphics().roundRect(x - REWARD_WIDTH / 2, -REWARD_HEIGHT / 2, REWARD_WIDTH, REWARD_HEIGHT, 8).fill(0xb9b8b4);
-          const border = new Graphics().roundRect(x - REWARD_WIDTH / 2, -REWARD_HEIGHT / 2, REWARD_WIDTH, REWARD_HEIGHT, 8)
-            .stroke({ width: 2, color: THEME.ink });
+          const item = new Container();
+          item.position.set(x, 0);
+          const background = new Graphics().roundRect(-REWARD_WIDTH / 2, -REWARD_HEIGHT / 2, REWARD_WIDTH, REWARD_HEIGHT, 8).fill(0xb9b8b4);
+          const border = new Graphics();
           const icon = new Graphics();
-          icon.position.set(x, 0);
-          root.addChild(background, border, icon);
+          item.addChild(background, border, icon);
           if (choice.kind === "coins") {
             icon.circle(0, 0, 13).fill(0xdd8a25);
             const amount = new Text({ text: String(choice.amount), style: { fontFamily: THEME.font, fontSize: 11, fill: 0xffffff, fontWeight: "bold" } });
             amount.anchor.set(0.5);
-            amount.position.set(x, 0);
-            root.addChild(amount);
+            item.addChild(amount);
           } else {
             drawToolIcon(icon, choice.kind === "kit" ? { kind: "kit", kit: choice.kit } : { kind: choice.kind });
             if (choice.kind === "kit") {
-              const badge = new Graphics().circle(x + 19, 19, 10).fill(0xdd8a25);
+              const badge = new Graphics().circle(19, 19, 10).fill(0xdd8a25);
               const price = new Text({ text: String(choice.price), style: { fontFamily: THEME.font, fontSize: 11, fill: 0xffffff, fontWeight: "bold" } });
               price.anchor.set(0.5);
-              price.position.set(x + 19, 19);
-              root.addChild(badge, price);
+              price.position.set(19, 19);
+              item.addChild(badge, price);
             }
           }
-          backgrounds.push(background);
+          root.addChild(item);
+          choices.push({ root: item, background, border });
         }
         root.addChild(timer);
         this.rewardLayer.addChild(root);
-        this.rewards.push({ offer, root, timer, backgrounds });
+        this.rewards.push({ offer, root, timer, choices });
       }
     }
     const scale = this.root.scale.x || 1;
     for (const reward of this.rewards) {
-      const { offer, root, timer, backgrounds, removedAt } = reward;
+      const { offer, root, timer, choices, removedAt, selected } = reward;
       const enter = Math.max(0, Math.min(1, (now - (offer.expiresAt - POWERUP_LIFETIME)) / APPEAR_TIME));
       const exit = removedAt === undefined ? 1 : Math.max(0, 1 - (now - removedAt) / REWARD_EXIT_TIME);
+      const flight = removedAt === undefined ? 0 : Math.max(0, Math.min(1, (now - removedAt) / REWARD_FLIGHT_TIME));
       root.position.set(offer.x, offer.y);
-      root.scale.set((0.75 + 0.25 * (1 - (1 - enter) ** 3)) * (0.75 + 0.25 * exit) / scale);
-      root.alpha = enter * exit;
-      for (const background of backgrounds) background.alpha = 0.72 + 0.2 * Math.sin(now * 3);
+      root.scale.set(selected === undefined ? (0.75 + 0.25 * (1 - (1 - enter) ** 3)) * (0.75 + 0.25 * exit) / scale : 1 / scale);
+      root.alpha = selected === undefined ? enter * exit : 1;
+      const hover = this.overlay.pointer && removedAt === undefined ? this.pick(this.overlay.pointer) : undefined;
+      choices.forEach((item, index) => {
+        const chosen = selected === index;
+        const hovered = hover?.kind === "reward" && hover.id === offer.id && hover.index === index
+          && this.overlay.hoverAction?.(hover);
+        item.background.alpha = 0.72 + 0.2 * Math.sin(now * 3);
+        item.border.clear().roundRect(-REWARD_WIDTH / 2, -REWARD_HEIGHT / 2, REWARD_WIDTH, REWARD_HEIGHT, 8)
+          .stroke({ width: chosen || hovered ? 4 : 2, color: chosen ? 0x32944c : THEME.ink });
+        item.root.alpha = selected === undefined || chosen ? 1 : exit;
+        const startX = (index - 0.5) * (REWARD_WIDTH + REWARD_GAP);
+        if (chosen) {
+          const move = Math.max(0, (flight - 0.2) / 0.8);
+          const target = this.rewardTarget?.(offer.choices[index]) ?? { x: offer.x, y: offer.y + 200 / scale };
+          const ease = 1 - (1 - move) ** 3;
+          item.root.position.set(startX + ((target.x - offer.x) * scale - startX) * ease, (target.y - offer.y) * scale * ease);
+          item.root.scale.set(1 + 0.12 * Math.sin(Math.PI * Math.min(1, flight * 2)));
+          item.root.alpha = Math.min(1, (1 - flight) * 4);
+        } else {
+          item.root.position.set(startX, 0);
+          item.root.scale.set(hovered ? 1.08 : 1);
+        }
+      });
+      timer.alpha = selected === undefined ? 1 : exit;
       const width = 2 * REWARD_WIDTH + REWARD_GAP;
       const left = Math.max(0, Math.min(1, (offer.expiresAt - this.game.sim.time) / POWERUP_LIFETIME));
       timer.clear().roundRect(-width / 2, -REWARD_HEIGHT / 2 - 7, width, 3, 1.5).fill(THEME.muted)
         .roundRect(-width / 2, -REWARD_HEIGHT / 2 - 7, width * left, 3, 1.5).fill(0x5ba76a);
     }
     this.rewards = this.rewards.filter((reward) => {
-      if (reward.removedAt === undefined || now - reward.removedAt < REWARD_EXIT_TIME) return true;
+      const duration = reward.selected === undefined ? REWARD_EXIT_TIME : REWARD_FLIGHT_TIME;
+      if (reward.removedAt === undefined || now - reward.removedAt < duration) return true;
       reward.root.destroy({ children: true });
       return false;
     });
@@ -639,7 +678,7 @@ export class NetView {
         }
       }
     }
-    if (hover && hover.kind !== "empty" && (o.target?.(hover) ?? false)) {
+    if (hover && hover.kind !== "empty" && (o.hoverAction?.(hover) ?? false)) {
       ring(hover, o.removing ? THEME.warn : THEME.ink, 0.5 + 0.35 * pulse, 4 + pulse);
     }
 

@@ -73,6 +73,17 @@ describe("toolbar layout", () => {
 });
 
 describe("build area", () => {
+  it("picks newly connected arcs before the next render", () => {
+    const game = new Game(level2);
+    const view = new NetView(game);
+    view.update(0, { x: 0, y: 0, width: 1200, height: 800 });
+    game.sim.net.addPlace({ id: "newPlace", x: 3000, y: 3000, marking: [] });
+    game.sim.net.addTransition({ id: "newTransition", x: 3200, y: 3000, kind: "normal" });
+    game.sim.net.addArc({ id: "newArc", from: "newPlace", to: "newTransition" });
+    expect(view.pick({ x: 3100, y: 3000 })).toEqual({ kind: "arc", id: "newArc" });
+    view.root.destroy({ children: true });
+  });
+
   it("fades in and out over 250 ms, including when reversed partway", () => {
     const game = new Game(level2);
     const view = new NetView(game);
@@ -181,6 +192,38 @@ describe("build area", () => {
       expect(reward.alpha).toBeCloseTo(0.5);
       game.step(0.16);
       view.update(0.16, viewport);
+      expect(layer.children).toHaveLength(0);
+      view.root.destroy({ children: true });
+    });
+
+    it("highlights the selected reward and moves it toward its toolbar target", () => {
+      const game = new Game(endless);
+      game.sim.net.transitions.get("starterSource")!.autoInterval = undefined;
+      const view = new NetView(game);
+      const controller = new Controller(game, view);
+      view.rewardTarget = () => ({ x: 300, y: 400 });
+      game.offers.set("offer", { id: "offer", x: 100, y: 100, expiresAt: 120, choices: [POWERUPS[0], POWERUPS[1]] });
+      game.offerVersion++;
+      view.update(0, viewport);
+      game.step(0.4);
+      view.update(0.4, viewport);
+      const layer = view.root.children.at(-1)!;
+      const reward = layer.children[0];
+      const other = reward.children[0];
+      const selected = reward.children[1];
+      controller.tap({ x: 128, y: 100 });
+      expect(game.powerupStock("capacity")).toBe(1);
+      view.update(0, viewport);
+      expect(selected.x).toBe(28);
+      expect(selected.alpha).toBe(1);
+      game.step(0.4);
+      view.update(0.4, viewport);
+      expect(other.alpha).toBe(0);
+      expect(selected.x).toBeGreaterThan(28);
+      expect(selected.y).toBeGreaterThan(0);
+      expect(selected.alpha).toBeGreaterThan(0);
+      game.step(0.36);
+      view.update(0.36, viewport);
       expect(layer.children).toHaveLength(0);
       view.root.destroy({ children: true });
     });

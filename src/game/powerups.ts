@@ -10,8 +10,8 @@ export const POWERUPS: readonly Powerup[] = [
   { id: "capacity", label: "Free place\nupgrade", afterEpoch: 0, kind: "capacity" },
   { id: "auto", label: "Free time\nupgrade", afterEpoch: 0, kind: "auto" },
   {
-    id: "blueMultiply", label: "Blue 3→2\n7 coins", afterEpoch: 15, kind: "kit", price: 7,
-    kit: { id: "blueMultiply", ports: [{ dir: "in", color: "blue", count: 3 }, { dir: "out", color: "blue", count: 2 }] },
+    id: "blueMultiply", label: "Blue 2→3\n7 coins", afterEpoch: 15, kind: "kit", price: 7,
+    kit: { id: "blueMultiply", ports: [{ dir: "in", color: "blue", count: 2 }, { dir: "out", color: "blue", count: 3 }] },
   },
   { id: "coins10", label: "10 coins", afterEpoch: 20, kind: "coins", amount: 10 },
   {

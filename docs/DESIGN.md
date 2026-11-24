@@ -64,6 +64,8 @@ The [README](../README.md) covers gameplay.
 - Denied taps shake the node, or show a red ripple on empty space.
 - Background drags pan unless a placement brush is active; a tap is dispatched only after release without a drag or pinch.
   Wheel and two-pointer pinch gestures zoom around the pointer or pinch midpoint.
+- The world renders across the screen; compact HUD backplates protect text and controls, and those areas do not pass taps through to the net.
+  Mouse hover highlights actionable targets and changes the cursor; empty draggable space uses a grab cursor.
 - The camera center stays within the live nodes' bounding box expanded by `BUILD_RANGE`.
   Zoom is capped so a full connection-range circle fits inside the HUD-free viewport, and selecting a loose end or place pans enough to show that circle.
 
@@ -131,7 +133,7 @@ The table is checked against the powerup definitions by the tests.
 | 0 | `coins5` | 5 coins | — |
 | 0 | `capacity` | Free place upgrade | — |
 | 0 | `auto` | Free time upgrade | — |
-| 15 | `blueMultiply` | Blue 3→2 | 7 |
+| 15 | `blueMultiply` | Blue 2→3 | 7 |
 | 20 | `coins10` | 10 coins | — |
 | 25 | `blueToRed` | Blue 2→red | 5 |
 | 30 | `redToBlue` | Red→blue | 5 |
@@ -168,6 +170,7 @@ When changing progression, update this overview and the boundary tests in [game.
   Pause and restart controls are at the top right; an in-game restart confirmation pauses play and restores its previous pause state when cancelled.
 - UI text uses uppercase Fredoka, bundled under the SIL Open Font License.
 - Reward choices use compact toolbar icons without text on pulsing grey backgrounds and remain screen-sized when zooming, with a shrinking expiry bar; numbers show coin amounts and kit prices.
+  A collected choice is highlighted and flies toward its toolbar button or the coin balance; the unchosen item fades away.
   Camera bounds include uncollected rewards.
   The toolbar places upgrades after the ordinary relay and before other transition kits, with removal last and a little extra space before it.
   It wraps into rows as needed and shows stock in green (free) or black (limited paid) badges, and prices in orange badges.

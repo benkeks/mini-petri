@@ -318,7 +318,7 @@ describe("generic splitter", () => {
     ["redToBlue", "red", 1, "blue", 1],
     ["blueToGreen", "blue", 1, "green", 1],
     ["redToGreen", "red", 1, "green", 1],
-    ["blueMultiply", "blue", 3, "blue", 2],
+    ["blueMultiply", "blue", 2, "blue", 3],
   ] as const)("builds %s with its specified token transformation", (id, inputColor, inputCount, outputColor, outputCount) => {
     const powerup = POWERUPS.find((item) => item.id === id);
     if (!powerup || powerup.kind !== "kit") throw new Error(`Missing kit ${id}`);

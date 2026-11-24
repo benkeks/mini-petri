@@ -1,6 +1,7 @@
 import { Container, Graphics, Rectangle, Text } from "pixi.js";
 import { COLORS } from "../core/multiset";
 import { UPGRADE_COST, type CoinEvent, type Game } from "../game/game";
+import type { Powerup } from "../game/powerups";
 import { brushesOf, sameBrush, type Brush, type Controller } from "../input/controller";
 import type { Pt } from "./geometry";
 import { THEME, TOKEN_COLORS } from "./style";
@@ -28,6 +29,7 @@ interface ToolButton {
   count: Text;
   price: Text;
   baseY: number;
+  hovered: boolean;
 }
 
 const POP_TIME = 0.55;
@@ -90,6 +92,8 @@ export function toolbarLayout(width: number, brushes: readonly Brush[]): {
 /** Screen-space overlay: time, goal progress, toolbar, hint and the level-won popup. */
 export class Hud {
   readonly root = new Container();
+  private readonly backplates = new Graphics();
+  private regions: Rectangle[] = [];
   private readonly title: Text;
   private readonly stats: Text;
   private readonly meta: Text;
@@ -138,6 +142,8 @@ export class Hud {
       control.anchor.set(1, 0);
       control.eventMode = "static";
       control.cursor = "pointer";
+      control.on("pointerover", () => { control.tint = THEME.warn; });
+      control.on("pointerout", () => { control.tint = 0xffffff; });
     }
     this.restart.on("pointertap", onRestart);
     this.pause.on("pointertap", () => actions.togglePause());
@@ -163,6 +169,8 @@ export class Hud {
       c.cursor = "pointer";
       c.hitArea = new Rectangle(-72, -20, 144, 40);
       c.on("pointertap", onTap);
+      c.on("pointerover", () => { c.scale.set(1.05); });
+      c.on("pointerout", () => { c.scale.set(1); });
     };
     button(this.againButton, "AGAIN", onRestart);
     this.card.roundRect(-170, -90, 340, 180, 18).fill(THEME.background).stroke({ width: 3, color: THEME.ink });
@@ -190,6 +198,7 @@ export class Hud {
     this.confirmationShade.visible = this.confirmation.visible = false;
 
     this.root.addChild(
+      this.backplates,
       this.title,
       this.stats,
       this.meta,
@@ -243,6 +252,41 @@ export class Hud {
     this.confirming = false;
     this.confirmationShade.visible = this.confirmation.visible = false;
     this.actions.restart();
+  }
+
+  /** Screen-space UI areas, excluding the otherwise open world behind them. */
+  blocks(point: Pt): boolean {
+    return this.confirming || this.game.complete || this.regions.some((region) => region.contains(point.x, point.y));
+  }
+
+  /** Destination for a collected reward in screen coordinates. */
+  rewardTarget(choice: Powerup): Pt {
+    if (choice.kind === "coins") return { x: 16 + this.coins.width / 2, y: this.height - COIN_ROW / 2 };
+    const tool = this.tools.find((item) => choice.kind === "kit"
+      ? item.brush.kind === "kit" && item.brush.kit === choice.kit
+      : item.brush.kind === choice.kind);
+    return tool ? { x: tool.root.x, y: tool.root.y } : { x: this.width / 2, y: this.height - COIN_ROW };
+  }
+
+  private drawBackplates(): void {
+    this.regions = [];
+    this.backplates.clear();
+    for (const text of [this.title, this.stats, this.meta, this.coins, this.hint, this.pause, this.restart]) {
+      if (!text.visible || !text.text) continue;
+      const bounds = text.getBounds();
+      const rect = new Rectangle(bounds.minX - 5, bounds.minY - 3, bounds.width + 10, bounds.height + 6);
+      this.regions.push(rect);
+      this.backplates.roundRect(rect.x, rect.y, rect.width, rect.height, 7).fill({ color: THEME.background, alpha: 0.94 });
+    }
+    if (this.toolbar.visible) {
+      for (const tool of this.tools) {
+        const half = this.toolSize / 2 + 4;
+        this.regions.push(new Rectangle(tool.root.x - half, tool.root.y - half, half * 2, half * 2));
+      }
+    }
+    for (const control of [this.pause, this.restart]) {
+      this.regions.push(new Rectangle(control.x - control.width - 6, control.y - 10, control.width + 12, 44));
+    }
   }
 
   private listenForCoins(game: Game): void {
@@ -312,8 +356,11 @@ export class Hud {
       root.cursor = "pointer";
       root.hitArea = new Rectangle(-TOOL_SIZE / 2 - 4, -TOOL_SIZE / 2 - 4, TOOL_SIZE + 8, TOOL_SIZE + 8);
       root.on("pointertap", () => this.actions.selectBrush(brush));
+      const tool: ToolButton = { brush, root, bg, badges, count, price, baseY: 0, hovered: false };
+      root.on("pointerover", () => { tool.hovered = true; });
+      root.on("pointerout", () => { tool.hovered = false; });
       this.toolbar.addChild(root);
-      return { brush, root, bg, badges, count, price, baseY: 0 };
+      return tool;
     });
   }
 
@@ -329,9 +376,9 @@ export class Hud {
     for (const b of this.tools) {
       const active = sameBrush(b.brush, this.controller.brush);
       const h = TOOL_SIZE / 2;
-      b.bg.clear().roundRect(-h, -h, 2 * h, 2 * h, 12).fill(active ? 0xffffff : THEME.background).stroke({
-        width: active ? 3.5 : 2,
-        color: active ? THEME.ink : THEME.muted,
+      b.bg.clear().roundRect(-h, -h, 2 * h, 2 * h, 12).fill(active || b.hovered ? 0xffffff : THEME.background).stroke({
+        width: active ? 3.5 : b.hovered ? 3 : 2,
+        color: active || b.hovered ? THEME.ink : THEME.muted,
       });
       b.root.y = b.baseY - (active ? 4 : 0);
       const powerup = b.brush.kind === "kit" ? g.kitPowerup(b.brush.kit) : undefined;
@@ -362,6 +409,7 @@ export class Hud {
     this.drawCoins(dt, toScreen);
     if (g.complete && this.shownFor === undefined) this.showPopup();
     if (this.shownFor !== undefined) this.animatePopup(dt);
+    this.drawBackplates();
     return changed;
   }
 

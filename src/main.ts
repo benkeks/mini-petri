@@ -1,4 +1,4 @@
-import { Application, Graphics } from "pixi.js";
+import { Application } from "pixi.js";
 import { endless } from "./game/endless";
 import { Game } from "./game/game";
 import { Camera } from "./input/camera";
@@ -24,7 +24,6 @@ async function main(): Promise<void> {
   document.getElementById("app")!.appendChild(app.canvas);
 
   let game = new Game(endless);
-  const mask = new Graphics();
   const camera = new Camera();
   const navigation = new Navigation(camera);
   let boundsVersion = -1;
@@ -40,11 +39,11 @@ async function main(): Promise<void> {
     },
     selectBrush: (b) => controller.setBrush(b),
   });
-  app.stage.addChild(view.root, mask, hud.root);
+  app.stage.addChild(view.root, hud.root);
 
   function createView(): NetView {
     const v = new NetView(game);
-    v.root.mask = mask;
+    v.rewardTarget = (choice) => camera.toWorld(hud.rewardTarget(choice));
     return v;
   }
 
@@ -67,6 +66,8 @@ async function main(): Promise<void> {
 
   function requestRestart(): void {
     navigation.cancel();
+    controller.move();
+    mousePosition = undefined;
     hud.showRestartConfirmation();
   }
 
@@ -94,7 +95,6 @@ async function main(): Promise<void> {
     }
     const { top, bottom } = hud.layout(w, h);
     const viewport = { x: 0, y: top, width: Math.max(1, w), height: Math.max(1, h - top - bottom) };
-    mask.clear().rect(viewport.x, viewport.y, viewport.width, viewport.height).fill(0xffffff);
     updateBounds();
     camera.layout(viewport, game.size, reset);
     applyCamera();
@@ -111,10 +111,10 @@ async function main(): Promise<void> {
     };
   };
   const inViewport = (p: Pt) => {
-    const v = camera.viewport;
-    return p.x >= v.x && p.x <= v.x + v.width && p.y >= v.y && p.y <= v.y + v.height;
+    return p.x >= 0 && p.x <= app.screen.width && p.y >= 0 && p.y <= app.screen.height && !hud.blocks(p);
   };
   const updatePointer = (p: Pt) => controller.move(camera.toWorld(p));
+  let mousePosition: Pt | undefined;
   const modalPointers = new Set<number>();
 
   app.canvas.addEventListener("pointerdown", (event) => {
@@ -137,7 +137,13 @@ async function main(): Promise<void> {
     const p = screenPoint(event);
     navigation.move(event.pointerId, p);
     applyCamera();
+    if (event.pointerType === "mouse") mousePosition = p;
     if (inViewport(p)) updatePointer(p);
+    else controller.move();
+  });
+  app.canvas.addEventListener("pointerleave", (event) => {
+    if (event.pointerType === "mouse") mousePosition = undefined;
+    controller.move();
   });
   app.canvas.addEventListener("pointerup", (event) => {
     if (modalPointers.delete(event.pointerId) || game.complete || hud.confirming) {
@@ -196,15 +202,21 @@ async function main(): Promise<void> {
       updateBounds();
       applyCamera();
     }
+    if (mousePosition && inViewport(mousePosition)) {
+      const world = camera.toWorld(mousePosition);
+      controller.move(world);
+      const pick = view.pick(world);
+      app.canvas.style.cursor = controller.interactive(pick) ? "pointer"
+        : pick.kind === "empty" && controller.brush.kind !== "kit" ? "grab" : "default";
+    }
     controller.sync();
-    const viewport = camera.viewport;
-    const topLeft = camera.toWorld(viewport);
+    if (hud.update(dt, (point) => ({ x: point.x * camera.scale + camera.x, y: point.y * camera.scale + camera.y }))) layout();
+    const topLeft = camera.toWorld({ x: 0, y: 0 });
     view.update(ticker.elapsedMS / 1000, {
       ...topLeft,
-      width: viewport.width / camera.scale,
-      height: viewport.height / camera.scale,
+      width: app.screen.width / camera.scale,
+      height: app.screen.height / camera.scale,
     });
-    if (hud.update(dt, (point) => ({ x: point.x * camera.scale + camera.x, y: point.y * camera.scale + camera.y }))) layout();
   });
 
   window.addEventListener("keydown", (e) => {

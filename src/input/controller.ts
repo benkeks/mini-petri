@@ -1,4 +1,4 @@
-import { withinConnectionRange, type Game } from "../game/game";
+import { withinConnectionRange, type Game, type PowerupOffer } from "../game/game";
 import type { Kit } from "../game/level";
 import type { Pt } from "../render/geometry";
 import type { Overlay, Pick } from "../render/netView";
@@ -7,6 +7,7 @@ interface ControllerView {
   overlay: Overlay;
   pick(p: Pt): Pick;
   deny(pick: Pick): void;
+  rewardCollected?(offer: PowerupOffer, index: number): void;
 }
 
 /** What a tap does when it cannot be inferred from what was tapped. */
@@ -71,8 +72,27 @@ export class Controller {
     this.selectedPlace = undefined;
   }
 
-  move(p: Pt): void {
+  move(p?: Pt): void {
     this.pointer = p;
+  }
+
+  /** Whether tapping this pick changes the game or gives interaction feedback. */
+  interactive(pick: Pick): boolean {
+    if (this.game.complete || this.game.paused) return false;
+    if (pick.kind === "reward" || pick.kind === "port" || pick.kind === "place") return true;
+    if (this.selected || this.selectedPlace) return true;
+    switch (this.brush.kind) {
+      case "fire":
+        return pick.kind === "transition" && this.game.sim.net.transitions.get(pick.id)?.kind === "normal";
+      case "kit":
+        return pick.kind === "empty" || pick.kind === "transition";
+      case "remove":
+        return pick.kind === "transition" || pick.kind === "arc";
+      case "auto":
+        return pick.kind === "transition";
+      case "capacity":
+        return pick.kind === "transition";
+    }
   }
 
   tap(p: Pt): void {
@@ -81,7 +101,9 @@ export class Controller {
     if (game.complete || game.paused) return;
     const pick = this.view.pick(p);
     if (pick.kind === "reward") {
+      const offer = game.offers.get(pick.id);
       if (!game.collectOffer(pick.id, pick.index)) this.view.deny(pick);
+      else if (offer) this.view.rewardCollected?.(offer, pick.index);
       return;
     }
     if (pick.kind === "place") game.touchPlace(pick.id);
@@ -154,6 +176,7 @@ export class Controller {
     const relay = this.selectedPlace && game.relayKit();
     this.view.overlay = {
       pointer: this.pointer,
+      hoverAction: (pick) => this.interactive(pick),
       build: canBuildConnected ? { kind: "place", capacity: 1, connection: this.selected }
         : relay ? { kind: "transition", ports: relay.ports.filter((port) => port.dir === "out"), fromPlace: this.selectedPlace }
         : b.kind === "kit" ? { kind: "transition", ports: b.kit.ports, canPlace: (x, y) => game.canBuildTransition(b.kit, x, y) } : undefined,

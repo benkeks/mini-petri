@@ -76,6 +76,26 @@ describe("controller", () => {
     return { game, view, controller, tap, denied };
   }
 
+  it("identifies interactive hover targets in firing, wiring and build modes", () => {
+    const { game, controller, view, tap } = setup();
+    expect(controller.interactive({ kind: "transition", id: "tSplit" })).toBe(true);
+    expect(controller.interactive({ kind: "transition", id: "srcB" })).toBe(false);
+    expect(controller.interactive({ kind: "place", id: "pB" })).toBe(true);
+    expect(controller.interactive({ kind: "port", tid: "sinkG", index: 0 })).toBe(true);
+    expect(controller.interactive({ kind: "arc", id: "a1" })).toBe(false);
+    tap({ kind: "port", tid: "sinkG", index: 0 });
+    controller.sync();
+    expect(view.overlay.hoverAction?.({ kind: "place", id: "pB" })).toBe(true);
+    expect(controller.interactive({ kind: "empty", x: 0, y: 0 })).toBe(true);
+    controller.cancel();
+    controller.setBrush({ kind: "remove" });
+    expect(controller.interactive({ kind: "arc", id: "a1" })).toBe(true);
+    controller.setBrush({ kind: "capacity" });
+    expect(controller.interactive({ kind: "transition", id: "tSplit" })).toBe(true);
+    game.paused = true;
+    expect(controller.interactive({ kind: "arc", id: "a1" })).toBe(false);
+  });
+
   it("clears a selected loose end when its goal times out", () => {
     const game = new Game(endless, () => 0);
     game.sim.net.transitions.get("starterSource")!.autoInterval = undefined;

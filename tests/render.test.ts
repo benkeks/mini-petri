@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { Game } from "../src/game/game";
+import { Graphics } from "pixi.js";
+import { Game, placementClearance } from "../src/game/game";
 import { endless } from "../src/game/endless";
 import { level2 } from "../src/game/level2";
 import { POWERUPS } from "../src/game/powerups";
 import { Controller, type Brush } from "../src/input/controller";
 import { Hud, toolbarLayout } from "../src/render/hud";
 import { NetView } from "../src/render/netView";
+import { THEME } from "../src/render/style";
 
 describe("toolbar layout", () => {
   const brushes = (count: number): Brush[] => [
@@ -73,6 +75,84 @@ describe("toolbar layout", () => {
 });
 
 describe("build area", () => {
+  it("greys out placement clearance for the selected kind, including ghost nodes during fade-out", () => {
+    const game = new Game(level2);
+    const view = new NetView(game);
+    const viewport = { x: -300, y: -300, width: 1800, height: 1400 };
+    const collision = view.root.children[0].children[3] as Graphics;
+    const circles = () => collision.context.instructions.flatMap((instruction) =>
+      instruction.action === "fill" ? instruction.data.path.instructions : [])
+      .filter((instruction) => instruction.action === "circle")
+      .map((instruction) => instruction.data.slice(0, 3));
+
+    view.overlay = { build: { kind: "place" } };
+    view.update(0.25, viewport);
+    expect(circles()).toContainEqual([280, 520, placementClearance("place", "place")]);
+    expect(circles()).toContainEqual([1000, 520, placementClearance("place", "transition")]);
+    expect(game.placementIssue("place", 391.99, 520)).toBe("crowded");
+    expect(game.placementIssue("place", 392, 520)).toBeUndefined();
+
+    view.overlay = { build: { kind: "transition" } };
+    view.update(0, viewport);
+    expect(circles()).toContainEqual([280, 520, placementClearance("transition", "place")]);
+    expect(circles()).toContainEqual([1000, 520, placementClearance("transition", "transition")]);
+    expect(game.placementIssue("transition", 379.99, 520)).toBe("crowded");
+    expect(game.placementIssue("transition", 380, 520)).toBeUndefined();
+    expect(game.remove("pB")).toBe(true);
+    view.overlay = {};
+    view.update(0.1, viewport);
+    expect(circles()).toContainEqual([280, 520, placementClearance("transition", "place")]);
+    view.root.destroy({ children: true });
+  });
+
+  it("dims a plug when its transition center is out of range, even if the plug itself is in range", () => {
+    const game = new Game(level2);
+    game.sim.net.addTransition({ id: "far", x: 590, y: 520, kind: "normal", open: [{ dir: "in" }] });
+    const view = new NetView(game);
+    const controller = new Controller(game, view);
+    const viewport = { x: -300, y: -300, width: 1800, height: 1400 };
+    controller.tap({ x: 280, y: 520 });
+    const plug = { x: 533, y: 520 };
+    controller.move(plug);
+    controller.sync();
+    expect(view.pick(plug)).toEqual({ kind: "port", tid: "far", index: 0 });
+    expect(controller.interactive(view.pick(plug))).toBe(false);
+    view.update(0.25, viewport);
+    const overlay = view.root.children[8] as Graphics;
+    const mutedPlug = overlay.context.instructions.find((instruction) =>
+      instruction.action === "stroke" && instruction.data.style.color === THEME.muted
+      && instruction.data.path.instructions.some((shape) =>
+        shape.action === "circle" && shape.data[0] === plug.x && shape.data[1] === plug.y));
+    expect(mutedPlug).toBeDefined();
+    view.root.destroy({ children: true });
+  });
+
+  it.each([false, true])("shows only applied transition upgrades in %s portrait mode", (portrait) => {
+    const game = new Game(level2);
+    game.setPortrait(portrait);
+    const view = new NetView(game);
+    const viewport = { x: -300, y: -300, width: 1800, height: 1400 };
+    view.update(0, viewport);
+    const transition = game.sim.net.transitions.get("tSplit")!;
+    const node = view.root.children[5].children.find((child) => child.x === transition.x && child.y === transition.y)!;
+    const graphics = node.children[0] as Graphics;
+    const bars = () => graphics.context.instructions.flatMap((instruction) =>
+      instruction.action === "fill" && instruction.data.style.color === 0xffffff
+        ? instruction.data.path.instructions.filter((shape) => shape.action === "roundRect")
+        : []);
+    expect(bars()).toHaveLength(0);
+    expect(game.upgradeAuto("tSplit", false)).toBe(true);
+    expect(game.upgradeAuto("tSplit")).toBe(true);
+    expect(game.upgradeAuto("tSplit")).toBe(true);
+    view.update(0, viewport);
+    expect(bars()).toHaveLength(2);
+    for (const bar of bars()) {
+      expect(portrait ? bar.data[2] : bar.data[3]).toBe(3);
+      expect(portrait ? bar.data[3] : bar.data[2]).toBe(12);
+    }
+    view.root.destroy({ children: true });
+  });
+
   it("picks newly connected arcs before the next render", () => {
     const game = new Game(level2);
     const view = new NetView(game);

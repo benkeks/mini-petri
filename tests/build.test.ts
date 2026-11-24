@@ -327,6 +327,8 @@ describe("controller", () => {
     tap({ kind: "place", id: "pB" });
     controller.sync();
     expect(view.overlay.target?.({ kind: "port", tid: "sinkG", index: 0 })).toBe(false);
+    expect(controller.interactive({ kind: "port", tid: "sinkG", index: 0 })).toBe(false);
+    expect(controller.interactive({ kind: "transition", id: "sinkG" })).toBe(false);
     tap({ kind: "port", tid: "sinkG", index: 0 });
     expect(denied).toHaveLength(2);
     expect(game.sim.net.inputs("sinkG")).toHaveLength(0);
@@ -614,16 +616,19 @@ describe("upgrades", () => {
     const tokenCount = place.marking.length;
     expect(game.upgradeCapacity("pB", false)).toBe(true);
     expect(game.coins).toBe(STARTING_COINS);
+    expect(game.upgradePrice).toBe(UPGRADE_COST);
     expect(game.upgradeCapacity("pB")).toBe(true);
     expect(game.upgradeCapacity("pB")).toBe(true);
     expect(game.upgradeCapacity("pB")).toBe(false);
-    expect(game.coins).toBe(STARTING_COINS - 2 * UPGRADE_COST);
+    expect(game.upgradePrice).toBe(UPGRADE_COST + 2);
+    expect(game.coins).toBe(STARTING_COINS - 11);
     expect(game.remove("pB", false)).toBe(true);
-    expect(game.coins).toBe(STARTING_COINS - 2 * UPGRADE_COST);
+    expect(game.coins).toBe(STARTING_COINS - 11);
     expect(game.remove("pB")).toBe(true);
-    expect(game.coins).toBe(STARTING_COINS - 2 * UPGRADE_COST + 5 + tokenCount);
+    expect(game.coins).toBe(STARTING_COINS - 11 + 6 + tokenCount);
+    expect(game.upgradePrice).toBe(UPGRADE_COST + 2);
     expect(game.remove("pB")).toBe(false);
-    expect(events).toEqual([-5, -5, ...(tokenCount ? [tokenCount] : []), 5]);
+    expect(events).toEqual([-5, -6, ...(tokenCount ? [tokenCount] : []), 6]);
   });
 
   it("reimburses a single transition upgrade rounded up, not pre-existing automation", () => {
@@ -635,20 +640,22 @@ describe("upgrades", () => {
     expect(game.coins).toBe(STARTING_COINS - 5 + 3);
   });
 
-  it("denies upgrades without coins, including feasibility checks", () => {
+  it("denies upgrades without enough coins, including feasibility checks", () => {
     const game = new Game(level2);
-    for (let i = 0; i < STARTING_COINS / UPGRADE_COST; i++) {
+    for (let i = 0; i < 5; i++) {
       const id = `economy${i}`;
       game.sim.net.addTransition({ id, x: -1000 - i * 100, y: 0, kind: "normal" });
       expect(game.upgradeAuto(id)).toBe(true);
     }
-    expect(game.coins).toBe(0);
+    expect(game.coins).toBe(5);
+    expect(game.upgradePrice).toBe(10);
     expect(game.upgradeAuto("tSplit", false)).toBe(false);
     expect(game.upgradeAuto("tSplit")).toBe(false);
     expect(game.upgradeCapacity("pB", false)).toBe(false);
     expect(game.upgradeCapacity("pB")).toBe(false);
     expect(game.remove("economy0")).toBe(true);
-    expect(game.coins).toBe(3);
+    expect(game.coins).toBe(8);
+    expect(game.upgradePrice).toBe(10);
     expect(game.upgradeAuto("tSplit")).toBe(false);
   });
 
@@ -678,8 +685,14 @@ describe("upgrades", () => {
 
   it("make transitions automatic, then faster, and places larger", () => {
     const game = new Game(level2);
+    game.sim.net.addPlace({ id: "funds", x: -1000, y: 0, capacity: 19, marking: Array(19).fill("blue") });
+    game.sim.net.addPlace({ id: "funds2", x: -1100, y: 0, capacity: 19, marking: Array(19).fill("blue") });
+    expect(game.remove("funds")).toBe(true);
+    expect(game.remove("funds2")).toBe(true);
     const t = game.sim.net.transitions.get("tSplit")!;
+    expect(game.autoUpgradeLevel("tDrain")).toBe(0);
     expect(game.upgradeAuto("tSplit", false)).toBe(true);
+    expect(game.autoUpgradeLevel("tSplit")).toBe(0);
     expect(t.autoInterval).toBeUndefined();
     expect(game.upgradeAuto("tSplit")).toBe(true);
     expect(t.autoInterval).toBe(4);
@@ -687,6 +700,7 @@ describe("upgrades", () => {
     expect(t.autoInterval).toBe(4);
     expect(game.upgradeAuto("tSplit")).toBe(true);
     expect(t.autoInterval).toBeCloseTo(2.4);
+    expect(game.autoUpgradeLevel("tSplit")).toBe(2);
     expect(game.upgradeAuto("srcR")).toBe(false);
     expect(game.upgradeAuto("sinkY")).toBe(false);
     expect(game.upgradeAuto("tDrain")).toBe(true);
@@ -695,6 +709,7 @@ describe("upgrades", () => {
     expect(t.autoInterval).toBe(0.6);
     expect(game.upgradeAuto("tSplit", false)).toBe(false);
     expect(game.upgradeAuto("tSplit")).toBe(false);
+    expect(game.autoUpgradeLevel("tSplit")).toBe(5);
     expect(game.sim.net.places.get("pB")!.capacity).toBe(1);
     expect(game.upgradeCapacity("pB")).toBe(true);
     expect(game.sim.net.places.get("pB")!.capacity).toBe(7);

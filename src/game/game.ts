@@ -96,8 +96,10 @@ export class Game {
   /** Goal tokens delivered during this endless run. */
   score = 0;
   private coinBalance = STARTING_COINS;
+  private paidUpgrades = 0;
   private readonly coinListeners: ((event: CoinEvent) => void)[] = [];
   private readonly upgradeSpending = new Map<string, number>();
+  private readonly autoUpgradeLevels = new Map<string, number>();
   private readonly inventory = new Map<string, number>();
   readonly offers = new Map<string, PowerupOffer>();
   offerVersion = 0;
@@ -203,6 +205,15 @@ export class Game {
     return this.coinBalance;
   }
 
+  /** Price of the next paid upgrade, shared by both upgrade tools. */
+  get upgradePrice(): number {
+    return UPGRADE_COST + this.paidUpgrades;
+  }
+
+  autoUpgradeLevel(tid: string): number {
+    return this.autoUpgradeLevels.get(tid) ?? 0;
+  }
+
   onCoins(fn: (event: CoinEvent) => void): void {
     this.coinListeners.push(fn);
   }
@@ -262,8 +273,10 @@ export class Game {
   }
 
   private buyUpgrade(node: { id: string; x: number; y: number }): void {
-    this.upgradeSpending.set(node.id, (this.upgradeSpending.get(node.id) ?? 0) + UPGRADE_COST);
-    this.changeCoins(-UPGRADE_COST, node);
+    const price = this.upgradePrice;
+    this.upgradeSpending.set(node.id, (this.upgradeSpending.get(node.id) ?? 0) + price);
+    this.paidUpgrades++;
+    this.changeCoins(-price, node);
   }
 
   private useUpgrade(kind: "auto" | "capacity", node: { id: string; x: number; y: number }): void {
@@ -288,11 +301,10 @@ export class Game {
   /** Whether a node of `kind` may be built at (x, y) in current coordinates. */
   placementIssue(kind: NodeKind, x: number, y: number): PlacementIssue | undefined {
     const net = this.sim.net;
-    const r = footprint(kind);
     const nodes = [...net.places.values(), ...net.transitions.values()];
     for (const n of nodes) {
-      const other = net.places.has(n.id) ? PLACE_FOOTPRINT : TRANSITION_FOOTPRINT;
-      if (Math.hypot(n.x - x, n.y - y) < r + other + CLEARANCE) return "crowded";
+      const otherKind = net.places.has(n.id) ? "place" : "transition";
+      if (Math.hypot(n.x - x, n.y - y) < placementClearance(kind, otherKind)) return "crowded";
     }
     if (!net.liveNodes().some((n) => Math.hypot(n.x - x, n.y - y) <= BUILD_RANGE)) return "far";
     return undefined;
@@ -407,6 +419,7 @@ export class Game {
       if (apply) {
         this.syncUnusedPlaces();
         this.refundUpgrade(t);
+        this.autoUpgradeLevels.delete(t.id);
         net.ghostTransition(id);
         this.syncUnusedPlaces();
       }
@@ -429,11 +442,12 @@ export class Game {
   upgradeAuto(tid: string, apply = true): boolean {
     const t = this.sim.net.transitions.get(tid);
     if (this.complete || !this.level.tools?.auto || !t || t.ghost || t.kind !== "normal"
-      || (this.powerupStock("auto") === 0 && this.coins < UPGRADE_COST)) return false;
+      || (this.powerupStock("auto") === 0 && this.coins < this.upgradePrice)) return false;
     if (t.autoInterval && t.autoInterval <= MIN_INTERVAL) return false;
     if (apply) {
       t.autoInterval = t.autoInterval ? Math.max(MIN_INTERVAL, t.autoInterval * FASTER_FACTOR) : AUTO_INTERVAL;
       this.useUpgrade("auto", t);
+      this.autoUpgradeLevels.set(tid, this.autoUpgradeLevel(tid) + 1);
     }
     return true;
   }
@@ -441,7 +455,7 @@ export class Game {
   upgradeCapacity(pid: string, apply = true): boolean {
     const p = this.sim.net.places.get(pid);
     if (this.complete || !this.level.tools?.capacity || !p || p.ghost
-      || (this.powerupStock("capacity") === 0 && this.coins < UPGRADE_COST)) return false;
+      || (this.powerupStock("capacity") === 0 && this.coins < this.upgradePrice)) return false;
     const next = PLACE_CAPACITIES.find((capacity) => capacity > p.capacity!);
     if (next === undefined) return false;
     const radius = placeRadius(next) + 8;
@@ -776,6 +790,10 @@ export class Game {
 
 export function footprint(kind: NodeKind): number {
   return kind === "place" ? PLACE_FOOTPRINT : TRANSITION_FOOTPRINT;
+}
+
+export function placementClearance(kind: NodeKind, otherKind: NodeKind): number {
+  return footprint(kind) + footprint(otherKind) + CLEARANCE;
 }
 
 function bump(m: Map<string, number>, key: string): void {

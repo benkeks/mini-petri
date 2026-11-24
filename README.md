@@ -45,12 +45,12 @@ A toolbar at the bottom offers tools.
 Everything works with a single tap; a tool says what a tap does where it cannot be told from what you tap.
 Tapping a tool again (or pressing Escape) goes back to firing.
 
-- **Transition** tools build new nodes inside the white area, which reaches a bit around the existing nodes; nodes need some room around them.
+- **Transition** tools build new nodes inside the white area, which reaches a bit around the existing nodes; gray areas around nodes show where placement is blocked.
   The map can grow in any direction as you build.
   The transition tools show what the new transition consumes (left) and produces (right).
 - A new transition starts with **loose ends** (plugs) and cannot fire until all of them are connected: tap a plug and a place in either order.
   Some given transitions and goals have loose ends, too.
-  Connections can only reach nearby places; a ring shows their maximum range while building or connecting, and reachable nodes are highlighted.
+  Connections can only reach nearby places; a ring shows their maximum range while building or connecting, reachable nodes are highlighted, and out-of-range plugs are dimmed.
   After selecting a place, tap a transition to connect its first available input, then its first available output; tap a specific plug to choose it instead.
   Or tap empty space to build a one-to-one relay connected to that place, then connect its output.
   Tapping a plug switches back to the firing tool, even if another tool was active.
@@ -58,10 +58,10 @@ Tapping a tool again (or pressing Escape) goes back to firing.
 - **Remove** (red cross, just after the other tools) takes away an arc, place or transition; sources and sinks cannot be removed.
   Removed things fade out but finish what they are doing; a removed place loses its tokens.
   Cutting an arc leaves a loose end that can be connected elsewhere.
-- **Auto** (clock) makes a transition fire on its own; tap it again with the same tool to make it faster.
+- **Auto** (clock) makes a transition fire on its own; tap it again with the same tool to make it faster. Small bars on the transition show the upgrades applied.
 - **Capacity** (plus) grows a place to the next size, allowing it to hold more tokens.
 
-You start with 40 coins. Each automation, speed or capacity upgrade costs 5 coins.
+You start with 40 coins. Paid automation, speed and capacity upgrades share a price starting at 5 coins; each successful paid upgrade increases the next price by 1 for the rest of the run.
 Exhausting a finite source earns 5 coins; removing a place earns one coin per settled token on it.
 Removing an upgraded node refunds half its total upgrade costs, rounded to the nearest coin.
 Flying coins show spending and earnings; ordinary building and wiring are free.

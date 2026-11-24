@@ -1,7 +1,7 @@
 import { Container, Graphics, Text } from "pixi.js";
 import type { Color } from "../core/multiset";
 import { arcCount, type Arc, type Port, type Transition } from "../core/net";
-import { BUILD_RANGE, CONNECTION_RANGE, POWERUP_LIFETIME, RESOLVED_LINGER, type NodeKind, type PowerupOffer } from "../game/game";
+import { BUILD_RANGE, CONNECTION_RANGE, placementClearance, POWERUP_LIFETIME, RESOLVED_LINGER, type NodeKind, type PowerupOffer } from "../game/game";
 import type { Game } from "../game/game";
 import type { Powerup } from "../game/powerups";
 import { placeRadius } from "../game/placeSize";
@@ -105,8 +105,10 @@ export class NetView {
   private readonly rangeBackground = new Graphics();
   private readonly rangeArea = new Graphics();
   private readonly rangeMask = new Graphics();
+  private readonly collisionArea = new Graphics();
   private rangeFade = 0;
   private rangeVersion = -1;
+  private rangeKind?: NodeKind;
   private rangeViewport?: { x: number; y: number; width: number; height: number };
   private readonly ghostLayer = new Container();
   private readonly ghostArcLayer = new Graphics();
@@ -138,7 +140,7 @@ export class NetView {
     this.ghostLayer.alpha = GHOST_ALPHA;
     this.ghostLayer.addChild(this.ghostArcLayer, this.ghostPlaceLayer);
     this.rangeArea.mask = this.rangeMask;
-    this.rangeLayer.addChild(this.rangeBackground, this.rangeArea, this.rangeMask);
+    this.rangeLayer.addChild(this.rangeBackground, this.rangeArea, this.rangeMask, this.collisionArea);
     this.rangeLayer.visible = false;
     this.root.addChild(
       this.rangeLayer,
@@ -176,12 +178,22 @@ export class NetView {
     this.rangeLayer.visible = this.rangeFade > 0;
     if (!this.rangeLayer.visible) return;
     this.rangeLayer.alpha = this.rangeFade;
-    if (this.rangeVersion !== this.game.sim.net.version) {
+    const kind = this.overlay.build?.kind ?? this.rangeKind;
+    if (this.rangeVersion !== this.game.sim.net.version || this.rangeKind !== kind) {
       this.rangeVersion = this.game.sim.net.version;
-      const nodes = this.game.sim.net.liveNodes();
+      this.rangeKind = kind;
+      const net = this.game.sim.net;
+      const nodes = net.liveNodes();
       this.rangeMask.clear();
       for (const n of nodes) this.rangeMask.circle(n.x, n.y, BUILD_RANGE).fill(0xffffff);
       this.rangeArea.visible = nodes.length > 0;
+      this.collisionArea.clear();
+      if (kind) {
+        for (const node of [...net.places.values(), ...net.transitions.values()]) {
+          const otherKind = net.places.has(node.id) ? "place" : "transition";
+          this.collisionArea.circle(node.x, node.y, placementClearance(kind, otherKind)).fill(THEME.buildOutside);
+        }
+      }
     }
     const { x, y, width, height } = viewport;
     const previous = this.rangeViewport;
@@ -577,6 +589,17 @@ export class NetView {
     if (t.kind === "sink") g.roundRect(-w / 2, -h / 2, w, h, 6).stroke({ width: 4, color: THEME.ink });
     if (shakeT < SHAKE_TIME) g.roundRect(-w / 2, -h / 2, w, h, 6).stroke({ width: 3, color: THEME.warn });
 
+    const upgrades = this.game.autoUpgradeLevel(t.id);
+    const spacing = Math.min(7, ((this.game.portrait ? w : h) - 12) / Math.max(1, upgrades - 1));
+    const thickness = Math.min(3, spacing * 0.6);
+    for (let i = 0; i < upgrades; i++) {
+      const along = (i - (upgrades - 1) / 2) * spacing;
+      const [x, y, width, height] = this.game.portrait
+        ? [along - thickness / 2, -6, thickness, 12]
+        : [-6, along - thickness / 2, 12, thickness];
+      g.roundRect(x, y, width, height, 1).fill(0xffffff).stroke({ width: 1, color: THEME.ink });
+    }
+
     const failedAt = this.game.failed.get(t.id);
     const exhaustedAt = this.game.exhausted.get(t.id);
     const countdown = this.game.countdownProgress(t.id);
@@ -693,6 +716,11 @@ export class NetView {
 
     // Open ports invite a tap; the selected one is waiting for a place.
     for (const s of this.stubs) {
+      if (selectedPlace && !o.target?.({ kind: "port", tid: s.tid, index: s.index })) {
+        g.circle(s.plug.x, s.plug.y, PLUG_RADIUS + 2).fill(THEME.background)
+          .stroke({ width: 2, color: THEME.muted });
+        continue;
+      }
       const selected = o.selected?.tid === s.tid && o.selected.index === s.index;
       const r = PLUG_RADIUS + 4 + (selected ? 4 + 3 * pulse : 2 * pulse);
       g.circle(s.plug.x, s.plug.y, r).stroke({ width: selected ? 3 : 2, color: THEME.ink, alpha: selected ? 0.9 : 0.25 });

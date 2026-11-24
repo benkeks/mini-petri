@@ -1,6 +1,6 @@
 import { Container, Graphics, Rectangle, Text } from "pixi.js";
 import { COLORS } from "../core/multiset";
-import { UPGRADE_COST, type CoinEvent, type Game } from "../game/game";
+import type { CoinEvent, Game } from "../game/game";
 import type { Powerup } from "../game/powerups";
 import { brushesOf, sameBrush, type Brush, type Controller } from "../input/controller";
 import type { Pt } from "./geometry";
@@ -384,7 +384,7 @@ export class Hud {
       const powerup = b.brush.kind === "kit" ? g.kitPowerup(b.brush.kit) : undefined;
       const free = b.brush.kind === "auto" || b.brush.kind === "capacity" ? g.powerupStock(b.brush.kind) : 0;
       const stock = powerup ? g.powerupStock(powerup.id) : free;
-      const price = powerup?.price ?? ((b.brush.kind === "auto" || b.brush.kind === "capacity") && !free ? UPGRADE_COST : 0);
+      const price = powerup?.price ?? ((b.brush.kind === "auto" || b.brush.kind === "capacity") && !free ? g.upgradePrice : 0);
       b.badges.clear();
       if (stock) b.badges.circle(19, -19, 10).fill(powerup ? 0x222222 : 0x32944c);
       if (price) b.badges.circle(19, 19, 10).fill(0xdd8a25);

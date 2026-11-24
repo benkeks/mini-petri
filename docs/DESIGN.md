@@ -42,7 +42,8 @@ The [README](../README.md) covers gameplay.
 - Built transitions come from kits (`{ id, ports }`) and start with all ports open; built ids are fresh (`p1`, `t1`, `c1`, …).
 - Upgrades: auto (manual `normal` transition gets a 4 s interval; later upgrades multiply the interval by 0.6, down to 0.6 s), capacity (next of 1, 7 and 19).
   A place cannot be upgraded if the larger footprint would overlap another node.
-- Each run starts with 40 coins. Each upgrade costs 5, exhausting a finite source awards 5, and removing a place awards one per settled token.
+- Each run starts with 40 coins. Paid upgrades share a price starting at 5; each successful paid upgrade increases the next price by 1 for the rest of the run.
+  Free upgrades, failed checks and removal do not change that price. Exhausting a finite source awards 5, and removing a place awards one per settled token.
   Removing a node refunds half of its total purchased upgrade costs, rounded to the nearest integer; existing upgrades and swallowed incoming tokens do not count.
   Ordinary node construction and connections are free; limited transition kits charge their displayed price when successfully built.
 - When a resolved sink disappears, two distinct randomly selected powerups appear at its position for 120 seconds.
@@ -158,7 +159,9 @@ When changing progression, update this overview and the boundary tests in [game.
 - Active expiry countdowns show a shrinking red ring; timed-out sources and sinks show a cross before disappearing.
 - Open ports dangle as short stubs with a plug, against the flow for inputs and along it for outputs; plugs pulse softly, the selected one strongly, with a line to the pointer.
 - Ghosts are drawn at 30% opacity.
-- Build brushes show the union of build ranges in white against a grey background, fading in and out over 250 ms, and preview the node under the pointer, red if it cannot go there.
+- Build brushes show the union of build ranges in white against a grey background, with blocked clearance areas around all nodes greyed out for the selected node kind. The overlay fades in and out over 250 ms and previews the node under the pointer, red if it cannot go there.
+  When wiring from a place, plugs whose transitions cannot connect are dimmed instead of pulsing or highlighting on hover.
+  Transition bodies show one small bar per successful player-applied time upgrade, including free upgrades but not pre-existing automation.
 - A ring shows the connection range around the selected plug's transition or selected place, and around a node preview while building.
   Reachable places, or transitions with loose ends and their plugs, pulse within the ring.
 - Enabled player transitions are dark and pulse; disabled ones are grey and shake when tapped.

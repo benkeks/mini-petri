@@ -169,9 +169,13 @@ describe("sink rewards", () => {
     expect(game.upgradeAuto("starterRelay")).toBe(true);
     expect(game.upgradeAuto("starterRelay")).toBe(true);
     expect(game.coins).toBe(STARTING_COINS);
+    expect(game.upgradePrice).toBe(5);
+    expect(game.autoUpgradeLevel("starterRelay")).toBe(2);
     expect(game.powerupStock("auto")).toBe(0);
     expect(game.upgradeAuto("starterRelay")).toBe(true);
     expect(game.coins).toBe(STARTING_COINS - 5);
+    expect(game.upgradePrice).toBe(6);
+    expect(game.autoUpgradeLevel("starterRelay")).toBe(3);
     game.sim.net.addPlace({ id: "small", x: 2000, y: 2000, capacity: 1, marking: [] });
     expect(game.upgradeCapacity("small")).toBe(true);
     expect(game.powerupStock("capacity")).toBe(0);
@@ -180,6 +184,7 @@ describe("sink rewards", () => {
     expect(game.coins).toBe(STARTING_COINS - 5);
     expect(game.remove("starterRelay")).toBe(true);
     expect(game.coins).toBe(STARTING_COINS - 2);
+    expect(game.autoUpgradeLevel("starterRelay")).toBe(0);
   });
 
   it("awards ten coins after the twentieth epoch", () => {
@@ -218,11 +223,11 @@ describe("sink rewards", () => {
     expect(game.sim.net.transitions.get(id!)?.copyInputColor).toBe(true);
     expect(game.powerupStock(powerup.id)).toBe(1);
     expect(game.coins).toBe(STARTING_COINS - 20);
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 3; i++) {
       game.sim.net.addTransition({ id: `spend${i}`, x: -1000 - 100 * i, y: 0, kind: "normal" });
       expect(game.upgradeAuto(`spend${i}`)).toBe(true);
     }
-    expect(game.coins).toBe(0);
+    expect(game.coins).toBe(2);
     const nextPoint = buildPoint()!;
     expect(nextPoint).toBeDefined();
     expect(game.buildTransition(kit, nextPoint.x, nextPoint.y)).toBeUndefined();
@@ -230,11 +235,19 @@ describe("sink rewards", () => {
   });
 
   it("allows free upgrades with no coins and leaves a reward intact when the upgrade is invalid", () => {
-    const { game, finish, setRandom } = setup(2);
+    const { game, finish, reachEpoch, buildPoint, setRandom } = setup(3);
     setRandom(0.999);
     const auto = finish(0);
     const capacity = finish(1);
-    for (let i = 0; i < 8; i++) {
+    reachEpoch(25);
+    const kitOffer = finish(2);
+    expect(kitOffer.choices[0].id).toBe("blueToRed");
+    expect(game.collectOffer(kitOffer.id, 0)).toBe(true);
+    const powerup = POWERUPS.find((item) => item.id === "blueToRed");
+    if (!powerup || powerup.kind !== "kit") throw new Error("Missing blue-to-red kit");
+    const point = buildPoint()!;
+    expect(game.buildTransition(powerup.kit, point.x, point.y)).toBeDefined();
+    for (let i = 0; i < 5; i++) {
       game.sim.net.addTransition({ id: `buyer${i}`, x: -6000 - i * 100, y: 0, kind: "normal" });
       expect(game.upgradeAuto(`buyer${i}`)).toBe(true);
     }

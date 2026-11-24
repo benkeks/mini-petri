@@ -79,6 +79,8 @@ export class Controller {
   /** Whether tapping this pick changes the game or gives interaction feedback. */
   interactive(pick: Pick): boolean {
     if (this.game.complete || this.game.paused) return false;
+    if (pick.kind === "port" && this.selectedPlace) return this.game.connect(pick.tid, pick.index, this.selectedPlace, false);
+    if (pick.kind === "transition" && this.selectedPlace) return this.firstConnectiblePort(pick.id, this.selectedPlace) !== undefined;
     if (pick.kind === "reward" || pick.kind === "port" || pick.kind === "place") return true;
     if (this.selected || this.selectedPlace) return true;
     switch (this.brush.kind) {
@@ -220,9 +222,9 @@ export class Controller {
       case "remove":
         return "Tap an arc, place or transition to remove it. Sources and sinks cannot be removed.";
       case "auto":
-        return this.game.powerupStock("auto") ? "Tap a transition to use a free time upgrade." : "Tap a transition to automate or speed it up (5 coins).";
+        return this.game.powerupStock("auto") ? "Tap a transition to use a free time upgrade." : `Tap a transition to automate or speed it up (${this.game.upgradePrice} coins).`;
       case "capacity":
-        return this.game.powerupStock("capacity") ? "Tap a place to use a free capacity upgrade." : "Tap a place to increase its capacity (5 coins).";
+        return this.game.powerupStock("capacity") ? "Tap a place to use a free capacity upgrade." : `Tap a place to increase its capacity (${this.game.upgradePrice} coins).`;
     }
   }
 

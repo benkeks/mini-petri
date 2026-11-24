@@ -1,7 +1,25 @@
 # Design notes
 
-Implementation-level decisions behind Mini Petri.
-The [README](../README.md) covers gameplay.
+Detailed gameplay rules and implementation decisions behind Mini Petri.
+The [README](../README.md) covers setup and a quick introduction.
+
+## Reading the map
+
+| Game | Petri net |
+| --- | --- |
+| circles | places |
+| bars | transitions |
+| lines with arrowheads | arcs; the line color is the token color it moves (black = any color), the number of arrowheads its weight |
+| colored dots | colored tokens; the dots in a place are its marking |
+| tapping a bar | firing an enabled transition |
+| colored bars that fill up | source transitions firing on a timer |
+| goals | sink transitions with a target number of tokens to consume |
+| room in a circle | place capacity |
+| dots behind a source | a bounded number of firings |
+| building, connecting and removing | editing the net's structure while it runs |
+
+Empty circles beside a goal show the tokens it still needs; each matching arrival removes a circle.
+Completed goals are checked off and disappear.
 
 ## Net model
 - A place's marking is an ordered list of colors (arrival order).
@@ -68,6 +86,7 @@ The [README](../README.md) covers gameplay.
 ## Input
 - `NetView.pick` maps a world point to the topmost live object: plug, transition, place, arc (with a screen-space tolerance), else empty space.
 - `Controller` dispatches taps by brush: fire (default), kit, remove, auto, capacity.
+  Tapping the selected toolbar tool again or pressing Escape returns to firing.
   Plugs can be picked with any brush, switching to the firing brush; the next tap on a place connects them.
   Tapping empty space with a plug selected builds and connects a capacity-1 place, subject to the place tool and ordinary placement rules.
   Tapping a connector while a plug is selected creates a nearby capacity-1 place connecting both ports, or just that port when tapped again.
@@ -256,4 +275,6 @@ When changing progression, update this overview and the boundary tests in [game.
   A collected choice is highlighted and flies toward its toolbar button or the coin balance; the unchosen item fades away.
   Camera bounds include uncollected rewards.
   The toolbar places unlocked upgrades after firing and before transition kits, with removal last and a little extra space before it.
+  Selecting a tool gives its icon a subtle 0.2-second hop, then it rests on the same baseline as other tools; the button and hit area stay stationary.
+  A white background and thicker border persist to indicate selection.
   It wraps into rows as needed and shows stock in green (free) or black (limited paid) badges, and prices in orange badges.

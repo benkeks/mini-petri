@@ -12,6 +12,7 @@ const TOOL_GAP = 8;
 const REMOVE_EXTRA_GAP = 8;
 const COIN_ROW = 48;
 const COIN_SHAKE_TIME = 0.35;
+const TOOL_SELECT_TIME = 0.2;
 const WARNING_START = 124;
 const WARNING_GAP = 24;
 const WARNING_ROW = 44;
@@ -31,11 +32,14 @@ interface ToolButton {
   brush: Brush;
   root: Container;
   bg: Graphics;
+  icon: Graphics;
   badges: Graphics;
   count: Text;
   price: Text;
   baseY: number;
   hovered: boolean;
+  selected: boolean;
+  selectionAge: number;
 }
 
 interface SinkWarning {
@@ -602,7 +606,10 @@ export class Hud {
       root.cursor = "pointer";
       root.hitArea = new Rectangle(-TOOL_SIZE / 2 - 4, -TOOL_SIZE / 2 - 4, TOOL_SIZE + 8, TOOL_SIZE + 8);
       root.on("pointertap", () => this.actions.selectBrush(brush));
-      const tool: ToolButton = { brush, root, bg, badges, count, price, baseY: 0, hovered: false };
+      const tool: ToolButton = {
+        brush, root, bg, icon, badges, count, price, baseY: 0, hovered: false,
+        selected: sameBrush(brush, this.controller.brush), selectionAge: TOOL_SELECT_TIME,
+      };
       root.on("pointerover", () => { tool.hovered = true; });
       root.on("pointerout", () => { tool.hovered = false; });
       this.toolbar.addChild(root);
@@ -633,12 +640,16 @@ export class Hud {
       b.root.eventMode = blocked ? "none" : "static";
       b.root.cursor = blocked ? "default" : "pointer";
       const active = sameBrush(b.brush, this.controller.brush);
+      b.selectionAge = active && !b.selected ? 0 : Math.min(TOOL_SELECT_TIME, b.selectionAge + dt);
+      b.selected = active;
+      b.icon.y = active && b.selectionAge < TOOL_SELECT_TIME
+        ? -3 * Math.sin(Math.PI * b.selectionAge / TOOL_SELECT_TIME) : 0;
       const h = TOOL_SIZE / 2;
       b.bg.clear().roundRect(-h, -h, 2 * h, 2 * h, 12).fill(active || b.hovered ? 0xffffff : THEME.background).stroke({
         width: active ? 3.5 : b.hovered ? 3 : 2,
         color: active || b.hovered ? THEME.ink : THEME.muted,
       });
-      b.root.y = b.baseY - (active ? 4 : 0);
+      b.root.y = b.baseY;
       const powerup = b.brush.kind === "kit" ? g.kitPowerup(b.brush.kit) : undefined;
       const free = b.brush.kind === "auto" || b.brush.kind === "capacity" ? g.powerupStock(b.brush.kind) : 0;
       const stock = powerup ? g.powerupStock(powerup.id) : free;

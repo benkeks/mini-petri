@@ -23,7 +23,7 @@ async function main(): Promise<void> {
   });
   document.getElementById("app")!.appendChild(app.canvas);
 
-  let game = new Game(endless);
+  let game = new Game(endless, Math.random, { survival: true });
   const camera = new Camera();
   const navigation = new Navigation(camera);
   let boundsVersion = -1;
@@ -34,12 +34,31 @@ async function main(): Promise<void> {
     restart: () => load(),
     requestRestart: () => requestRestart(),
     togglePause: () => {
+      if (game.complete) return;
       game.paused = !game.paused;
       navigation.cancel();
     },
     selectBrush: (b) => controller.setBrush(b),
+    focusSink: (sinkId) => {
+      const sink = game.endangeredSinks().find((sink) => sink.sinkId === sinkId);
+      if (!sink || game.complete) return;
+      navigation.cancel();
+      updateBounds();
+      camera.focus(sink, 0.3);
+    },
   });
   app.stage.addChild(view.root, hud.root);
+  listenForGameOver();
+
+  function listenForGameOver(): void {
+    const observed = game;
+    observed.onLifeLost((position) => {
+      if (game !== observed || observed.lives !== 0) return;
+      navigation.cancel();
+      updateBounds();
+      camera.focus(position, 0.65);
+    });
+  }
 
   function createView(): NetView {
     const v = new NetView(game);
@@ -56,7 +75,8 @@ async function main(): Promise<void> {
   }
 
   function load(): void {
-    game = new Game(endless);
+    game = new Game(endless, Math.random, { survival: true });
+    listenForGameOver();
     rebuildView();
     hud.setGame(game);
     boundsVersion = -1;
@@ -200,8 +220,9 @@ async function main(): Promise<void> {
     }
     if (!game.complete) {
       updateBounds();
-      applyCamera();
     }
+    camera.update(dt);
+    applyCamera();
     if (mousePosition && inViewport(mousePosition)) {
       const world = camera.toWorld(mousePosition);
       controller.move(world);

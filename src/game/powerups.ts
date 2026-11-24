@@ -2,7 +2,7 @@ import type { Kit } from "./level";
 
 export type Powerup =
   | { id: string; label: string; afterEpoch: number; kind: "coins"; amount: number }
-  | { id: string; label: string; afterEpoch: number; kind: "capacity" | "auto" }
+  | { id: string; label: string; afterEpoch: number; kind: "capacity" | "auto" | "life" }
   | { id: string; label: string; afterEpoch: number; kind: "kit"; price: number; kit: Kit };
 
 export const POWERUPS: readonly Powerup[] = [
@@ -30,6 +30,7 @@ export const POWERUPS: readonly Powerup[] = [
     id: "splitAny", label: "Any 2→3\n20 coins", afterEpoch: 40, kind: "kit", price: 20,
     kit: { id: "splitAny", copyInputColor: true, ports: [{ dir: "in", count: 2 }, { dir: "out", count: 3 }] },
   },
+  { id: "life", label: "Extra life", afterEpoch: 50, kind: "life" },
   {
     id: "redToGreen", label: "Red→green\n5 coins", afterEpoch: 60, kind: "kit", price: 5,
     kit: { id: "redToGreen", ports: [{ dir: "in", color: "red" }, { dir: "out", color: "green" }] },

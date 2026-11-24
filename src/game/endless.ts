@@ -13,7 +13,7 @@ export const endless: Level = {
   net: {
     places: [
       { id: "starterPlace", x: 400, y: 400, capacity: 19, marking: [] },
-      { id: "starterDestination", x: 800, y: 400, capacity: 19, marking: [] },
+      { id: "starterDestination", x: 800, y: 400, capacity: 7, marking: [] },
     ],
     transitions: [
       { id: "starterSource", x: 200, y: 400, kind: "source", autoInterval: 3 },

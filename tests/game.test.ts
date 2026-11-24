@@ -29,6 +29,213 @@ function run(game: Game, seconds: number): void {
   for (let t = 0; t < seconds; t += 1 / 60) game.step(1 / 60);
 }
 
+describe("survival mode", () => {
+  function survivalGame(sinks = 1) {
+    const definition = structuredClone(endless);
+    definition.net.transitions.find((t) => t.id === "starterSource")!.autoInterval = undefined;
+    for (let i = 1; i < sinks; i++) {
+      definition.net.transitions.push({ id: `timeout${i}`, x: 1000 + i * 100, y: 0, kind: "sink" });
+      definition.goals.push({ sinkId: `timeout${i}`, color: "blue", count: 5 });
+    }
+    return new Game(definition, () => 0.5, { survival: true });
+  }
+
+  it("preserves survival totals while endless scoring and epoch progression continue", () => {
+    const game = survivalGame();
+    expect(game.survivalResult).toBeUndefined();
+    for (let i = 0; i < 6; i++) expect(game.sim.fire("starterSource")).toBe(true);
+    game.step(0);
+    game.sim.step(1);
+    game.sim.net.places.get("starterDestination")!.marking.push(...Array<"blue">(5).fill("blue"));
+    for (let i = 0; i < 5; i++) expect(game.sim.fire("starterSink")).toBe(true);
+    game.sim.step(1);
+    expect(game.score).toBe(5);
+    expect(game.epoch).toBe(1);
+    game.continueEndless();
+    expect(game.survivalResult).toEqual({ score: 5, epoch: 1 });
+    for (let i = 0; i < 6; i++) expect(game.sim.fire("starterSource")).toBe(true);
+    game.step(0);
+    const goal = game.goals().find((goal) => goal.sinkId !== "starterSink")!;
+    game.sim.net.connect(goal.sinkId, 0, "starterDestination");
+    game.sim.net.places.get("starterDestination")!.marking.push("blue");
+    expect(game.sim.fire(goal.sinkId)).toBe(true);
+    game.step(10);
+    expect(game.score).toBe(6);
+    expect(game.epoch).toBe(2);
+    game.continueEndless();
+    expect(game.survivalResult).toEqual({ score: 5, epoch: 1 });
+    expect(survivalGame().survivalResult).toBeUndefined();
+  });
+
+  it("lists each endangered sink at countdown start and removes it after resolution or timeout", () => {
+    const game = survivalGame(2);
+    expect(game.endangeredSinks()).toEqual([]);
+    game.sim.step(179.9);
+    expect(game.endangeredSinks()).toEqual([]);
+    game.sim.step(0.1);
+    expect(game.endangeredSinks().map((sink) => sink.sinkId)).toEqual(["starterSink", "timeout1"]);
+    expect(game.endangeredSinks().map((sink) => sink.color)).toEqual(["blue", "blue"]);
+    game.sim.net.places.get("starterDestination")!.marking.push(...Array<"blue">(5).fill("blue"));
+    for (let i = 0; i < 5; i++) game.sim.fire("starterSink");
+    game.sim.step(1);
+    expect(game.endangeredSinks().map((sink) => sink.sinkId)).toEqual(["timeout1"]);
+    const deaths: string[] = [];
+    game.onSinkDeath((sink) => deaths.push(`${sink.sinkId}:${sink.color}`));
+    game.sim.step(59);
+    expect(game.endangeredSinks()).toEqual([]);
+    expect(deaths).toEqual(["timeout1:blue"]);
+    game.step(0.1);
+    expect(deaths).toHaveLength(1);
+  });
+
+  it.each(["red", "yellow"] as const)("uses the %s sink color and its countdown timing for notices", (color) => {
+    const definition = structuredClone(endless);
+    definition.goals[0].color = color;
+    definition.net.transitions.find((t) => t.id === "starterSource")!.autoInterval = undefined;
+    const game = new Game(definition, Math.random, { survival: true });
+    const factor = color === "yellow" ? 2 : 1;
+    const deaths: string[] = [];
+    game.onSinkDeath((sink) => deaths.push(sink.color));
+    game.sim.step(180 * factor - 0.1);
+    expect(game.endangeredSinks()).toEqual([]);
+    game.sim.step(0.1);
+    expect(game.endangeredSinks()[0]).toMatchObject({ sinkId: "starterSink", color, remaining: 60 * factor });
+    game.sim.step(60 * factor - 15);
+    expect(game.endangeredSinks()[0].remaining).toBeCloseTo(15);
+    game.sim.step(15);
+    expect(game.endangeredSinks()).toEqual([]);
+    expect(deaths).toEqual([color]);
+  });
+
+  it("moves an urgent sink back out of the final fifteen seconds when a token arrives", () => {
+    const game = survivalGame();
+    game.sim.step(225);
+    expect(game.endangeredSinks()[0].remaining).toBeCloseTo(15);
+    game.sim.net.places.get("starterDestination")!.marking.push("blue");
+    expect(game.sim.fire("starterSink")).toBe(true);
+    game.sim.step(1);
+    expect(game.endangeredSinks()[0].remaining).toBeCloseTo(24);
+  });
+
+  it("loses one life per sink timeout, not on completion or repeated steps", () => {
+    const game = survivalGame(2);
+    const losses: { x: number; y: number }[] = [];
+    game.onLifeLost((position) => losses.push(position));
+    game.sim.net.places.get("starterDestination")!.marking.push(...Array<"blue">(5).fill("blue"));
+    for (let i = 0; i < 5; i++) expect(game.sim.fire("starterSink")).toBe(true);
+    game.sim.step(1);
+    expect(game.score).toBe(5);
+    expect(game.lives).toBe(10);
+    game.sim.step(239);
+    expect(game.lives).toBe(9);
+    const sink = game.sim.net.transitions.get("timeout1")!;
+    expect(losses).toEqual([{ x: sink.x, y: sink.y }]);
+    game.step(0.1);
+    expect(game.lives).toBe(9);
+    expect(losses).toHaveLength(1);
+    expect(game.complete).toBe(false);
+  });
+
+  it("freezes on the last timeout, then preserves the run when continuing in endless", () => {
+    const game = survivalGame(11);
+    const losses: { x: number; y: number }[] = [];
+    game.onLifeLost((position) => losses.push(position));
+    game.sim.step(239.9);
+    expect(game.sim.fire("starterSource")).toBe(true);
+    game.sim.net.transitions.get("starterSource")!.autoInterval = 0.1;
+    const coins = game.coins;
+    game.step(30);
+    expect(game.lives).toBe(0);
+    expect(game.survivalFailed).toBe(true);
+    expect(game.complete).toBe(true);
+    expect(losses).toHaveLength(10);
+    const time = game.sim.time;
+    const tokens = game.sim.inFlight.map((token) => ({ ...token }));
+    expect(tokens.length).toBeGreaterThan(0);
+    expect(tokens).toHaveLength(1);
+    game.step(100);
+    expect(game.sim.time).toBe(time);
+    expect(game.sim.inFlight).toEqual(tokens);
+    expect(game.playerFire("starterRelay")).toBe(false);
+    game.continueEndless();
+    expect(game.survival).toBe(false);
+    expect(game.complete).toBe(false);
+    expect(game.coins).toBe(coins);
+    expect(game.sim.time).toBe(time);
+    expect(game.sim.inFlight).toEqual(tokens);
+    game.step(1);
+    expect(game.sim.time).toBeGreaterThan(time);
+    expect(game.sim.net.places.get("starterPlace")!.marking).toContain("blue");
+    expect(game.buyLife({ x: 0, y: 0 })).toBe(false);
+    expect(losses).toHaveLength(10);
+  });
+
+  it("charges only successful life purchases, independently of upgrade prices and up to the cap", () => {
+    const game = survivalGame(2);
+    game.sim.net.addPlace({ id: "funds", x: -1000, y: 0, capacity: 19, marking: Array(19).fill("blue") });
+    expect(game.remove("funds")).toBe(true);
+    expect(game.coins).toBe(59);
+    expect(game.buyLife({ x: 0, y: 0 })).toBe(false);
+    expect(game.lifePrice).toBe(50);
+    game.sim.step(240);
+    expect(game.lives).toBe(8);
+    expect(game.buyLife({ x: 0, y: 0 }, false)).toBe(true);
+    expect(game.lifePrice).toBe(50);
+    game.paused = true;
+    expect(game.buyLife({ x: 0, y: 0 })).toBe(false);
+    game.paused = false;
+    expect(game.buyLife({ x: 0, y: 0 })).toBe(true);
+    expect(game.coins).toBe(9);
+    expect(game.lives).toBe(9);
+    expect(game.lifePrice).toBe(60);
+    expect(game.upgradePrice).toBe(5);
+    expect(game.buyLife({ x: 0, y: 0 })).toBe(false);
+    for (let i = 0; i < 3; i++) {
+      game.sim.net.addPlace({ id: `funds${i}`, x: -2000 - i * 100, y: 0, capacity: 19, marking: Array(19).fill("blue") });
+      expect(game.remove(`funds${i}`)).toBe(true);
+    }
+    expect(game.buyLife({ x: 0, y: 0 })).toBe(true);
+    expect(game.lives).toBe(10);
+    expect(game.coins).toBe(6);
+    expect(game.lifePrice).toBe(70);
+    expect(game.buyLife({ x: 0, y: 0 })).toBe(false);
+  });
+
+  it("does not lose lives in ordinary endless mode or from source timeouts", () => {
+    const game = new Game(endless, () => 0.5, { survival: true });
+    const losses: { x: number; y: number }[] = [];
+    game.onLifeLost((position) => losses.push(position));
+    game.sim.net.transitions.get("starterSource")!.autoInterval = undefined;
+    for (let i = 0; i < 6; i++) {
+      game.sim.net.places.get("starterPlace")!.marking = [];
+      for (let j = 0; j < 6; j++) game.sim.fire("starterSource");
+      game.step(0);
+      game.sim.step(1);
+    }
+    const source = [...game.sim.net.transitions.values()].find((t) => t.kind === "source" && t.id !== "starterSource")!;
+    const sinkIds = new Set(game.goals().map((g) => g.sinkId));
+    // Finish goals before their timeout, isolating the source's expiry.
+    for (const id of sinkIds) {
+      const goal = game.goalsFor(id)[0];
+      const transition = game.sim.net.transitions.get(id)!;
+      transition.open = [];
+      const place = game.sim.net.places.get("starterDestination")!;
+      place.marking = Array(goal.count).fill(goal.color);
+      if (!game.sim.net.inputs(id).length) game.sim.net.addArc({ id: `test-${id}`, from: place.id, to: id, color: goal.color });
+      for (let i = 0; i < goal.count; i++) game.sim.fire(id);
+      game.sim.step(10);
+    }
+    game.sim.step(300);
+    expect(game.failed.has(source.id)).toBe(true);
+    expect(game.lives).toBe(10);
+    expect(losses).toEqual([]);
+    const ordinary = new Game(endless);
+    ordinary.sim.step(240);
+    expect(ordinary.lives).toBe(10);
+    expect(ordinary.complete).toBe(false);
+  });
+});
+
 describe("epoch overview", () => {
   it("matches the spawn thresholds and probabilities used by the game", () => {
     const r = ENDLESS_RULES;
@@ -124,9 +331,10 @@ describe("goal sinks", () => {
       return place!;
     }
 
-    it("starts with a manual blue relay between two large places", () => {
+    it("starts with a manual blue relay between a large source place and an upgradable destination", () => {
       const game = new Game(endless);
-      expect([...game.sim.net.places.values()].map((p) => p.capacity)).toEqual([19, 19]);
+      expect([...game.sim.net.places.values()].map((p) => p.capacity)).toEqual([19, 7]);
+      expect(game.upgradeCapacity("starterDestination", false)).toBe(true);
       expect(game.sim.net.transitions.size).toBe(3);
       expect(game.sim.net.transitions.get("starterSource")?.supply).toBeUndefined();
       expect(game.goals()).toMatchObject([{ color: "blue", count: 5 }]);

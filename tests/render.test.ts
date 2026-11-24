@@ -4,10 +4,173 @@ import { Game, placementClearance } from "../src/game/game";
 import { endless } from "../src/game/endless";
 import { level2 } from "../src/game/level2";
 import { POWERUPS } from "../src/game/powerups";
-import { Controller, type Brush } from "../src/input/controller";
-import { Hud, toolbarLayout } from "../src/render/hud";
+import { brushesOf, Controller, type Brush } from "../src/input/controller";
+import { Hud, survivalPopupPosition, toolbarLayout } from "../src/render/hud";
 import { NetView } from "../src/render/netView";
 import { THEME } from "../src/render/style";
+
+function balancePositions(view: NetView, game: Game, id: string, radius: number): number[][] {
+  const transition = game.sim.net.transitions.get(id)!;
+  const node = view.root.children[5].children.find((node) => node.x === transition.x && node.y === transition.y)!;
+  const graphics = node.children[0] as Graphics;
+  return graphics.context.instructions.flatMap((instruction) =>
+    instruction.action === "fill" ? instruction.data.path.instructions : [])
+    .filter((shape) => shape.action === "circle" && shape.data[2] === radius)
+    .map((shape) => shape.data.slice(0, 2));
+}
+
+describe("endpoint token layouts", () => {
+  it.each(["source", "sink"].flatMap((kind) => [false, true].map((portrait) => ({ kind, portrait }))))(
+    "tweens the $kind balance to the clear side, portrait=$portrait",
+    ({ kind, portrait }) => {
+      const game = new Game(level2);
+      const source = kind === "source";
+      const id = source ? "srcR2" : "sinkG";
+      const t = game.sim.net.transitions.get(id)!;
+      game.sim.net.addPlace({ id: "adjacent", x: t.x + (source ? -200 : 200), y: t.y, capacity: 7, marking: [] });
+      game.setPortrait(portrait);
+      const view = new NetView(game);
+      const viewport = { x: 0, y: 0, width: 1400, height: 1400 };
+      const radius = source ? 3.2 : 7;
+      const axis = portrait ? 1 : 0;
+      view.update(0, viewport);
+      const before = balancePositions(view, game, id, radius);
+      expect(game.connect(id, 0, "adjacent")).toBe(true);
+      view.update(0, viewport);
+      expect(balancePositions(view, game, id, radius)).toEqual(before);
+      view.update(0.125, viewport);
+      const middle = balancePositions(view, game, id, radius);
+      expect(middle[0][axis]).not.toBe(before[0][axis]);
+      expect(Math.abs(middle[0][axis])).toBeLessThan(Math.abs(before[0][axis]));
+      view.update(0.125, viewport);
+      expect(balancePositions(view, game, id, radius)).toEqual(before.map(([x, y]) => portrait ? [x, -y] : [-x, y]));
+      view.root.destroy({ children: true });
+    },
+  );
+
+  it.each((["in", "out"] as const).flatMap((dir) => [false, true].map((portrait) => ({ dir, portrait }))))(
+    "flips $dir connectors away from incoming arcs and restores them on removal, portrait=$portrait",
+    ({ dir, portrait }) => {
+      const game = new Game(level2);
+      const side = dir === "in" ? -1 : 1;
+      game.sim.net.addPlace({ id: "attach", x: 450 + side * 200, y: 520, capacity: 1, marking: [] });
+      game.sim.net.addTransition({ id: "flip", x: 450, y: 520, kind: "normal", open: [{ dir, color: "blue" }] });
+      game.setPortrait(portrait);
+      const view = new NetView(game);
+      const plug = (side: number) => portrait ? { x: 520, y: 450 + side * 57 } : { x: 450 + side * 57, y: 520 };
+      expect(view.pick(plug(side))).toEqual({ kind: "port", tid: "flip", index: 0 });
+      game.sim.net.addArc({ id: "incoming", from: "attach", to: "flip", color: "blue" });
+      expect(view.pick(plug(-side))).toEqual({ kind: "port", tid: "flip", index: 0 });
+      expect(view.pick(plug(side)).kind).not.toBe("port");
+      expect(game.remove("incoming")).toBe(true);
+      expect(view.pick(plug(side))).toEqual({ kind: "port", tid: "flip", index: 0 });
+      view.root.destroy({ children: true });
+    },
+  );
+
+  it("rotates the bar and connector when all connected arcs are vertical", () => {
+    const game = new Game(level2);
+    game.sim.net.addPlace({ id: "above", x: 450, y: 320, capacity: 1, marking: [] });
+    game.sim.net.addTransition({ id: "flip", x: 450, y: 520, kind: "normal", open: [{ dir: "in", color: "blue" }] });
+    game.sim.net.addArc({ id: "incoming", from: "above", to: "flip", color: "blue" });
+    const view = new NetView(game);
+    expect(view.pick({ x: 450, y: 577 })).toEqual({ kind: "port", tid: "flip", index: 0 });
+    expect(view.pick({ x: 475, y: 520 })).toEqual({ kind: "transition", id: "flip" });
+    expect(view.pick({ x: 450, y: 545 }).kind).not.toBe("transition");
+    game.sim.net.addArc({ id: "mixed", from: "pB", to: "flip", color: "blue" });
+    expect(view.pick({ x: 475, y: 520 }).kind).not.toBe("transition");
+    view.root.destroy({ children: true });
+  });
+
+  it.each(["source", "sink"].flatMap((kind) => [-1, 1].map((side) => ({ kind, side }))))(
+    "places the $kind balance vertically opposite a vertical arc on side $side",
+    ({ kind, side }) => {
+      const game = new Game(level2);
+      const source = kind === "source";
+      const id = source ? "srcR2" : "sinkG";
+      const t = game.sim.net.transitions.get(id)!;
+      game.sim.net.addPlace({ id: "vertical", x: t.x, y: t.y + side * 200, capacity: 7, marking: [] });
+      const view = new NetView(game);
+      const viewport = { x: 0, y: 0, width: 1400, height: 1400 };
+      view.update(0, viewport);
+      expect(game.connect(id, 0, "vertical")).toBe(true);
+      view.update(0.25, viewport);
+      const dots = balancePositions(view, game, id, source ? 3.2 : 7);
+      expect(dots.length).toBeGreaterThan(0);
+      expect(dots.every(([, y]) => Math.sign(y) === -side)).toBe(true);
+      expect(view.pick({ x: t.x + 25, y: t.y })).toEqual({ kind: "transition", id });
+      view.root.destroy({ children: true });
+    },
+  );
+  it.each([5, 10, 15].flatMap((count) => [false, true].map((portrait) => ({ count, portrait }))))(
+    "matches source and sink circle positions for $count tokens, portrait=$portrait",
+    ({ count, portrait }) => {
+      const definition = structuredClone(endless);
+      const source = definition.net.transitions.find((t) => t.id === "starterSource")!;
+      source.supply = count;
+      source.autoInterval = undefined;
+      definition.net.transitions.find((t) => t.id === "starterSink")!.autoInterval = undefined;
+      definition.goals[0].count = count;
+      const game = new Game(definition);
+      game.setPortrait(portrait);
+      const view = new NetView(game);
+      const viewport = { x: 0, y: 0, width: 1200, height: 1200 };
+      const positions = (id: string, radius: number) => balancePositions(view, game, id, radius);
+      const expectMatching = (remaining: number) => {
+        const supply = positions("starterSource", 3.2);
+        const demand = positions("starterSink", 7);
+        expect(supply).toHaveLength(remaining);
+        expect(demand).toEqual(supply.map(([x, y]) => portrait ? [x, -y] : [-x, y]));
+      };
+      view.update(0, viewport);
+      expectMatching(count);
+      game.sim.net.places.get("starterDestination")!.marking.push("blue");
+      expect(game.sim.fire("starterSource")).toBe(true);
+      expect(game.sim.fire("starterSink")).toBe(true);
+      game.sim.step(2);
+      view.update(0, viewport);
+      const beforeSupply = positions("starterSource", 3.2);
+      const beforeDemand = positions("starterSink", 7);
+      view.update(0.125, viewport);
+      expect(positions("starterSource", 3.2)).not.toEqual(beforeSupply);
+      expect(positions("starterSink", 7)).not.toEqual(beforeDemand);
+      view.update(0.125, viewport);
+      expectMatching(count - 1);
+      view.root.destroy({ children: true });
+    },
+  );
+});
+
+describe("survival popup placement", () => {
+  it("places the card clear of a centered sink, keeping its appearance overshoot on screen", () => {
+    const sink = { x: 600, y: 400, radius: 50 };
+    const position = survivalPopupPosition(1200, 800, [sink]);
+    expect(position.y + 90 * 1.14 + 4).toBeLessThanOrEqual(sink.y - sink.radius);
+    expect(position.x - 170 * 1.14).toBeGreaterThanOrEqual(12);
+    expect(position.y - 90 * 1.14 - 4).toBeGreaterThanOrEqual(12);
+  });
+
+  it("avoids the sink's current position and the camera destination without moving an already safe card", () => {
+    const avoid = [{ x: 600, y: 220, radius: 50 }, { x: 600, y: 400, radius: 50 }];
+    const position = survivalPopupPosition(1200, 800, avoid);
+    expect(position.y - 90 * 1.14 - 4).toBeGreaterThanOrEqual(450);
+    const previous = { x: 850, y: 400 };
+    expect(survivalPopupPosition(1200, 800, avoid, previous)).toEqual(previous);
+  });
+
+  it("uses horizontal space on a short screen and scales down on a narrow one", () => {
+    const wide = survivalPopupPosition(1000, 240, [{ x: 500, y: 120, radius: 40 }]);
+    expect(wide.x + 170 * 1.14).toBeLessThanOrEqual(460);
+    const narrow = survivalPopupPosition(320, 640, [{ x: 160, y: 320, radius: 50 }]);
+    expect(narrow.x).toBe(160);
+    expect(narrow.y).toBeLessThanOrEqual(320 - 50 - 90 * ((320 - 24) / 340) - 4);
+  });
+
+  it("keeps the centered fallback when there is no clearance and recenters after resize", () => {
+    expect(survivalPopupPosition(200, 160, [{ x: 100, y: 80, radius: 60 }])).toEqual({ x: 100, y: 80 });
+    expect(survivalPopupPosition(320, 640, [], { x: 850, y: 400 })).toEqual({ x: 160, y: 320 });
+  });
+});
 
 describe("toolbar layout", () => {
   const brushes = (count: number): Brush[] => [
@@ -25,6 +188,35 @@ describe("toolbar layout", () => {
   });
 
   describe("restart confirmation", () => {
+    it("confirms endless skipping, preserves pause on cancellation and does not restart", () => {
+      const game = new Game(endless, Math.random, { survival: true });
+      const view = new NetView(game);
+      const controller = new Controller(game, view);
+      let restarts = 0;
+      const hud = new Hud(game, controller, {
+        restart: () => { restarts++; },
+        requestRestart: () => hud.showRestartConfirmation(),
+        togglePause: () => { game.paused = !game.paused; },
+        selectBrush: (brush) => controller.setBrush(brush),
+        focusSink: () => {},
+      });
+      expect(brushesOf(game).some((brush) => brush.kind === "life")).toBe(true);
+      game.paused = true;
+      hud.showEndlessConfirmation();
+      hud.cancelRestart();
+      expect(game.paused).toBe(true);
+      expect(game.survival).toBe(true);
+      hud.showEndlessConfirmation();
+      hud.confirmRestart();
+      expect(game.paused).toBe(false);
+      expect(game.survival).toBe(false);
+      expect(hud.confirming).toBe(false);
+      expect(restarts).toBe(0);
+      expect(brushesOf(game).some((brush) => brush.kind === "life")).toBe(false);
+      hud.root.destroy({ children: true });
+      view.root.destroy({ children: true });
+    });
+
     it("pauses while open, preserves the prior pause state on cancel, and restarts only on confirmation", () => {
       const game = new Game(endless);
       const view = new NetView(game);
@@ -35,6 +227,7 @@ describe("toolbar layout", () => {
         requestRestart: () => {},
         togglePause: () => { game.paused = !game.paused; },
         selectBrush: (brush) => controller.setBrush(brush),
+        focusSink: () => {},
       });
 
       hud.showRestartConfirmation();

@@ -14,6 +14,70 @@ function camera(): Camera {
 }
 
 describe("camera", () => {
+  it("centers a requested sink in the HUD-free viewport without changing zoom", () => {
+    const c = camera();
+    const scale = c.scale;
+    const sink = { x: 1100, y: 700 };
+    c.focus(sink);
+    expect(c.scale).toBe(scale);
+    expect(sink.x * c.scale + c.x).toBeCloseTo(viewport.x + viewport.width / 2);
+    expect(sink.y * c.scale + c.y).toBeCloseTo(viewport.y + viewport.height / 2);
+  });
+
+  it.each([0.3, 0.65])("scrolls continuously to a sink over %s real seconds without changing zoom", (duration) => {
+    const c = camera();
+    const sink = { x: 1100, y: 700 };
+    const center = { x: 400, y: 364 };
+    const start = c.toWorld(center);
+    const scale = c.scale;
+    c.focus(sink, duration);
+    expect(c.toWorld(center)).toEqual(start);
+    c.update(duration / 3);
+    const midway = c.toWorld(center);
+    expect(midway.x).toBeGreaterThan(start.x);
+    expect(midway.x).toBeLessThan(sink.x);
+    expect(midway.y).toBeGreaterThan(start.y);
+    expect(midway.y).toBeLessThan(sink.y);
+    c.update(duration / 3);
+    expect(c.toWorld(center).x).toBeLessThan(sink.x);
+    c.update(duration / 3);
+    expect(c.toWorld(center).x).toBeCloseTo(sink.x);
+    expect(c.toWorld(center).y).toBeCloseTo(sink.y);
+    expect(c.scale).toBe(scale);
+    const end = { x: c.x, y: c.y };
+    c.update(1);
+    expect({ x: c.x, y: c.y }).toEqual(end);
+  });
+
+  it.each(["pan", "zoom"] as const)("lets manual %s interrupt a camera scroll", (action) => {
+    const c = camera();
+    c.focus({ x: 1100, y: 700 }, 0.3);
+    c.update(0.1);
+    if (action === "pan") c.pan(20, 10);
+    else c.zoom(1.1, { x: 400, y: 364 });
+    const position = { x: c.x, y: c.y };
+    c.update(1);
+    expect({ x: c.x, y: c.y }).toEqual(position);
+  });
+
+  it("retargets from the current camera position and preserves the destination on resize", () => {
+    const c = camera();
+    c.focus({ x: 1100, y: 700 }, 0.3);
+    c.update(0.1);
+    const start = c.toWorld({ x: 400, y: 364 });
+    c.focus({ x: 100, y: 100 }, 0.65);
+    expect(c.toWorld({ x: 400, y: 364 })).toEqual(start);
+    c.layout({ x: 0, y: 80, width: 360, height: 600 }, world, false);
+    c.update(0.65);
+    expect(c.toWorld({ x: 180, y: 380 }).x).toBeCloseTo(100);
+    expect(c.toWorld({ x: 180, y: 380 }).y).toBeCloseTo(100);
+    c.focus({ x: 1100, y: 700 }, 0.3);
+    c.layout(viewport, world, true);
+    const reset = { x: c.x, y: c.y };
+    c.update(1);
+    expect({ x: c.x, y: c.y }).toEqual(reset);
+  });
+
   it("limits zoom so the full connection circle fits and keeps the zoom anchor fixed", () => {
     const c = camera();
     const point = { x: 400, y: 364 };

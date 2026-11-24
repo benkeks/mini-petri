@@ -23,6 +23,10 @@ export const MIN_INTERVAL = 0.6;
 export const UPGRADE_COST = 5;
 export const STARTING_COINS = 40;
 export const EXHAUSTED_SOURCE_REWARD = 5;
+export const MAX_LIVES = 10;
+export const LIFE_COST = 50;
+export const LIFE_PRICE_INCREASE = 10;
+export const LIFE_OFFER_CHANCE = 0.02;
 
 export type NodeKind = "place" | "transition";
 /** Why a placement is not allowed. */
@@ -77,6 +81,13 @@ export interface CoinEvent {
   y: number;
 }
 
+export interface SinkNotice {
+  sinkId: string;
+  color: Color;
+  x: number;
+  y: number;
+}
+
 export interface PowerupOffer {
   id: string;
   x: number;
@@ -95,9 +106,16 @@ export class Game {
   completedAt?: number;
   /** Goal tokens delivered during this endless run. */
   score = 0;
+  private survivalActive: boolean;
+  private survivalBaseline?: { score: number; epoch: number };
+  private lifeBalance = MAX_LIVES;
+  private purchasedLives = 0;
+  survivalFailed = false;
   private coinBalance = STARTING_COINS;
   private paidUpgrades = 0;
   private readonly coinListeners: ((event: CoinEvent) => void)[] = [];
+  private readonly lifeLostListeners: ((position: { x: number; y: number }) => void)[] = [];
+  private readonly sinkDeathListeners: ((sink: SinkNotice) => void)[] = [];
   private readonly upgradeSpending = new Map<string, number>();
   private readonly autoUpgradeLevels = new Map<string, number>();
   private readonly inventory = new Map<string, number>();
@@ -130,7 +148,8 @@ export class Game {
   private nextSpawnRetryAt = 0;
   private nextEndlessId = 1;
 
-  constructor(readonly level: Level, private readonly random: () => number = Math.random) {
+  constructor(readonly level: Level, private readonly random: () => number = Math.random, options: { survival?: boolean } = {}) {
+    this.survivalActive = level.mode === "endless" && !!options.survival;
     for (const p of level.net.places) placeRadius(p.capacity);
     this.sim = new Simulation(new Net(level.net));
     this.goalDefinitions = level.goals.map((goal) => ({ ...goal }));
@@ -146,6 +165,7 @@ export class Game {
     this.sim.onBeforeAutoFire(() => {
       if (this.level.mode === "endless") this.expireCountdowns();
       this.expireUnusedPlaces();
+      return !this.survivalFailed;
     });
     this.sim.onArrive((_token, placeId, time) => this.touchPlace(placeId, time));
     for (const t of this.sim.net.transitions.values()) {
@@ -174,6 +194,7 @@ export class Game {
     });
     // Goals progress once the consumed tokens have visibly reached the sink.
     this.sim.onComplete((e) => {
+      if (this.survivalFailed) return;
       const t = this.sim.net.transitions.get(e.transitionId)!;
       if (t.kind !== "sink") return;
       if (this.failed.has(t.id)) return;
@@ -205,6 +226,43 @@ export class Game {
     return this.coinBalance;
   }
 
+  get survival(): boolean {
+    return this.survivalActive;
+  }
+
+  get survivalResult(): Readonly<{ score: number; epoch: number }> | undefined {
+    return this.survivalBaseline;
+  }
+
+  get lives(): number {
+    return this.lifeBalance;
+  }
+
+  get lifePrice(): number {
+    return LIFE_COST + this.purchasedLives * LIFE_PRICE_INCREASE;
+  }
+
+  buyLife(position: { x: number; y: number }, apply = true): boolean {
+    if (!this.survival || this.complete || this.paused || this.lives >= MAX_LIVES || this.coins < this.lifePrice) return false;
+    if (apply) {
+      const price = this.lifePrice;
+      this.purchasedLives++;
+      this.lifeBalance++;
+      this.changeCoins(-price, position);
+    }
+    return true;
+  }
+
+  continueEndless(): void {
+    if (!this.survival) return;
+    this.survivalBaseline = { score: this.score, epoch: this.epoch };
+    this.survivalActive = false;
+    this.survivalFailed = false;
+    this.complete = false;
+    this.completedAt = undefined;
+    this.paused = false;
+  }
+
   /** Price of the next paid upgrade, shared by both upgrade tools. */
   get upgradePrice(): number {
     return UPGRADE_COST + this.paidUpgrades;
@@ -216,6 +274,32 @@ export class Game {
 
   onCoins(fn: (event: CoinEvent) => void): void {
     this.coinListeners.push(fn);
+  }
+
+  onLifeLost(fn: (position: { x: number; y: number }) => void): void {
+    this.lifeLostListeners.push(fn);
+  }
+
+  onSinkDeath(fn: (sink: SinkNotice) => void): void {
+    this.sinkDeathListeners.push(fn);
+  }
+
+  endangeredSinks(): (SinkNotice & { remaining: number })[] {
+    const sinks: (SinkNotice & { remaining: number })[] = [];
+    for (const [tid, countdown] of this.countdowns) {
+      const t = this.sim.net.transitions.get(tid);
+      if (t?.kind === "sink" && !t.ghost && this.sim.time + TIME_EPSILON >= countdown.startsAt
+        && this.sim.time + TIME_EPSILON < countdown.deadline) {
+        sinks.push({ ...this.sinkNotice(t), remaining: countdown.deadline - this.sim.time });
+      }
+    }
+    return sinks;
+  }
+
+  private sinkNotice(t: Transition): SinkNotice {
+    const goal = this.goalsOf(t.id)[0];
+    if (!goal) throw new Error(`Countdown sink ${t.id} has no goal`);
+    return { sinkId: t.id, color: goal.color, x: t.x, y: t.y };
   }
 
   powerupStock(id: string): number {
@@ -240,19 +324,26 @@ export class Game {
     const offer = this.offers.get(id);
     if (this.complete || !offer || this.sim.time >= offer.expiresAt || (index !== 0 && index !== 1)) return false;
     const choice = offer.choices[index];
+    if (choice.kind === "life" && this.survival && this.lives >= MAX_LIVES) return false;
     this.offers.delete(id);
     this.offerVersion++;
     if (choice.kind === "coins") this.changeCoins(choice.amount, offer);
-    else this.inventory.set(choice.id, this.powerupStock(choice.id) + 1);
+    else if (choice.kind === "life") {
+      if (this.survival) this.lifeBalance++;
+      else this.changeCoins(5, offer);
+    } else this.inventory.set(choice.id, this.powerupStock(choice.id) + 1);
     return true;
   }
 
   private spawnOffer(position: { x: number; y: number }, at: number): void {
     const expiresAt = at + POWERUP_LIFETIME;
     if (this.sim.time >= expiresAt) return;
-    const eligible = POWERUPS.filter((powerup) => this.endlessEpoch >= powerup.afterEpoch);
+    const eligible = POWERUPS.filter((powerup) => powerup.kind !== "life" && this.endlessEpoch >= powerup.afterEpoch);
     const first = eligible.splice(Math.floor(this.random() * eligible.length), 1)[0];
-    const second = eligible[Math.floor(this.random() * eligible.length)];
+    let second = eligible[Math.floor(this.random() * eligible.length)];
+    const life = POWERUPS.find((powerup) => powerup.kind === "life")!;
+    if (this.survival && this.lives < MAX_LIVES && this.epoch >= life.afterEpoch
+      && this.random() < LIFE_OFFER_CHANCE * (this.lives <= 3 ? 2 : 1)) second = life;
     const id = `offer${this.nextOfferId++}`;
     this.offers.set(id, { id, x: position.x, y: position.y, expiresAt, choices: [first, second] });
     this.offerVersion++;
@@ -483,6 +574,7 @@ export class Game {
     for (let remaining = dt; remaining > 1e-9;) {
       const step = Math.min(remaining, ENDLESS_STEP);
       this.advance(step);
+      if (this.complete) break;
       remaining -= step;
     }
   }
@@ -490,6 +582,7 @@ export class Game {
   private advance(dt: number): void {
     if (this.level.mode === "endless") this.endlessProgress += dt;
     this.sim.step(dt);
+    if (this.survivalFailed) return;
     this.expireOffers();
     this.rampSources();
     for (const [tid, at] of this.resolved) {
@@ -623,6 +716,7 @@ export class Game {
   }
 
   private failTransition(tid: string, at: number): void {
+    if (this.failed.has(tid)) return;
     const t = this.sim.net.transitions.get(tid);
     if (!t) throw new Error(`Countdown transition ${tid} is missing`);
     t.disabled = true;
@@ -632,6 +726,19 @@ export class Game {
     }
     this.countdowns.delete(tid);
     this.failed.set(tid, at);
+    if (t.kind === "sink") {
+      const sink = this.sinkNotice(t);
+      for (const fn of this.sinkDeathListeners) fn(sink);
+    }
+    if (t.kind === "sink" && this.survival && this.lives > 0) {
+      this.lifeBalance--;
+      for (const fn of this.lifeLostListeners) fn({ x: t.x, y: t.y });
+      if (this.lives === 0) {
+        this.survivalFailed = true;
+        this.complete = true;
+        this.completedAt = at;
+      }
+    }
   }
 
   private forgetGoal(tid: string): void {

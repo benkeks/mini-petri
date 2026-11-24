@@ -5,12 +5,15 @@ import type { Powerup } from "../game/powerups";
 import { brushesOf, sameBrush, type Brush, type Controller } from "../input/controller";
 import type { Pt } from "./geometry";
 import { THEME, TOKEN_COLORS } from "./style";
-import { drawToolIcon } from "./toolIcon";
+import { drawHeart, drawToolIcon } from "./toolIcon";
 
 const TOOL_SIZE = 48;
 const TOOL_GAP = 8;
 const REMOVE_EXTRA_GAP = 8;
-const COIN_ROW = 30;
+const COIN_ROW = 48;
+const WARNING_START = 124;
+const WARNING_GAP = 24;
+const WARNING_ROW = 44;
 /** Room for the hint line above the toolbar. */
 const HINT_SPACE = 34;
 
@@ -19,6 +22,7 @@ export interface HudActions {
   requestRestart(): void;
   togglePause(): void;
   selectBrush(b: Brush): void;
+  focusSink(sinkId: string): void;
 }
 
 interface ToolButton {
@@ -32,8 +36,41 @@ interface ToolButton {
   hovered: boolean;
 }
 
+interface SinkWarning {
+  text: Text;
+  baseY: number;
+  remaining: number;
+}
+
 const POP_TIME = 0.55;
 const CONFETTI = 36;
+const POPUP_OVERSHOOT = 1.14;
+
+function popupFit(width: number, height: number): number {
+  return Math.max(0, Math.min(1, (width - 24) / (340 * POPUP_OVERSHOOT), (height - 32) / (180 * POPUP_OVERSHOOT)));
+}
+
+/** Keep the card clear of both the current sink position and its camera-scroll destination. */
+export function survivalPopupPosition(width: number, height: number, avoid: readonly (Pt & { radius: number })[], previous?: Pt): Pt {
+  const center = { x: width / 2, y: height / 2 };
+  const fit = popupFit(width, height);
+  const halfW = 170 * fit * POPUP_OVERSHOOT;
+  const halfH = 90 * fit * POPUP_OVERSHOOT + 4;
+  const clampX = (x: number) => Math.max(halfW + 12, Math.min(width - halfW - 12, x));
+  const clampY = (y: number) => Math.max(halfH + 12, Math.min(height - halfH - 12, y));
+  const clear = (point: Pt) => avoid.every((sink) =>
+    Math.abs(point.x - sink.x) >= halfW + sink.radius - 1e-6
+    || Math.abs(point.y - sink.y) >= halfH + sink.radius - 1e-6);
+  if (previous && previous.x === clampX(previous.x) && previous.y === clampY(previous.y) && clear(previous)) return previous;
+  const candidates = [center, ...avoid.flatMap((sink) => [
+    { x: center.x, y: clampY(sink.y - sink.radius - halfH) },
+    { x: center.x, y: clampY(sink.y + sink.radius + halfH) },
+    { x: clampX(sink.x - sink.radius - halfW), y: center.y },
+    { x: clampX(sink.x + sink.radius + halfW), y: center.y },
+  ])];
+  return candidates.filter(clear).sort((a, b) =>
+    Math.hypot(a.x - center.x, a.y - center.y) - Math.hypot(b.x - center.x, b.y - center.y))[0] ?? center;
+}
 
 interface Confetto {
   x: number;
@@ -98,12 +135,21 @@ export class Hud {
   private readonly stats: Text;
   private readonly meta: Text;
   private readonly coins: Text;
+  private readonly lives: Text;
+  private readonly resources = new Graphics();
+  private readonly warningLayer = new Container();
+  private readonly warnings = new Map<string, SinkWarning>();
   private readonly pause: Text;
   private readonly restart: Text;
+  private readonly skip: Text;
   private readonly hint: Text;
   private readonly toolbar = new Container();
   private readonly coinLayer = new Graphics();
   private coinFlights: CoinFlight[] = [];
+  private readonly heartLayer = new Graphics();
+  private heartFlights: { position: Pt; age: number }[] = [];
+  private readonly deathFlash = new Graphics();
+  private flash?: { color: number; age: number };
   private tools: ToolButton[] = [];
   private toolSize = TOOL_SIZE;
   /** Dims the net and swallows taps while the level-won popup is shown. */
@@ -113,16 +159,27 @@ export class Hud {
   private readonly heading: Text;
   private readonly detail: Text;
   private readonly againButton = new Container();
+  private readonly endlessButton = new Container();
   private readonly confettiLayer = new Graphics();
   private readonly confirmationShade = new Graphics();
   private readonly confirmation = new Container();
   private wasPaused = false;
+  private confirmationKind: "restart" | "endless" = "restart";
+  private readonly confirmTitle: Text;
+  private readonly confirmDetail: Text;
+  private readonly confirmLabel: Text;
   confirming = false;
   private confetti: Confetto[] = [];
   /** Real seconds since the popup appeared, or undefined while it is hidden. */
   private shownFor?: number;
   private width = 0;
   private height = 0;
+  private fatalSink?: Pt;
+  private popupCenter?: Pt;
+  private viewportCenter: Pt = { x: 0, y: 0 };
+  private navigationState = "";
+  private navigationWidth?: number;
+  private navigationHeight = 0;
 
   constructor(
     private game: Game,
@@ -135,10 +192,14 @@ export class Hud {
     this.title.visible = game.level.mode !== "endless";
     this.stats = new Text({ text: "", style: { ...style, fontSize: 24, fontWeight: "bold" } });
     this.meta = new Text({ text: "", style: { ...style, fontSize: 14 } });
-    this.coins = new Text({ text: "", style: { ...style, fontSize: 16, fontWeight: "bold", fill: 0xa97717 } });
+    this.coins = new Text({ text: "", style: { ...style, fontSize: 16, fontWeight: "bold", fill: 0xffffff } });
+    this.coins.anchor.set(0.5);
+    this.lives = new Text({ text: "", style: { ...style, fontSize: 16, fontWeight: "bold", fill: 0xffffff } });
+    this.lives.anchor.set(0.5);
     this.restart = new Text({ text: "RESTART", style: { ...style, fontSize: 15, fontWeight: "bold" } });
     this.pause = new Text({ text: "PAUSE", style: { ...style, fontSize: 15, fontWeight: "bold" } });
-    for (const control of [this.pause, this.restart]) {
+    this.skip = new Text({ text: "SKIP TO ENDLESS", style: { ...style, fontSize: 15, fontWeight: "bold" } });
+    for (const control of [this.pause, this.restart, this.skip]) {
       control.anchor.set(1, 0);
       control.eventMode = "static";
       control.cursor = "pointer";
@@ -147,6 +208,7 @@ export class Hud {
     }
     this.restart.on("pointertap", onRestart);
     this.pause.on("pointertap", () => actions.togglePause());
+    this.skip.on("pointertap", () => this.showEndlessConfirmation());
     this.hint = new Text({
       text: "",
       style: { ...style, fontSize: 13, fill: 0x6e685e, wordWrap: true, wordWrapWidth: 600, align: "center" },
@@ -171,50 +233,59 @@ export class Hud {
       c.on("pointertap", onTap);
       c.on("pointerover", () => { c.scale.set(1.05); });
       c.on("pointerout", () => { c.scale.set(1); });
+      return text;
     };
-    button(this.againButton, "AGAIN", onRestart);
+    button(this.againButton, "RESTART", () => this.game.survivalFailed ? actions.restart() : onRestart());
+    button(this.endlessButton, "ENDLESS", () => this.continueEndless());
     this.card.roundRect(-170, -90, 340, 180, 18).fill(THEME.background).stroke({ width: 3, color: THEME.ink });
     this.card.eventMode = "static";
-    this.popup.addChild(this.card, this.againButton, this.heading, this.detail);
+    this.popup.addChild(this.card, this.againButton, this.endlessButton, this.heading, this.detail);
 
     this.confirmationShade.eventMode = "static";
     this.confirmationShade.alpha = 0.4;
     const confirmCard = new Graphics().roundRect(-170, -90, 340, 180, 18)
       .fill(THEME.background).stroke({ width: 3, color: THEME.ink });
     confirmCard.eventMode = "static";
-    const confirmTitle = new Text({ text: "RESTART GAME?", style: { ...style, fontSize: 25, fontWeight: "bold" } });
+    const confirmTitle = this.confirmTitle = new Text({ text: "RESTART GAME?", style: { ...style, fontSize: 25, fontWeight: "bold" } });
     confirmTitle.anchor.set(0.5);
     confirmTitle.position.set(0, -48);
-    const confirmDetail = new Text({ text: "ALL PROGRESS WILL BE LOST.", style: { ...style, fontSize: 14, fill: 0x6e685e } });
+    const confirmDetail = this.confirmDetail = new Text({ text: "ALL PROGRESS WILL BE LOST.", style: { ...style, fontSize: 14, fill: 0x6e685e } });
     confirmDetail.anchor.set(0.5);
     confirmDetail.position.set(0, -12);
     const cancelButton = new Container();
     const confirmButton = new Container();
     button(cancelButton, "CANCEL", () => this.cancelRestart());
-    button(confirmButton, "RESTART", () => this.confirmRestart(), THEME.warn);
+    this.confirmLabel = button(confirmButton, "RESTART", () => this.confirmRestart(), THEME.warn);
     cancelButton.position.set(-77, 50);
     confirmButton.position.set(77, 50);
     this.confirmation.addChild(confirmCard, confirmTitle, confirmDetail, cancelButton, confirmButton);
     this.confirmationShade.visible = this.confirmation.visible = false;
+    this.deathFlash.eventMode = "none";
 
     this.root.addChild(
       this.backplates,
       this.title,
       this.stats,
       this.meta,
+      this.resources,
       this.coins,
+      this.lives,
+      this.warningLayer,
       this.toolbar,
       this.hint,
       this.coinLayer,
+      this.heartLayer,
       this.shade,
       this.confettiLayer,
       this.popup,
       this.pause,
       this.restart,
+      this.skip,
       this.confirmationShade,
       this.confirmation,
+      this.deathFlash,
     );
-    this.listenForCoins(game);
+    this.listenForResources(game);
     this.buildToolbar();
     this.hidePopup();
   }
@@ -225,7 +296,13 @@ export class Hud {
     this.confirmationShade.visible = this.confirmation.visible = false;
     this.coinFlights = [];
     this.coinLayer.clear();
-    this.listenForCoins(game);
+    this.heartFlights = [];
+    this.heartLayer.clear();
+    this.flash = undefined;
+    this.deathFlash.clear();
+    for (const warning of this.warnings.values()) warning.text.destroy();
+    this.warnings.clear();
+    this.listenForResources(game);
     this.title.text = game.level.name.toUpperCase();
     this.title.visible = game.level.mode !== "endless";
     this.buildToolbar();
@@ -233,7 +310,20 @@ export class Hud {
   }
 
   showRestartConfirmation(): void {
+    this.showConfirmation("restart");
+  }
+
+  showEndlessConfirmation(): void {
+    if (!this.game.survival || this.game.complete) return;
+    this.showConfirmation("endless");
+  }
+
+  private showConfirmation(kind: "restart" | "endless"): void {
     if (this.confirming) return;
+    this.confirmationKind = kind;
+    this.confirmTitle.text = kind === "restart" ? "RESTART GAME?" : "EXIT SURVIVAL MODE?";
+    this.confirmDetail.text = kind === "restart" ? "ALL PROGRESS WILL BE LOST." : "CONTINUE PLAYING WITHOUT PRESSURE.";
+    this.confirmLabel.text = kind === "restart" ? "RESTART" : "ENDLESS";
     this.wasPaused = this.game.paused;
     this.game.paused = true;
     this.confirming = true;
@@ -251,7 +341,15 @@ export class Hud {
     if (!this.confirming) return;
     this.confirming = false;
     this.confirmationShade.visible = this.confirmation.visible = false;
-    this.actions.restart();
+    if (this.confirmationKind === "endless") this.continueEndless();
+    else this.actions.restart();
+  }
+
+  continueEndless(): void {
+    if (!this.game.survival) return;
+    this.game.continueEndless();
+    this.controller.cancel();
+    this.hidePopup();
   }
 
   /** Screen-space UI areas, excluding the otherwise open world behind them. */
@@ -261,7 +359,9 @@ export class Hud {
 
   /** Destination for a collected reward in screen coordinates. */
   rewardTarget(choice: Powerup): Pt {
-    if (choice.kind === "coins") return { x: 16 + this.coins.width / 2, y: this.height - COIN_ROW / 2 };
+    if (choice.kind === "coins") return { x: this.coins.x, y: this.coins.y };
+    if (choice.kind === "life") return this.game.survival
+      ? { x: this.lives.x, y: this.lives.y } : { x: this.coins.x, y: this.coins.y };
     const tool = this.tools.find((item) => choice.kind === "kit"
       ? item.brush.kind === "kit" && item.brush.kit === choice.kit
       : item.brush.kind === choice.kind);
@@ -271,7 +371,7 @@ export class Hud {
   private drawBackplates(): void {
     this.regions = [];
     this.backplates.clear();
-    for (const text of [this.title, this.stats, this.meta, this.coins, this.hint, this.pause, this.restart]) {
+    for (const text of [this.title, this.stats, this.meta, this.hint]) {
       if (!text.visible || !text.text) continue;
       const bounds = text.getBounds();
       const rect = new Rectangle(bounds.minX - 5, bounds.minY - 3, bounds.width + 10, bounds.height + 6);
@@ -283,61 +383,171 @@ export class Hud {
         const half = this.toolSize / 2 + 4;
         this.regions.push(new Rectangle(tool.root.x - half, tool.root.y - half, half * 2, half * 2));
       }
+      for (const warning of this.warnings.values()) {
+        this.regions.push(new Rectangle(warning.text.x - 11, warning.text.y - 18, 22, 36));
+      }
     }
-    for (const control of [this.pause, this.restart]) {
-      this.regions.push(new Rectangle(control.x - control.width - 6, control.y - 10, control.width + 12, 44));
+    this.regions.push(new Rectangle(this.coins.x - 24, this.coins.y - COIN_ROW / 2, this.lives.visible ? 106 : 48, COIN_ROW));
+    for (const control of [this.pause, this.restart, this.skip]) {
+      if (!control.visible) continue;
+      const box = this.controlBox(control);
+      const rect = new Rectangle(control.x + box.x, control.y + box.y, box.width, box.height);
+      this.regions.push(rect);
+      this.backplates.roundRect(rect.x, rect.y, rect.width, rect.height, 7)
+        .fill({ color: 0xe7e0dc, alpha: 0.85 }).stroke({ width: 1, color: THEME.muted, alpha: 0.4 });
     }
   }
 
-  private listenForCoins(game: Game): void {
+  private listenForResources(game: Game): void {
     game.onCoins((event) => {
       if (this.game === game) this.coinFlights.push({ event, age: 0 });
     });
+    game.onLifeLost((position) => {
+      if (this.game === game) {
+        this.heartFlights.push({ position, age: 0 });
+      }
+    });
+    game.onSinkDeath((sink) => {
+      if (this.game !== game) return;
+      this.flash = { color: TOKEN_COLORS[sink.color], age: 0 };
+      if (game.survival && game.lives === 1) {
+        const transition = game.sim.net.transitions.get(sink.sinkId);
+        if (!transition) throw new Error(`Failed sink ${sink.sinkId} is missing`);
+        this.fatalSink = transition;
+      }
+    });
+  }
+
+  private navigationKey(): string {
+    return [this.title.visible ? this.title.width : 0, this.stats.width, this.meta.width,
+      this.pause.text, this.pause.visible, this.skip.text, this.skip.visible].join(":");
+  }
+
+  private controlBox(control: Text): Rectangle {
+    const width = this.navigationWidth ?? control.width;
+    return new Rectangle(-width * control.anchor.x - 8, -6, width + 16, this.navigationHeight);
+  }
+
+  private updateWarnings(): boolean {
+    const sinks = this.game.survival && !this.game.complete ? this.game.endangeredSinks() : [];
+    const active = new Set(sinks.map((sink) => sink.sinkId));
+    let changed = false;
+    for (const [id, warning] of this.warnings) {
+      if (active.has(id)) continue;
+      warning.text.destroy();
+      this.warnings.delete(id);
+      changed = true;
+    }
+    for (const sink of sinks) {
+      const existing = this.warnings.get(sink.sinkId);
+      if (existing) {
+        existing.remaining = sink.remaining;
+        continue;
+      }
+      const warning = new Text({ text: "!", style: { fontFamily: THEME.font, fontSize: 26, fontWeight: "bold", fill: TOKEN_COLORS[sink.color] } });
+      warning.label = `danger-${sink.sinkId}`;
+      warning.anchor.set(0.5);
+      warning.eventMode = "static";
+      warning.cursor = "pointer";
+      warning.hitArea = new Rectangle(-11, -18, 22, 36);
+      warning.on("pointertap", () => this.actions.focusSink(sink.sinkId));
+      warning.on("pointerover", () => warning.scale.set(1.15));
+      warning.on("pointerout", () => warning.scale.set(1));
+      this.warningLayer.addChild(warning);
+      this.warnings.set(sink.sinkId, { text: warning, baseY: 0, remaining: sink.remaining });
+      changed = true;
+    }
+    return changed;
   }
 
   /** Positions HUD elements and returns the screen heights reserved at the top and bottom. */
   layout(width: number, height: number): { top: number; bottom: number } {
     this.width = width;
     this.height = height;
+    const portrait = this.game.portrait;
+    this.lives.visible = this.game.level.mode === "endless";
     this.title.position.set(16, 10);
     this.stats.position.set(16, this.title.visible ? 34 : 8);
     this.meta.position.set(16, this.title.visible ? 64 : 38);
-    this.coins.position.set(16, height - COIN_ROW + 4);
-    this.restart.position.set(width - 16, 12);
-    this.pause.position.set(width - 28 - this.restart.width, 12);
-    for (const control of [this.pause, this.restart]) {
-      control.hitArea = new Rectangle(-control.width - 6, -10, control.width + 12, 44);
+    const resourceY = height - COIN_ROW / 2 - (portrait ? 0 : 5);
+    this.coins.position.set(portrait ? width / 2 - (this.lives.visible ? 27 : 0) : 34, resourceY);
+    this.lives.position.set(portrait ? width / 2 + 27 : 88, resourceY);
+    this.skip.text = portrait ? "ENDLESS" : "SKIP TO ENDLESS";
+    this.pause.visible = !this.game.complete;
+    this.skip.visible = this.game.survival && !this.game.complete;
+    const controls = [this.pause, this.skip, this.restart].filter((control) => control.visible);
+    const scoreRight = 16 + Math.max(this.stats.width, this.meta.width, this.title.visible ? this.title.width : 0);
+    const controlWidth = Math.max(...controls.map((control) => control.width));
+    const stacked = portrait;
+    this.navigationWidth = stacked ? controlWidth : undefined;
+    this.navigationHeight = Math.max(...controls.map((control) => control.height)) + 12;
+    const controlsY = width < 600 ? 64 : 12;
+    if (stacked) {
+      const left = width - 24 - controlWidth;
+      const top = scoreRight + 16 <= left ? this.stats.y : this.meta.y + this.meta.height + 12;
+      controls.forEach((control, i) => {
+        control.anchor.set(0.5, 0);
+        control.position.set(width - 16 - controlWidth / 2, top + i * (this.navigationHeight + 4));
+      });
+    } else {
+      let right = width - 16;
+      for (const control of [...controls].reverse()) {
+        control.anchor.set(1, 0);
+        control.position.set(right, this.stats.y);
+        right -= control.width + 20;
+      }
+      const left = Math.min(...controls.map((control) => control.x + this.controlBox(control).x));
+      if (scoreRight + 16 > left) {
+        for (const control of controls) control.y = Math.max(controlsY, this.meta.y + this.meta.height + 12);
+      }
     }
-    this.popup.position.set(width / 2, height / 2);
+    for (const control of controls) control.hitArea = this.controlBox(control);
+    this.navigationState = this.navigationKey();
+    if (this.shownFor === undefined) this.popup.position.set(width / 2, height / 2);
     this.shade.clear().rect(0, 0, width, height).fill(THEME.ink);
     this.confirmationShade.clear().rect(0, 0, width, height).fill(THEME.ink);
     this.confirmation.position.set(width / 2, height / 2);
     this.confirmation.scale.set(Math.max(0, Math.min(1, (width - 24) / 340, (height - 24) / 180)));
 
     const n = this.tools.length;
-    const layout = toolbarLayout(width, this.tools.map((tool) => tool.brush));
+    const warningStart = this.lives.visible ? this.lives.x + 36 : this.coins.x + 36;
+    const resourceWidth = Math.min(width / 3, (this.lives.visible ? WARNING_START : 70) + this.warnings.size * WARNING_GAP);
+    const warningColumns = Math.max(1, Math.floor(((portrait ? width : resourceWidth) - warningStart - 12) / WARNING_GAP) + 1);
+    const warningRows = Math.max(1, Math.ceil(this.warnings.size / warningColumns));
+    const resourceHeight = COIN_ROW + (warningRows - 1) * WARNING_ROW;
+    [...this.warnings.values()].forEach((warning, i) => {
+      warning.baseY = resourceY - Math.floor(i / warningColumns) * WARNING_ROW;
+      warning.text.position.set(warningStart + (i % warningColumns) * WARNING_GAP, warning.baseY);
+    });
+    const layout = toolbarLayout(portrait ? width : width - resourceWidth, this.tools.map((tool) => tool.brush));
     this.toolSize = layout.size;
     const size = this.toolSize;
     const toolbarH = n > 1 ? layout.rows * (size + TOOL_GAP) + 8 : 0;
     this.tools.forEach((b, i) => {
       const { x, row } = layout.positions[i];
-      b.baseY = height - COIN_ROW - 8 - size / 2 - (layout.rows - 1 - row) * (size + TOOL_GAP);
-      b.root.position.set(x, b.baseY);
+      b.baseY = height - 8 - (portrait ? resourceHeight : 0) - size / 2 - (layout.rows - 1 - row) * (size + TOOL_GAP);
+      b.root.position.set(x + (portrait ? 0 : resourceWidth), b.baseY);
       b.root.scale.set(size / TOOL_SIZE);
     });
     this.toolbar.visible = n > 1;
 
     this.hint.style.wordWrapWidth = Math.min(600, width - 32);
-    this.hint.position.set(width / 2, height - COIN_ROW - toolbarH - 8);
-    this.hint.visible = this.shownFor === undefined;
+    const bottom = portrait ? resourceHeight + toolbarH : Math.max(resourceHeight, toolbarH);
+    this.hint.position.set(width / 2, height - bottom - 8);
+    this.hint.visible = this.shownFor === undefined && (this.game.paused || this.controller.hint() !== "");
     this.hint.style.fontSize = width > 480 ? 13 : 11;
-    return { top: this.title.visible ? 92 : 68, bottom: toolbarH + HINT_SPACE + COIN_ROW };
+    const top = Math.max(width < 600 ? 102 : this.title.visible ? 92 : 68,
+      ...controls.map((control) => control.y - 6 + this.navigationHeight + 12));
+    const reservedBottom = bottom + (this.hint.visible ? HINT_SPACE : 0);
+    this.viewportCenter = { x: width / 2, y: top + Math.max(1, height - top - reservedBottom) / 2 };
+    return { top, bottom: reservedBottom };
   }
 
   private buildToolbar(): void {
     for (const c of this.toolbar.removeChildren()) c.destroy({ children: true });
     this.tools = brushesOf(this.game).map((brush) => {
       const root = new Container();
+      root.label = `tool-${brush.kind}`;
       const bg = new Graphics();
       const icon = new Graphics();
       const badges = new Graphics();
@@ -368,12 +578,19 @@ export class Hud {
   update(dt: number, toScreen: (point: Pt) => Pt): boolean {
     const g = this.game;
     const brushes = brushesOf(g);
-    const changed = brushes.length !== this.tools.length || brushes.some((brush, i) => !sameBrush(brush, this.tools[i].brush));
-    if (changed) {
-      this.buildToolbar();
-      this.layout(this.width, this.height);
+    const toolsChanged = brushes.length !== this.tools.length || brushes.some((brush, i) => !sameBrush(brush, this.tools[i].brush));
+    const changed = this.updateWarnings() || toolsChanged;
+    if (toolsChanged) this.buildToolbar();
+    if (changed) this.layout(this.width, this.height);
+    for (const warning of this.warnings.values()) {
+      const jump = warning.remaining <= 15 ? Math.max(0, Math.sin(g.sim.time * Math.PI * 3)) * 8 : 0;
+      warning.text.y = warning.baseY - jump;
     }
     for (const b of this.tools) {
+      const unavailable = b.brush.kind === "life" && !g.buyLife({ x: 0, y: 0 }, false);
+      b.root.alpha = unavailable ? 0.45 : 1;
+      b.root.eventMode = unavailable ? "none" : "static";
+      b.root.cursor = unavailable ? "default" : "pointer";
       const active = sameBrush(b.brush, this.controller.brush);
       const h = TOOL_SIZE / 2;
       b.bg.clear().roundRect(-h, -h, 2 * h, 2 * h, 12).fill(active || b.hovered ? 0xffffff : THEME.background).stroke({
@@ -384,7 +601,8 @@ export class Hud {
       const powerup = b.brush.kind === "kit" ? g.kitPowerup(b.brush.kit) : undefined;
       const free = b.brush.kind === "auto" || b.brush.kind === "capacity" ? g.powerupStock(b.brush.kind) : 0;
       const stock = powerup ? g.powerupStock(powerup.id) : free;
-      const price = powerup?.price ?? ((b.brush.kind === "auto" || b.brush.kind === "capacity") && !free ? g.upgradePrice : 0);
+      const price = b.brush.kind === "life" ? g.lifePrice
+        : powerup?.price ?? ((b.brush.kind === "auto" || b.brush.kind === "capacity") && !free ? g.upgradePrice : 0);
       b.badges.clear();
       if (stock) b.badges.circle(19, -19, 10).fill(powerup ? 0x222222 : 0x32944c);
       if (price) b.badges.circle(19, 19, 10).fill(0xdd8a25);
@@ -393,24 +611,48 @@ export class Hud {
     }
     const hint = g.paused ? "PAUSED — TAP RESUME TO CONTINUE." : this.controller.hint().toUpperCase();
     if (this.hint.text !== hint) this.hint.text = hint;
+    const helpVisible = !g.complete && hint !== "";
+    const helpChanged = this.hint.visible !== helpVisible;
+    this.hint.visible = helpVisible;
+    const survivalResult = g.survivalResult;
+    const score = survivalResult ? `${survivalResult.score} [${g.score - survivalResult.score}]` : String(g.score);
+    const epoch = survivalResult ? `${survivalResult.epoch} [${g.epoch - survivalResult.epoch}]` : String(g.epoch);
     const progress = g.level.mode === "endless"
-      ? `SCORE ${g.score}`
+      ? `SCORE ${score}`
       : `GOALS ${g.resolved.size}/${new Set(g.level.goals.map((goal) => goal.sinkId)).size}`;
     this.stats.text = progress;
     const seconds = Math.floor(g.sim.time);
     const minutes = Math.floor(seconds / 60);
-    this.meta.text = `TIME ${minutes}:${String(seconds % 60).padStart(2, "0")}${g.level.mode === "endless" ? `  EPOCH ${g.epoch}` : ""}`;
-    this.coins.text = `COINS ${g.coins}`;
+    this.meta.text = `TIME ${minutes}:${String(seconds % 60).padStart(2, "0")}${g.level.mode === "endless" ? `  EPOCH ${epoch}` : ""}`;
+    this.coins.text = String(g.coins);
+    this.lives.text = g.survival ? String(g.lives) : "\u221e";
+    this.lives.visible = g.level.mode === "endless";
+    this.resources.clear().circle(this.coins.x, this.coins.y, 20).fill(0xdd8a25).stroke({ width: 2, color: 0xa97717 });
+    if (this.lives.visible) {
+      drawHeart(this.resources, this.lives.x, this.lives.y + 1, 1.4);
+    }
+    this.skip.visible = g.survival && !g.complete;
+    this.pause.visible = !g.complete;
     const pauseLabel = g.paused ? "RESUME" : "PAUSE";
     if (this.pause.text !== pauseLabel) {
       this.pause.text = pauseLabel;
-      this.pause.hitArea = new Rectangle(-this.pause.width - 6, -10, this.pause.width + 12, 44);
     }
+    const navigationChanged = this.navigationKey() !== this.navigationState;
+    if (navigationChanged) this.layout(this.width, this.height);
     this.drawCoins(dt, toScreen);
+    this.drawHearts(dt, toScreen);
+    if (!g.complete && this.shownFor !== undefined) this.hidePopup();
     if (g.complete && this.shownFor === undefined) this.showPopup();
-    if (this.shownFor !== undefined) this.animatePopup(dt);
+    if (this.shownFor !== undefined) this.animatePopup(dt, toScreen);
+    this.deathFlash.clear();
+    if (this.flash) {
+      this.flash.age += dt;
+      const alpha = 0.18 * Math.max(0, 1 - this.flash.age / 0.22);
+      if (alpha > 0) this.deathFlash.rect(0, 0, this.width, this.height).fill({ color: this.flash.color, alpha });
+      else this.flash = undefined;
+    }
     this.drawBackplates();
-    return changed;
+    return changed || helpChanged || navigationChanged;
   }
 
   private drawCoins(dt: number, toScreen: (point: Pt) => Pt): void {
@@ -422,7 +664,7 @@ export class Hud {
         x: Math.max(12, Math.min(this.width - 12, world.x)),
         y: Math.max(64, Math.min(this.height - 70, world.y)),
       };
-      const counter = { x: 16 + this.coins.width / 2, y: this.height - COIN_ROW / 2 };
+      const counter = { x: this.coins.x, y: this.coins.y };
       const from = flight.event.amount > 0 ? node : counter;
       const to = flight.event.amount > 0 ? counter : node;
       const count = Math.min(5, Math.abs(flight.event.amount));
@@ -437,10 +679,26 @@ export class Hud {
     this.coinFlights = this.coinFlights.filter((flight) => flight.age < 0.85);
   }
 
+  private drawHearts(dt: number, toScreen: (point: Pt) => Pt): void {
+    const graphics = this.heartLayer.clear();
+    for (const flight of this.heartFlights) {
+      flight.age += dt;
+      const progress = Math.min(1, flight.age / 0.75);
+      if (progress >= 1) continue;
+      const target = toScreen(flight.position);
+      const x = this.lives.x + (target.x - this.lives.x) * progress;
+      const y = this.lives.y + (target.y - this.lives.y) * progress - 24 * Math.sin(Math.PI * progress);
+      drawHeart(graphics, x, y, 0.6 * (1 - 0.4 * progress));
+    }
+    this.heartFlights = this.heartFlights.filter((flight) => flight.age < 0.75);
+  }
+
   private hidePopup(): void {
     this.shownFor = undefined;
+    this.fatalSink = undefined;
+    this.popupCenter = undefined;
     this.shade.visible = this.popup.visible = false;
-    this.hint.visible = true;
+    this.hint.visible = this.game.paused || this.controller.hint() !== "";
     this.confetti = [];
     this.confettiLayer.clear();
   }
@@ -449,10 +707,14 @@ export class Hud {
     this.shownFor = 0;
     this.shade.visible = this.popup.visible = true;
     this.hint.visible = false;
-    this.detail.text = `ALL GOALS MET IN ${this.game.completedAt!.toFixed(0)}S`;
-    this.againButton.position.set(0, 52);
+    const failed = this.game.survivalFailed;
+    this.heading.text = failed ? "SURVIVAL OVER" : "LEVEL COMPLETE!";
+    this.detail.text = failed ? `SCORE ${this.game.score}` : `ALL GOALS MET IN ${this.game.completedAt!.toFixed(0)}S`;
+    this.endlessButton.visible = failed;
+    this.againButton.position.set(failed ? -77 : 0, 52);
+    this.endlessButton.position.set(77, 52);
     const scale = Math.min(1, (this.width - 24) / 340);
-    this.confetti = Array.from({ length: CONFETTI }, (_, i) => {
+    this.confetti = Array.from({ length: failed ? 0 : CONFETTI }, (_, i) => {
       const a = (i / CONFETTI) * Math.PI * 2 + Math.random() * 0.3;
       const v = (260 + Math.random() * 260) * scale;
       return {
@@ -466,15 +728,23 @@ export class Hud {
     });
   }
 
-  private animatePopup(dt: number): void {
+  private animatePopup(dt: number, toScreen: (point: Pt) => Pt): void {
     const t = (this.shownFor! += dt);
     const k = Math.min(1, t / POP_TIME);
-    const fit = Math.min(1, (this.width - 24) / 340);
+    const fit = popupFit(this.width, this.height);
     this.shade.alpha = 0.3 * Math.min(1, t / 0.3);
     this.popup.scale.set(Math.max(0, easeOutBack(k)) * fit);
     this.popup.alpha = Math.min(1, t / 0.15);
     // A gentle bob once the popup has settled.
-    this.popup.y = this.height / 2 + (k >= 1 ? Math.sin((t - POP_TIME) * 2.5) * 4 : 0);
+    if (this.game.survivalFailed && this.fatalSink) {
+      const sink = toScreen(this.fatalSink);
+      const nearby = toScreen({ x: this.fatalSink.x + 44, y: this.fatalSink.y });
+      const radius = Math.max(24, Math.hypot(nearby.x - sink.x, nearby.y - sink.y)) + 12;
+      this.popupCenter = survivalPopupPosition(this.width, this.height,
+        [{ ...sink, radius }, { ...this.viewportCenter, radius }], this.popupCenter);
+    } else this.popupCenter = { x: this.width / 2, y: this.height / 2 };
+    this.popup.position.set(this.popupCenter.x,
+      this.popupCenter.y + (k >= 1 ? Math.sin((t - POP_TIME) * 2.5) * 4 : 0));
 
     const c = this.confettiLayer.clear();
     const fade = Math.max(0, 1 - Math.max(0, t - 1.2) / 0.8);

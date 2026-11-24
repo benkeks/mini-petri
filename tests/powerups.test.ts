@@ -50,6 +50,59 @@ function setup(count = 1) {
 }
 
 describe("sink rewards", () => {
+  it.each([
+    [49, 1, 0, false], [50, 0, 0, false],
+    [50, 1, 0.019, true], [50, 1, 0.02, false],
+    [50, 7, 0.039, true], [50, 7, 0.04, false],
+  ])("offers rare survival hearts at epoch %i after %i losses with roll %f: %s", (epoch, losses, roll, heart) => {
+    const definition = structuredClone(endless);
+    definition.net.transitions.find((t) => t.id === "starterSource")!.autoInterval = undefined;
+    definition.net.transitions.push({ id: "reward", x: 900, y: 400, kind: "sink" });
+    definition.net.arcs.push({ id: "rewardArc", from: "starterDestination", to: "reward", color: "yellow" });
+    definition.goals.push({ sinkId: "reward", color: "yellow", count: 1 });
+    for (let i = 1; i < losses; i++) {
+      definition.net.transitions.push({ id: `loss${i}`, x: 1000 + i * 120, y: 0, kind: "sink" });
+      definition.goals.push({ sinkId: `loss${i}`, color: "blue", count: 5 });
+    }
+    let fixed = 0.5;
+    const game = new Game(definition, () => fixed, { survival: true });
+    if (losses) game.sim.step(240);
+    for (let i = 0; i < epoch; i++) {
+      game.sim.net.places.get("starterPlace")!.marking = [];
+      for (let j = 0; j < 6; j++) expect(game.sim.fire("starterSource")).toBe(true);
+      game.step(0);
+      game.sim.step(1);
+    }
+    expect(game.epoch).toBe(epoch);
+    fixed = roll;
+    game.sim.net.places.get("starterDestination")!.marking.push("yellow");
+    expect(game.sim.fire("reward")).toBe(true);
+    game.step(3);
+    const offer = [...game.offers.values()].find((offer) => offer.x === 900 && offer.y === 400)!;
+    expect(offer).toBeDefined();
+    expect(offer.choices.some((choice) => choice.kind === "life")).toBe(heart);
+    expect(offer.choices[0].id).not.toBe(offer.choices[1].id);
+    if (heart) {
+      const before = game.lives;
+      expect(game.collectOffer(offer.id, 1)).toBe(true);
+      expect(game.lives).toBe(before + 1);
+      expect(game.lifePrice).toBe(50);
+      expect(game.powerupStock("life")).toBe(0);
+    }
+  });
+
+  it("keeps a heart offer at the cap and makes existing hearts useful after switching to endless", () => {
+    const game = new Game(endless, Math.random, { survival: true });
+    const life = POWERUPS.find((choice) => choice.kind === "life")!;
+    game.offers.set("heart", { id: "heart", x: 0, y: 0, expiresAt: 120, choices: [life, POWERUPS[0]] });
+    expect(game.collectOffer("heart", 0)).toBe(false);
+    expect(game.offers.has("heart")).toBe(true);
+    game.continueEndless();
+    const coins = game.coins;
+    expect(game.collectOffer("heart", 0)).toBe(true);
+    expect(game.coins).toBe(coins + 5);
+  });
+
   it("keeps the documented powerup unlock table in sync with the definitions", () => {
     const section = design.split("### Powerup unlocks")[1]?.split("## Presentation")[0];
     expect(section).toBeDefined();

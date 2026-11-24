@@ -1,5 +1,4 @@
 import { Container, Graphics, Text } from "pixi.js";
-import type { Color } from "../core/multiset";
 import { arcCount, type Arc, type Port, type Transition } from "../core/net";
 import { BUILD_RANGE, CONNECTION_RANGE, placementClearance, POWERUP_LIFETIME, RESOLVED_LINGER, type NodeKind, type PowerupOffer } from "../game/game";
 import type { Game } from "../game/game";
@@ -40,6 +39,7 @@ const REWARD_PICK_SLOP = 4;
 const APPEAR_TIME = 0.4;
 const REWARD_EXIT_TIME = 0.3;
 const REWARD_FLIGHT_TIME = 0.75;
+const BALANCE_TWEEN_TIME = 0.25;
 
 /** What a tap at some point of the world hits. */
 export type Pick =
@@ -85,6 +85,7 @@ interface TransitionNode {
   gfx: Graphics;
   firedAt: number;
   deniedAt: number;
+  balance: Map<string, { position: Pt; from: Pt; target: Pt; elapsed: number }>;
 }
 
 interface RewardNode {
@@ -129,6 +130,7 @@ export class NetView {
   private readonly overflowTexts = new Map<string, Text>();
   private readonly transitions = new Map<string, TransitionNode>();
   private readonly routes = new Map<string, ArcRoute>();
+  private readonly layouts = new Map<string, { portrait: boolean; bar: BarSize }>();
   private stubs: PortStub[] = [];
   private readonly placeDeniedAt = new Map<string, number>();
   private ripples: { x: number; y: number; at: number }[] = [];
@@ -166,7 +168,7 @@ export class NetView {
     if (this.builtVersion !== this.game.sim.net.version) this.buildStatic();
     this.updateBuildArea(dt, viewport);
     this.drawPlaces();
-    for (const n of this.transitions.values()) this.drawTransition(n, now);
+    for (const n of this.transitions.values()) this.drawTransition(n, now, dt);
     this.drawInFlight();
     this.drawOverlay(now);
     this.drawRewards();
@@ -251,11 +253,13 @@ export class NetView {
     };
     const stub = closest(this.stubs, (s) => Math.hypot(s.plug.x - p.x, s.plug.y - p.y), PLUG_RADIUS + slop);
     if (stub) return { kind: "port", tid: stub.tid, index: stub.index };
-    const { w, h } = this.bar;
     const live = <T extends { ghost?: boolean }>(m: Map<string, T>) => [...m.values()].filter((x) => !x.ghost);
     const t = closest(
       live(net.transitions),
-      (t) => (Math.abs(t.x - p.x) <= w / 2 + slop && Math.abs(t.y - p.y) <= h / 2 + slop ? Math.hypot(t.x - p.x, t.y - p.y) : Infinity),
+      (t) => {
+        const { w, h } = this.layouts.get(t.id)!.bar;
+        return Math.abs(t.x - p.x) <= w / 2 + slop && Math.abs(t.y - p.y) <= h / 2 + slop ? Math.hypot(t.x - p.x, t.y - p.y) : Infinity;
+      },
       Infinity,
     );
     if (t) return { kind: "transition", id: t.id };
@@ -374,42 +378,67 @@ export class NetView {
     this.buildPlaceLabels();
     for (const [id, n] of this.transitions) {
       const prev = old.get(id);
-      if (prev) Object.assign(n, { firedAt: prev.firedAt, deniedAt: prev.deniedAt });
+      if (prev) Object.assign(n, { firedAt: prev.firedAt, deniedAt: prev.deniedAt, balance: prev.balance });
     }
   }
 
   /**
    * Spreads the arcs and open ports on each side of a transition across its bar, ordered to avoid
-   * crossings. Open ports dangle against the flow (inputs) or along it (outputs).
+   * crossings. Open ports prefer their flow side, but flip away from connected arcs.
    */
   private buildRoutes(): void {
     const net = this.game.sim.net;
-    const portrait = this.game.portrait;
-    const length = portrait ? this.bar.w : this.bar.h;
-    const half = (portrait ? this.bar.h : this.bar.w) / 2;
+    this.layouts.clear();
     this.stubs = [];
     for (const t of net.transitions.values()) {
       const arcs = net.arcsOf(t.id);
-      for (const dir of ["in", "out"] as const) {
-        const side = arcs.filter((a) => (a.to === t.id) === (dir === "in"));
+      const live = arcs.filter((arc) => !arc.ghost);
+      const portrait = this.game.portrait || (live.length > 0 && live.every((arc) => {
+        const place = net.pos(arc.from === t.id ? arc.to : arc.from);
+        return Math.abs(place.y - t.y) > Math.abs(place.x - t.x);
+      }));
+      const bar = portrait ? { w: TRANSITION_H, h: TRANSITION_W } : { w: TRANSITION_W, h: TRANSITION_H };
+      this.layouts.set(t.id, { portrait, bar });
+      const length = portrait ? bar.w : bar.h;
+      const half = (portrait ? bar.h : bar.w) / 2;
+      const ports = (t.open ?? []).map((port, index) => ({
+        port, index, side: this.clearSide(t, port.dir === "in" ? -1 : 1),
+      }));
+      for (const sign of [-1, 1] as const) {
+        const side = arcs.filter((a) => (this.arcSide(t, a) || (a.to === t.id ? -1 : 1)) === sign);
         const placeOf = (a: Arc) => net.pos(a.from === t.id ? a.to : a.from);
         const across = (a: Arc) => (portrait ? placeOf(a).x : placeOf(a).y);
         const sorted = [...side].sort((a, b) => across(a) - across(b));
-        const ports = (t.open ?? []).map((port, index) => ({ port, index })).filter((x) => x.port.dir === dir);
-        const n = sorted.length + ports.length;
+        const open = ports.filter((port) => port.side === sign);
+        const n = sorted.length + open.length;
         const spacing = Math.min(16, length / Math.max(1, n));
         const shiftOf = (i: number) => (i - (n - 1) / 2) * spacing;
         sorted.forEach((arc, i) => {
-          this.routes.set(arc.id, arcRoute(net, this.bar, portrait, arc.from, arc.to, shiftOf(i)));
+          this.routes.set(arc.id, arcRoute(net, bar, portrait, arc.from, arc.to, shiftOf(i)));
         });
-        const sign = dir === "in" ? -1 : 1;
-        ports.forEach(({ port, index }, i) => {
+        open.forEach(({ port, index }, i) => {
           const shift = shiftOf(sorted.length + i);
           const at = (along: number): Pt => (portrait ? { x: t.x + shift, y: t.y + along } : { x: t.x + along, y: t.y + shift });
           this.stubs.push({ tid: t.id, index, port, edge: at(sign * half), plug: at(sign * (half + STUB_LENGTH)) });
         });
       }
     }
+  }
+
+  private arcSide(t: Transition, arc: Arc): -1 | 0 | 1 {
+    const place = this.game.sim.net.pos(arc.from === t.id ? arc.to : arc.from);
+    const along = this.layouts.get(t.id)!.portrait ? place.y - t.y : place.x - t.x;
+    return along < 0 ? -1 : along > 0 ? 1 : 0;
+  }
+
+  private clearSide(t: Transition, preferred: -1 | 1): -1 | 1 {
+    const counts = { [-1]: 0, [1]: 0 };
+    for (const arc of this.game.sim.net.arcsOf(t.id)) {
+      const side = this.arcSide(t, arc);
+      if (!arc.ghost && side !== 0) counts[side]++;
+    }
+    const other = preferred === -1 ? 1 : -1;
+    return counts[preferred] > counts[other] ? other : preferred;
   }
 
   /** The drawn part of an arc: from the place's outline to the transition's outline, in arc direction. */
@@ -485,7 +514,7 @@ export class NetView {
       const gfx = new Graphics();
       container.addChild(gfx);
       if (t.ghost) container.alpha = GHOST_ALPHA;
-      const node: TransitionNode = { t, container, gfx, firedAt: -Infinity, deniedAt: -Infinity };
+      const node: TransitionNode = { t, container, gfx, firedAt: -Infinity, deniedAt: -Infinity, balance: new Map() };
       this.transitions.set(t.id, node);
       this.transitionLayer.addChild(container);
     }
@@ -531,7 +560,7 @@ export class NetView {
     }
   }
 
-  private drawTransition(n: TransitionNode, now: number): void {
+  private drawTransition(n: TransitionNode, now: number, dt: number): void {
     const { t, gfx: g } = n;
     const sim = this.game.sim;
     const enabled = sim.isEnabled(t.id);
@@ -548,7 +577,7 @@ export class NetView {
     const shake = shakeT < SHAKE_TIME ? Math.sin(shakeT * 60) * 5 * (1 - shakeT / SHAKE_TIME) : 0;
     n.container.position.set(t.x + shake, t.y);
 
-    const { w, h } = this.bar;
+    const { portrait, bar: { w, h } } = this.layouts.get(t.id)!;
     const flashT = frozen ? Infinity : now - n.firedAt;
     if (flashT < FLASH_TIME) {
       const k = flashT / FLASH_TIME;
@@ -569,7 +598,7 @@ export class NetView {
     if (t.kind === "source") {
       const first = sim.net.outputs(t.id)[0]?.color ?? t.open?.find((port) => port.dir === "out")?.color;
       fill = t.supply === 0 ? THEME.muted : first ? TOKEN_COLORS[first] : THEME.ink;
-      if (t.supply !== undefined) this.drawSupply(n, fill);
+      if (t.supply !== undefined) this.drawSupply(n, fill, dt);
     }
     if (t.kind === "sink") fill = 0xffffff;
 
@@ -581,7 +610,7 @@ export class NetView {
       g.roundRect(-w / 2, -h / 2, w, h, 6).fill({ color: fill, alpha: 0.22 });
       if (prog > 0) {
         const r = (len: number) => Math.min(6, len / 2);
-        if (this.game.portrait) g.roundRect(-w / 2, -h / 2, w * prog, h, r(w * prog)).fill(fill);
+        if (portrait) g.roundRect(-w / 2, -h / 2, w * prog, h, r(w * prog)).fill(fill);
         else g.roundRect(-w / 2, h / 2 - h * prog, w, h * prog, r(h * prog)).fill(fill);
       }
       g.roundRect(-w / 2, -h / 2, w, h, 6).stroke({ width: 3, color: fill });
@@ -590,11 +619,11 @@ export class NetView {
     if (shakeT < SHAKE_TIME) g.roundRect(-w / 2, -h / 2, w, h, 6).stroke({ width: 3, color: THEME.warn });
 
     const upgrades = this.game.autoUpgradeLevel(t.id);
-    const spacing = Math.min(7, ((this.game.portrait ? w : h) - 12) / Math.max(1, upgrades - 1));
+    const spacing = Math.min(7, ((portrait ? w : h) - 12) / Math.max(1, upgrades - 1));
     const thickness = Math.min(3, spacing * 0.6);
     for (let i = 0; i < upgrades; i++) {
       const along = (i - (upgrades - 1) / 2) * spacing;
-      const [x, y, width, height] = this.game.portrait
+      const [x, y, width, height] = portrait
         ? [along - thickness / 2, -6, thickness, 12]
         : [-6, along - thickness / 2, 12, thickness];
       g.roundRect(x, y, width, height, 1).fill(0xffffff).stroke({ width: 1, color: THEME.ink });
@@ -611,23 +640,47 @@ export class NetView {
     }
     if (failedAt !== undefined) this.drawResolved(n, now, failedAt, true);
     else if (exhaustedAt !== undefined) this.drawResolved(n, now, exhaustedAt);
-    else if (t.kind === "sink") this.drawGoal(n, now);
+    else if (t.kind === "sink") this.drawGoal(n, now, dt);
   }
 
   /** One dot per remaining firing, stacked upstream of a source. */
-  private drawSupply(n: TransitionNode, color: number): void {
+  private drawSupply(n: TransitionNode, color: number, dt: number): void {
     const supply = n.t.supply!;
-    const perCol = 7;
-    const gap = 9;
-    const { w, h } = this.bar;
-    for (let i = 0; i < supply; i++) {
-      const col = Math.floor(i / perCol);
-      const inCol = Math.min(perCol, supply - col * perCol);
-      const across = ((i % perCol) - (inCol - 1) / 2) * gap;
-      const along = -(this.game.portrait ? h : w) / 2 - 11 - col * gap;
-      const [x, y] = this.game.portrait ? [across, along] : [along, across];
-      n.gfx.circle(x, y, 3.2).fill(color);
-    }
+    this.drawBalance(n, Array.from({ length: supply }, (_, i) => ({ key: String(i), color })), -1, 3.2, true, dt);
+  }
+
+  private drawBalance(n: TransitionNode, tokens: { key: string; color: number }[], preferred: -1 | 1, radius: number, filled: boolean, dt: number): void {
+    const side = this.clearSide(n.t, preferred);
+    const active = new Set(tokens.map((token) => token.key));
+    for (const key of n.balance.keys()) if (!active.has(key)) n.balance.delete(key);
+    tokens.forEach((token, i) => {
+      const target = this.endpointCirclePosition(n.t, i, tokens.length, side);
+      let dot = n.balance.get(token.key);
+      if (!dot) {
+        dot = { position: target, from: target, target, elapsed: BALANCE_TWEEN_TIME };
+        n.balance.set(token.key, dot);
+      } else if (dot.target.x !== target.x || dot.target.y !== target.y) {
+        dot.from = dot.position;
+        dot.target = target;
+        dot.elapsed = 0;
+      }
+      dot.elapsed = Math.min(BALANCE_TWEEN_TIME, dot.elapsed + dt);
+      const ease = 1 - (1 - dot.elapsed / BALANCE_TWEEN_TIME) ** 3;
+      dot.position = lerp(dot.from, dot.target, ease);
+      n.gfx.circle(dot.position.x, dot.position.y, radius).fill(filled ? token.color : THEME.background);
+      if (!filled) n.gfx.stroke({ width: 2.5, color: token.color });
+    });
+  }
+
+  private endpointCirclePosition(t: Transition, index: number, count: number, side: -1 | 1): Pt {
+    const perLine = 5;
+    const gap = 19;
+    const line = Math.floor(index / perLine);
+    const inLine = Math.min(perLine, count - line * perLine);
+    const across = ((index % perLine) - (inLine - 1) / 2) * gap;
+    const { portrait, bar } = this.layouts.get(t.id)!;
+    const along = side * ((portrait ? bar.h : bar.w) / 2 + 21 + line * gap);
+    return portrait ? { x: across, y: along } : { x: along, y: across };
   }
 
   /** Build range, preview, highlights of the active brush's targets and denied-tap ripples. */
@@ -675,6 +728,7 @@ export class NetView {
     const ring = (pick: Pick, color: number, alpha: number, width: number) => {
       if (pick.kind === "transition") {
         const t = net.transitions.get(pick.id)!;
+        const { w, h } = this.layouts.get(t.id)!.bar;
         g.roundRect(t.x - w / 2 - 9, t.y - h / 2 - 9, w + 18, h + 18, 12).stroke({ width, color, alpha });
       } else if (pick.kind === "place") {
         const p = net.places.get(pick.id)!;
@@ -702,7 +756,7 @@ export class NetView {
       }
     }
     if (hover && hover.kind !== "empty" && (o.hoverAction?.(hover) ?? false)) {
-      ring(hover, o.removing ? THEME.warn : THEME.ink, 0.5 + 0.35 * pulse, 4 + pulse);
+      ring(hover, o.removing ? THEME.removal : THEME.ink, 0.5 + 0.35 * pulse, 4 + pulse);
     }
 
     if (selectedPlace && !selectedPlace.ghost) {
@@ -737,29 +791,17 @@ export class NetView {
   }
 
   /** Empty circles downstream of a goal sink, one per token still wanted; a check mark once resolved. */
-  private drawGoal(n: TransitionNode, now: number): void {
-    const g = n.gfx;
-    const { w, h } = this.bar;
+  private drawGoal(n: TransitionNode, now: number, dt: number): void {
     const resolvedAt = this.game.resolved.get(n.t.id);
     if (resolvedAt !== undefined) {
       this.drawResolved(n, now, resolvedAt);
       return;
     }
-    const wanted: Color[] = [];
-    for (const goal of this.game.goalsFor(n.t.id)) {
-      for (let i = goal.delivered; i < goal.count; i++) wanted.push(goal.color);
-    }
-    const r = 7;
-    const gap = 19;
-    const perLine = 5;
-    wanted.forEach((c, i) => {
-      const line = Math.floor(i / perLine);
-      const inLine = Math.min(perLine, wanted.length - line * perLine);
-      const across = (i % perLine) - (inLine - 1) / 2;
-      const along = (this.game.portrait ? h : w) / 2 + 14 + r + line * gap;
-      const [x, y] = this.game.portrait ? [across * gap, along] : [along, across * gap];
-      g.circle(x, y, r).fill(THEME.background).stroke({ width: 2.5, color: TOKEN_COLORS[c] });
+    const wanted: { key: string; color: number }[] = [];
+    this.game.goalsFor(n.t.id).forEach((goal, index) => {
+      for (let i = goal.delivered; i < goal.count; i++) wanted.push({ key: `${index}:${i}`, color: TOKEN_COLORS[goal.color] });
     });
+    this.drawBalance(n, wanted, 1, 7, false, dt);
   }
 
   private drawResolved(n: TransitionNode, now: number, at: number, failed = false): void {
@@ -768,7 +810,7 @@ export class NetView {
     n.container.alpha *= fade;
     n.container.scale.set(n.container.scale.x * (0.75 + 0.25 * fade));
     const s = 1 + 0.3 * Math.max(0, 1 - k * 4);
-    n.gfx.circle(0, 0, 20 * s).fill(failed ? THEME.warn : THEME.ink);
+    n.gfx.circle(0, 0, 20 * s).fill(failed ? THEME.removal : THEME.ink);
     if (failed) {
       n.gfx.moveTo(-7 * s, -7 * s).lineTo(7 * s, 7 * s)
         .moveTo(-7 * s, 7 * s).lineTo(7 * s, -7 * s);

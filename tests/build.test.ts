@@ -76,6 +76,52 @@ describe("controller", () => {
     return { game, view, controller, tap, denied };
   }
 
+  it("keeps the introduction after ineffective clicks and unlocks help after a successful firing", () => {
+    const game = new Game(endless);
+    const { controller, view, tap } = setup(game);
+    const introduction = controller.hint();
+    expect(introduction).toContain("Move tokens from sources to sinks");
+    tap({ kind: "empty", x: 0, y: 0 });
+    tap({ kind: "transition", id: "starterRelay" });
+    expect(controller.hint()).toBe(introduction);
+    expect(game.sim.fire("starterSource")).toBe(true);
+    game.sim.step(1);
+    tap({ kind: "transition", id: "starterRelay" });
+    expect(controller.hint()).toContain("Tap a dark transition");
+    controller.attach(game, view);
+    expect(controller.hint()).toContain("Tap a dark transition");
+    controller.attach(new Game(endless), view);
+    expect(controller.hint()).toBe(introduction);
+  });
+
+  it("unlocks help at two epochs, hides default help after ten, and hides every tool's help after one hundred", () => {
+    const game = new Game(endless, () => 0.9);
+    game.sim.net.transitions.get("starterSource")!.autoInterval = undefined;
+    const { controller } = setup(game);
+    const reach = (epoch: number) => {
+      while (game.epoch < epoch) {
+        game.sim.net.places.get("starterPlace")!.marking = [];
+        for (let i = 0; i < 6; i++) expect(game.sim.fire("starterSource")).toBe(true);
+        game.step(0);
+        game.sim.step(1);
+      }
+    };
+    reach(1);
+    expect(controller.hint()).toContain("Move tokens");
+    reach(2);
+    expect(controller.hint()).toContain("Tap a dark transition");
+    reach(10);
+    expect(controller.hint()).not.toBe("");
+    reach(11);
+    expect(controller.hint()).toBe("");
+    controller.setBrush({ kind: "capacity" });
+    expect(controller.hint()).toContain("capacity");
+    reach(100);
+    expect(controller.hint()).not.toBe("");
+    reach(101);
+    expect(controller.hint()).toBe("");
+  });
+
   it("identifies interactive hover targets in firing, wiring and build modes", () => {
     const { game, controller, view, tap } = setup();
     expect(controller.interactive({ kind: "transition", id: "tSplit" })).toBe(true);

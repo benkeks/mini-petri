@@ -69,7 +69,7 @@ export class Simulation {
   private readonly fireListeners: ((e: FireEvent) => void)[] = [];
   private readonly completeListeners: ((e: FireEvent) => void)[] = [];
   private readonly arriveListeners: ((t: InFlightToken, placeId: string, time: number) => void)[] = [];
-  private readonly beforeAutoListeners: (() => void)[] = [];
+  private readonly beforeAutoListeners: (() => boolean | void)[] = [];
 
   constructor(
     readonly net: Net,
@@ -93,8 +93,8 @@ export class Simulation {
     this.arriveListeners.push(fn);
   }
 
-  /** Called after arrivals, before automatic transitions fire for this step. */
-  onBeforeAutoFire(fn: () => void): void {
+  /** Called after arrivals, before automatic firing; returning false freezes the rest of this step. */
+  onBeforeAutoFire(fn: () => boolean | void): void {
     this.beforeAutoListeners.push(fn);
   }
 
@@ -179,7 +179,7 @@ export class Simulation {
   step(dt: number): void {
     this.time += dt;
     this.advanceTokens(dt);
-    for (const fn of this.beforeAutoListeners) fn();
+    for (const fn of this.beforeAutoListeners) if (fn() === false) return;
     this.runAutoFire(dt);
     this.collectGhosts();
   }

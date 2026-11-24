@@ -15,18 +15,23 @@ The current build of `main` is deployed to <https://benkeks.github.io/mini-petri
 Colored tokens appear at sources and need to reach the goals.
 Each goal shows how many tokens of which color it still wants as empty circles next to it; a circle disappears whenever a matching token arrives.
 A goal that has everything it wants is checked off and vanishes from the map.
-In endless mode, new sources and goals appear near the network over time, tending towards the starting source, and your score is the number of matching tokens delivered.
+In survival and endless modes, new sources and goals appear near the network over time, tending towards the starting source, and your score is the number of matching tokens delivered.
 The starting blue source is unlimited; red sources and sinks initially supply or want five tokens.
+Finite sources and sinks arrange their remaining circles in matching groups of five, mirrored on opposite sides of the node; source circles are smaller.
+When all connections run up or down, a transition uses a horizontal bar, with its balance on the clear vertical side.
+Their circles switch to the clearer side when connected arcs occupy their usual side, and gently tween into place when flipping or consuming tokens.
 Later red pairs appear farther apart and can have different quantities, occasionally 10 or 15.
 From epoch 25, some blue sinks consume two tokens per firing; after epoch 50, some consume three.
 Green sinks appear from epoch 40, and yellow sinks from epoch 100; neither has its own source.
 From epoch 75, every second red sink appears without a source.
 Pan and zoom to find new arrivals, then connect them to your network.
-The upper left shows your score, elapsed game time and completed epoch count; your coins are at the lower left.
+The upper left shows your score, elapsed game time and completed epoch count.
+Resource counters sit below the toolbar, centered in portrait; landscape places counters and tools alongside each other at the bottom.
 Use **Pause** to freeze gameplay and **Resume** to continue. Restart opens an in-game confirmation; cancelling restores the previous pause state.
 
 Tokens do not move on their own: **tap a transition** (the dark bars) to make it fire — taking tokens from the circles before it and sending new tokens on.
 The starting relay passes a token through unchanged.
+The starting source place holds 19 tokens; the destination starts at 7 and can be upgraded.
 A transition can only fire when the tokens it needs are there and its output circles have room; otherwise it is greyed out.
 The size of a place shows whether it holds 1, 7 or 19 tokens; the standard capacity is 7.
 
@@ -39,6 +44,8 @@ The initial blue source never expires.
 
 Drag empty space to move around, and use the mouse wheel, trackpad or a two-finger pinch to zoom.
 Switch out of a placement tool before dragging.
+The initial hint explains the source-to-sink objective until your first effective click or epoch 2.
+Default tool hints stop after epoch 10; all tool hints stop after epoch 100.
 
 ### Building and upgrades
 A toolbar at the bottom offers tools.
@@ -50,6 +57,7 @@ Tapping a tool again (or pressing Escape) goes back to firing.
   The transition tools show what the new transition consumes (left) and produces (right).
 - A new transition starts with **loose ends** (plugs) and cannot fire until all of them are connected: tap a plug and a place in either order.
   Some given transitions and goals have loose ends, too.
+  Loose ends flip away from connected arcs on the same side; the arrow still shows whether the port consumes or produces tokens.
   Connections can only reach nearby places; a ring shows their maximum range while building or connecting, reachable nodes are highlighted, and out-of-range plugs are dimmed.
   After selecting a place, tap a transition to connect its first available input, then its first available output; tap a specific plug to choose it instead.
   Or tap empty space to build a one-to-one relay connected to that place, then connect its output.
@@ -61,7 +69,20 @@ Tapping a tool again (or pressing Escape) goes back to firing.
 - **Auto** (clock) makes a transition fire on its own; tap it again with the same tool to make it faster. Small bars on the transition show the upgrades applied.
 - **Capacity** (plus) grows a place to the next size, allowing it to hold more tokens.
 
-You start with 40 coins. Paid automation, speed and capacity upgrades share a price starting at 5 coins; each successful paid upgrade increases the next price by 1 for the rest of the run.
+You start in survival mode with 10 lives and 40 coins, shown as a heart and coin circle.
+Each timed-out sink costs a life; at zero lives, the game freezes and shows your score.
+Restart starts a fresh survival run, or choose endless to keep your network and score without life limits.
+The `SKIP TO ENDLESS` button (`ENDLESS` in portrait) next to restart also lets you continue without lives after confirmation.
+Endless mode keeps the heart counter, showing infinity instead of limited lives.
+After leaving survival, the main score and epoch retain your survival totals; bracketed numbers show tokens delivered and epochs completed since switching.
+Lost hearts fly from the HUD to the timed-out sink.
+In survival mode, each sink in its countdown adds a colored exclamation mark beside the heart; tap it for a quick, smooth camera scroll to that sink.
+The warning jumps during its final 15 seconds, and losing your last life triggers a slightly slower scroll to the dying sink.
+Sink deaths briefly tint the screen in the sink's color.
+The toolbar heart buys a life for 50 coins initially, rising by 10 per purchase, up to a maximum of 10 lives.
+From epoch 50, hearts rarely appear among rewards (2% of selections, doubled when you have 3 lives or fewer).
+
+Paid automation, speed and capacity upgrades share a price starting at 5 coins; each successful paid upgrade increases the next price by 1 for the rest of the run.
 Exhausting a finite source earns 5 coins; removing a place earns one coin per settled token on it.
 Removing an upgraded node refunds half its total upgrade costs, rounded to the nearest coin.
 Flying coins show spending and earnings; ordinary building and wiring are free.

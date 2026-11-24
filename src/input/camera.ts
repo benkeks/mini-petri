@@ -25,9 +25,11 @@ export class Camera {
   private minScale = 1;
   private maxScale = 1;
   private bounds: Bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+  private scroll?: { from: Pt; to: Pt; elapsed: number; duration: number };
   viewport: Viewport = { x: 0, y: 0, width: 1, height: 1 };
 
   layout(viewport: Viewport, world: { width: number; height: number }, reset: boolean): void {
+    if (reset) this.scroll = undefined;
     const previousCenter = this.toWorld({
       x: this.viewport.x + this.viewport.width / 2,
       y: this.viewport.y + this.viewport.height / 2,
@@ -61,13 +63,46 @@ export class Camera {
   }
 
   pan(dx: number, dy: number): void {
+    this.scroll = undefined;
     this.x += dx;
     this.y += dy;
     this.clamp();
   }
 
+  focus(center: Pt, duration = 0): void {
+    const v = this.viewport;
+    this.scroll = duration > 0 ? {
+      from: this.toWorld({ x: v.x + v.width / 2, y: v.y + v.height / 2 }),
+      to: { x: clamp(center.x, this.bounds.minX, this.bounds.maxX), y: clamp(center.y, this.bounds.minY, this.bounds.maxY) },
+      elapsed: 0,
+      duration,
+    } : undefined;
+    if (!this.scroll) this.centerOn(center);
+  }
+
+  /** Advance focus scrolling on the real clock, including while gameplay is paused or over. */
+  update(dt: number): void {
+    const scroll = this.scroll;
+    if (!scroll) return;
+    scroll.elapsed = Math.min(scroll.duration, scroll.elapsed + dt);
+    const ease = 1 - (1 - scroll.elapsed / scroll.duration) ** 3;
+    this.centerOn({
+      x: scroll.from.x + (scroll.to.x - scroll.from.x) * ease,
+      y: scroll.from.y + (scroll.to.y - scroll.from.y) * ease,
+    });
+    if (scroll.elapsed === scroll.duration) this.scroll = undefined;
+  }
+
+  private centerOn(center: Pt): void {
+    const v = this.viewport;
+    this.x = v.x + v.width / 2 - center.x * this.scale;
+    this.y = v.y + v.height / 2 - center.y * this.scale;
+    this.clamp();
+  }
+
   /** Zoom around a screen point, optionally moving that point as with a pinch. */
   zoom(factor: number, from: Pt, to = from): void {
+    this.scroll = undefined;
     const anchor = this.toWorld(from);
     this.scale = clamp(this.scale * factor, this.minScale, this.maxScale);
     this.x = to.x - anchor.x * this.scale;

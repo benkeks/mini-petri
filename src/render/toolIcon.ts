@@ -2,11 +2,19 @@ import { Graphics } from "pixi.js";
 import type { Brush } from "../input/controller";
 import { THEME, TOKEN_COLORS } from "./style";
 
+export function drawHeart(g: Graphics, x = 0, y = 0, scale = 1): void {
+  g.moveTo(x, y + 14 * scale).bezierCurveTo(x - 30 * scale, y - 5 * scale, x - 12 * scale, y - 24 * scale, x, y - 11 * scale)
+    .bezierCurveTo(x + 12 * scale, y - 24 * scale, x + 30 * scale, y - 5 * scale, x, y + 14 * scale).fill(THEME.heart);
+}
+
 /** Icons of the toolbar, drawn around (0, 0) within 48 pixels. */
 export function drawToolIcon(g: Graphics, b: Brush): void {
   const ink = THEME.ink;
   const bar = (x: number, w = 8, h = 24, color: number = ink) => g.roundRect(x - w / 2, -h / 2, w, h, 3).fill(color);
   switch (b.kind) {
+    case "life":
+      drawHeart(g);
+      break;
     case "fire":
       bar(0);
       for (const a of [-0.6, 0, 0.6].flatMap((d) => [d, Math.PI + d])) {
@@ -24,7 +32,7 @@ export function drawToolIcon(g: Graphics, b: Brush): void {
       break;
     }
     case "remove":
-      for (const s of [1, -1]) g.moveTo(-10, -10 * s).lineTo(10, 10 * s).stroke({ width: 4, color: THEME.warn, cap: "round" });
+      for (const s of [1, -1]) g.moveTo(-10, -10 * s).lineTo(10, 10 * s).stroke({ width: 4, color: THEME.removal, cap: "round" });
       break;
     case "auto":
       g.circle(-4, 0, 11).stroke({ width: 3, color: ink });

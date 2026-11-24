@@ -16,7 +16,8 @@ export type Brush =
   | { kind: "kit"; kit: Kit }
   | { kind: "remove" }
   | { kind: "auto" }
-  | { kind: "capacity" };
+  | { kind: "capacity" }
+  | { kind: "life" };
 
 export const FIRE: Brush = { kind: "fire" };
 
@@ -30,6 +31,7 @@ export function brushesOf(game: Game): Brush[] {
   for (const kit of kits) if (kit === relay) brushes.push({ kind: "kit", kit });
   if (tools.auto) brushes.push({ kind: "auto" });
   if (tools.capacity) brushes.push({ kind: "capacity" });
+  if (game.survival) brushes.push({ kind: "life" });
   for (const kit of kits) if (kit !== relay) brushes.push({ kind: "kit", kit });
   if (tools.remove) brushes.push({ kind: "remove" });
   return brushes;
@@ -44,6 +46,7 @@ export class Controller {
   selected?: { tid: string; index: number };
   selectedPlace?: string;
   private pointer?: Pt;
+  private hasInteracted = false;
 
   constructor(
     private game: Game,
@@ -51,6 +54,7 @@ export class Controller {
   ) {}
 
   attach(game: Game, view: ControllerView): void {
+    if (this.game !== game) this.hasInteracted = false;
     this.game = game;
     this.view = view;
     this.brush = FIRE;
@@ -61,7 +65,12 @@ export class Controller {
 
   /** Selects `b`; selecting the active brush again switches back to firing. */
   setBrush(b: Brush): void {
+    if (b.kind === "life") {
+      this.effect(this.game.buyLife({ x: this.game.size.width / 2, y: this.game.size.height / 2 }));
+      return;
+    }
     this.brush = sameBrush(b, this.brush) ? FIRE : b;
+    this.hasInteracted = true;
     this.selected = undefined;
     this.selectedPlace = undefined;
   }
@@ -94,6 +103,8 @@ export class Controller {
         return pick.kind === "transition";
       case "capacity":
         return pick.kind === "transition";
+      case "life":
+        return false;
     }
   }
 
@@ -104,7 +115,7 @@ export class Controller {
     const pick = this.view.pick(p);
     if (pick.kind === "reward") {
       const offer = game.offers.get(pick.id);
-      if (!game.collectOffer(pick.id, pick.index)) this.view.deny(pick);
+      if (!this.effect(game.collectOffer(pick.id, pick.index))) this.view.deny(pick);
       else if (offer) this.view.rewardCollected?.(offer, pick.index);
       return;
     }
@@ -117,6 +128,7 @@ export class Controller {
       }
       this.selectedPlace = undefined;
       this.selected = { tid, index: 0 };
+      this.hasInteracted = true;
       return;
     }
     if (this.selectedPlace && (pick.kind === "port" || pick.kind === "transition")) {
@@ -124,7 +136,7 @@ export class Controller {
       const tid = pick.kind === "port" ? pick.tid : pick.id;
       const index = pick.kind === "port" ? pick.index : this.firstConnectiblePort(tid, place);
       this.selectedPlace = undefined;
-      if (index === undefined || !game.connect(tid, index, place)) this.view.deny(pick);
+      if (index === undefined || !this.effect(game.connect(tid, index, place))) this.view.deny(pick);
       return;
     }
     if (pick.kind === "port") {
@@ -132,6 +144,7 @@ export class Controller {
       this.selectedPlace = undefined;
       const same = this.selected?.tid === pick.tid && this.selected.index === pick.index;
       this.selected = same ? undefined : { tid: pick.tid, index: pick.index };
+      this.hasInteracted = true;
       return;
     }
     if (this.selected) {
@@ -142,10 +155,11 @@ export class Controller {
           return;
         }
         this.selected = game.sim.net.transitions.get(tid)?.open?.length ? { tid, index: 0 } : undefined;
+        this.hasInteracted = true;
         return;
       }
       this.selected = undefined;
-      if (pick.kind === "place" && game.connect(tid, index, pick.id)) {
+      if (pick.kind === "place" && this.effect(game.connect(tid, index, pick.id))) {
         // Keep wiring the same transition while it has loose ends.
         if (game.sim.net.transitions.get(tid)?.open?.length) this.selected = { tid, index: 0 };
       } else if (pick.kind === "place") this.view.deny(pick);
@@ -153,6 +167,7 @@ export class Controller {
     }
     if (this.brush.kind === "fire" && pick.kind === "place" && this.game.level.tools) {
       this.selectedPlace = this.selectedPlace === pick.id ? undefined : pick.id;
+      this.hasInteracted = true;
       return;
     }
     this.selectedPlace = undefined;
@@ -206,6 +221,11 @@ export class Controller {
 
   /** Explains what a tap does now. */
   hint(): string {
+    if (this.game.level.mode === "endless") {
+      if (this.game.epoch > 100) return "";
+      if (!this.hasInteracted && this.game.epoch < 2) return "Move tokens from sources to sinks. Tap a transition to make it fire.";
+      if (this.game.epoch > 10 && this.brush.kind === "fire") return "";
+    }
     if (this.selected) return this.game.level.tools?.place
       ? "Tap a place inside the ring, or empty space to build a small place."
       : "Tap a place inside the ring to connect this loose end.";
@@ -225,7 +245,14 @@ export class Controller {
         return this.game.powerupStock("auto") ? "Tap a transition to use a free time upgrade." : `Tap a transition to automate or speed it up (${this.game.upgradePrice} coins).`;
       case "capacity":
         return this.game.powerupStock("capacity") ? "Tap a place to use a free capacity upgrade." : `Tap a place to increase its capacity (${this.game.upgradePrice} coins).`;
+      case "life":
+        return `Buy an extra life (${this.game.lifePrice} coins).`;
     }
+  }
+
+  private effect(success: boolean): boolean {
+    if (success) this.hasInteracted = true;
+    return success;
   }
 
   private firstConnectiblePort(tid: string, pid: string): number | undefined {
@@ -247,7 +274,7 @@ export class Controller {
         if (pick.kind !== "transition") return apply;
         const t = game.sim.net.transitions.get(pick.id)!;
         if (t.kind !== "normal") return apply;
-        return apply ? game.playerFire(pick.id) : game.sim.isEnabled(pick.id);
+        return apply ? this.effect(game.playerFire(pick.id)) : game.sim.isEnabled(pick.id);
       }
       case "kit": {
         if (pick.kind !== "empty") return false;
@@ -256,14 +283,18 @@ export class Controller {
         if (id === undefined) return false;
         this.brush = FIRE;
         this.selected = { tid: id, index: 0 };
+        this.hasInteracted = true;
         return true;
       }
       case "remove":
-        return pick.kind !== "empty" && pick.kind !== "port" && pick.kind !== "reward" && game.remove(pick.id, apply);
+        return pick.kind !== "empty" && pick.kind !== "port" && pick.kind !== "reward"
+          && (apply ? this.effect(game.remove(pick.id)) : game.remove(pick.id, false));
       case "auto":
-        return pick.kind === "transition" && game.upgradeAuto(pick.id, apply);
+        return pick.kind === "transition" && (apply ? this.effect(game.upgradeAuto(pick.id)) : game.upgradeAuto(pick.id, false));
       case "capacity":
-        return pick.kind === "place" && game.upgradeCapacity(pick.id, apply);
+        return pick.kind === "place" && (apply ? this.effect(game.upgradeCapacity(pick.id)) : game.upgradeCapacity(pick.id, false));
+      case "life":
+        return false;
     }
   }
 }

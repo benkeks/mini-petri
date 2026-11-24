@@ -87,12 +87,12 @@ The [README](../README.md) covers gameplay.
   Tutorial levels complete when all goal sinks are resolved; `Game.step` and `playerFire` then do nothing (the game is frozen behind the win popup).
 
 ## Endless mode
-- The app currently opens only endless mode, regardless of the URL hash.
+- The app opens survival mode using the endless map and progression, regardless of the URL hash.
   The level definitions and completion rules remain available for future tutorials or quizzes.
 - Each game owns its goal list and score, so spawned goals and deliveries do not leak across restarts.
   The score increases by matching goal tokens on arrival, and resolving every current goal does not end the game.
   The HUD shows the number of completed spawn epochs. Pausing freezes simulation time and player actions, but still allows camera navigation.
-- An unlimited blue source, two capacity-19 places, a manually fired color-preserving relay and a five-token blue sink form the initial network.
+- An unlimited blue source, a capacity-19 source place, a capacity-7 destination, a manually fired color-preserving relay and a five-token blue sink form the initial network.
   Endless mode offers the relay kit initially; additional colored transition kits unlock over time.
 - Epoch progression and spawning rules are detailed below.
 - A sink's countdown starts after 180 seconds and expires 60 seconds later; yellow sinks instead have 360 seconds of grace and a 120-second countdown.
@@ -101,6 +101,36 @@ The [README](../README.md) covers gameplay.
   The initial blue source has no countdown.
   Timed-out transitions are disabled, crossed out, and removed after the same linger as completed goals; source tokens already in flight finish traveling.
   Arrivals are processed before timeouts and automatic firing, and late sink arrivals cannot avert expiry or score.
+
+## Survival mode
+- Each new run starts with 10 lives.
+  Each sink timeout costs one life, even if partially filled; source timeouts and completed sinks do not cost lives.
+  Losing the last life freezes the run and shows its score with restart and endless-continuation buttons.
+  Restart creates a new survival run; endless continuation preserves the map, score, time, coins, inventory, progression and in-flight tokens, but removes life limits.
+  On continuation, the HUD retains the attained survival score and epoch as the main numbers, followed by bracketed gains since switching (for example, `SCORE 100 [25]` and `EPOCH 50 [2]`).
+  Internal score and epoch totals continue advancing normally, including powerup and spawn unlocks; restarting clears the survival snapshot.
+- The `SKIP TO ENDLESS` button next to restart asks for confirmation before ending survival.
+  Portrait screens shorten its label to `ENDLESS`.
+  Pause, endless and restart form a horizontal row in landscape and a vertical stack in portrait, always against the right screen edge.
+  The group is top-aligned with the score when space permits, or sits below the score metadata to avoid overlap.
+  Subtle rounded boxes share the controls' clickable bounds.
+  Both confirmations pause the game while open, and cancellation restores its prior pause state.
+- Coins appear inside an orange coin circle next to the survival heart and life count.
+  Portrait screens center the counters below the toolbar; landscape screens bottom-align counters and tools in adjacent areas.
+  Endless mode keeps the heart with an infinity counter.
+  Each lost life animates a heart from the HUD to the timed-out sink, including the final life while the failure popup is open.
+  In survival mode, each sink in countdown adds a small exclamation mark in its token color beside the heart.
+  Clicking it smoothly scrolls the camera to that sink in 0.3 seconds; the final-life sink receives a slower 0.65-second scroll on game over.
+  Camera scrolling continues while gameplay is frozen; manual pan or zoom interrupts it.
+  Warnings jump during the last 15 seconds, stopping if a delivery extends the deadline out of that window.
+  Resolved or expired sinks lose their warnings.
+  Warning rows wrap and reserve HUD space without overlapping the toolbar.
+  The heart toolbar button buys a life immediately for 50 coins initially, increasing by 10 per successful purchase.
+  Lives are capped at 10; unaffordable purchases and purchases at the cap do nothing and do not increase the price.
+- From completed epoch 50, survival reward selections have a 2% chance of containing one heart, doubled to 4% at 3 lives or fewer.
+  Hearts are offered only below the life cap and add one life immediately when collected.
+  A heart cannot be collected at the cap; its other option remains available.
+  A heart already on the map when switching to endless gives 5 coins instead, so both choices remain useful.
 
 ## Epoch progression
 
@@ -140,6 +170,7 @@ The table is checked against the powerup definitions by the tests.
 | 30 | `redToBlue` | Red→blue | 5 |
 | 35 | `blueToGreen` | Blue→green | 10 |
 | 40 | `splitAny` | Any 2→3 | 20 |
+| 50 | `life` | Extra life | — |
 | 60 | `redToGreen` | Red→green | 5 |
 | 90 | `redBlueToYellow` | Red+blue→yellow | 10 |
 | 120 | `redTwoBlueToYellow` | Red+2 blue→2 yellow | 20 |
@@ -147,6 +178,25 @@ The table is checked against the powerup definitions by the tests.
 When changing progression, update this overview and the boundary tests in [game.test.ts](../tests/game.test.ts) and [powerups.test.ts](../tests/powerups.test.ts).
 
 ## Presentation
+- Transitions with connected arcs all predominantly above or below them use horizontal bars; mixed connections retain the screen orientation.
+  Arc routing, connectors, upgrade marks, hover bounds and picking use that same per-node orientation.
+  Source/sink balances use the clear vertical side opposite their connections.
+- Endless and survival runs begin with source-to-sink guidance until the first effective click (including selecting a tool or connector), or two completed epochs.
+  Ineffective or denied clicks do not dismiss it.
+  Default firing/wiring help disappears from epoch 11, and all tool help disappears from epoch 101.
+  Pause status remains available, and hidden help releases its HUD space.
+- Finite source supply dots and sink goal circles share five-per-line grouping, spacing and distance from the node, mirrored upstream/downstream and transposed in portrait.
+  Source dots remain smaller and filled; sink circles remain larger and outlined.
+  Open connectors and balances prefer their normal flow side but flip to the opposite side if it has fewer live attached arcs.
+  Ties keep the normal side, and perpendicular arcs do not force a flip.
+  Connector arrows retain input/output semantics regardless of their physical side.
+  Remaining balance circles tween to their new positions over 0.25 seconds on side changes and consumption, retaining animation state across net rebuilds.
+- The warm off-white background has an extremely subtle soft rose tint.
+- Sink deaths briefly tint the entire screen in the sink's token color, in both survival and endless modes.
+  A single low-opacity flash fades over 0.22 seconds, including while the failure popup is open.
+  Hearts use a darker red and removal crosses a browner red, distinct from red tokens.
+- The survival-over card avoids the fatal sink's current screen position and its camera-scroll destination when space allows.
+  It retains a clear position while the camera moves, accounts for its appearance overshoot and gentle bob, and falls back to the center if the screen is too constrained.
 - Mini Metro-like palette (`src/render/style.ts`); portrait screens (height > 1.1 × width) transpose node coordinates, so the flow runs top to bottom and transition bars lie horizontally.
 - Arcs are octilinear: a diagonal leg at the place and a straight leg (≥ 44 units where possible) along the flow axis into the transition; steep arcs get an extra leg perpendicular to the flow at the place.
   Several arcs on the same side of a transition attach at spread-out points on the bar.

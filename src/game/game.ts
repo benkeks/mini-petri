@@ -68,6 +68,15 @@ export const ENDLESS_RULES = {
   redSoloFrom: 75,
   yellowFrom: 100,
   yellowChance: 0.1,
+  doubledDemandFrom: 125,
+  blueRedFrom: 150,
+  variedBlueRedFrom: 165,
+  yellowGreenFrom: 180,
+  quadrupleFrom: 200,
+  variedQuadrupleFrom: 250,
+  pairChance: 0.1,
+  quadrupleChance: 0.05,
+  redSourcesUntil: 625,
 } as const;
 const SINK_GRACE = 180;
 const SOURCE_IDLE = 240;
@@ -81,6 +90,28 @@ interface Countdown {
   deadline: number;
   duration: number;
 }
+
+interface EndlessDemand {
+  colors: readonly Color[];
+  /** Permanent sinks are restricted to this central fraction of the current map extent. */
+  centralFraction?: number;
+  milestone?: number;
+}
+
+interface EndlessPositions {
+  sink: { x: number; y: number };
+  source?: { x: number; y: number };
+}
+
+const PERMANENT_SINKS: readonly EndlessDemand[] = [
+  { milestone: 300, colors: ["blue"], centralFraction: 0.3 },
+  { milestone: 400, colors: ["red"], centralFraction: 0.5 },
+  { milestone: 500, colors: ["green"], centralFraction: 0.65 },
+  { milestone: 600, colors: ["yellow"], centralFraction: 0.75 },
+  { milestone: 725, colors: ["red", "blue"], centralFraction: 1 },
+  { milestone: 850, colors: ["yellow", "green"], centralFraction: 1 },
+  { milestone: 1000, colors: ["blue", "red", "green", "yellow"], centralFraction: 1 },
+];
 
 export interface CoinEvent {
   amount: number;
@@ -155,7 +186,8 @@ export class Game {
   private endlessProgress = 0;
   private endlessEpoch = 0;
   private redSurplus = 0;
-  private pendingColor?: Color;
+  private pendingEpoch?: { remaining: number; demand?: EndlessDemand };
+  private permanentBluePosition?: { x: number; y: number };
   private nextRedHasSource = true;
   private nextSpawnRetryAt = 0;
   private nextEndlessId = 1;
@@ -168,9 +200,9 @@ export class Game {
     this.nextRampAt = level.ramp.every;
     if (level.mode === "endless") {
       this.endlessCenter = [...this.sim.net.transitions.values()].find((t) => t.kind === "source" && t.supply === undefined);
-      for (const goal of this.goalDefinitions) {
-        const factor = goal.color === "yellow" ? 2 : 1;
-        this.startCountdown(goal.sinkId, SINK_GRACE * factor, this.sim.time, COUNTDOWN * factor);
+      for (const sinkId of new Set(this.goalDefinitions.map((goal) => goal.sinkId))) {
+        const factor = this.goalsOf(sinkId).some((goal) => goal.color === "yellow") ? 2 : 1;
+        this.startCountdown(sinkId, SINK_GRACE * factor, this.sim.time, COUNTDOWN * factor);
       }
     }
     this.syncUnusedPlaces();
@@ -834,6 +866,9 @@ export class Game {
     const net = this.sim.net;
     for (const n of [...net.places.values(), ...net.transitions.values()]) [n.x, n.y] = [n.y, n.x];
     for (const offer of this.offers.values()) [offer.x, offer.y] = [offer.y, offer.x];
+    if (this.permanentBluePosition) {
+      [this.permanentBluePosition.x, this.permanentBluePosition.y] = [this.permanentBluePosition.y, this.permanentBluePosition.x];
+    }
     this.offerVersion++;
   }
 
@@ -944,16 +979,43 @@ export class Game {
 
   private spawnEndless(): void {
     while (this.endlessProgress >= ENDLESS_EPOCH_PROGRESS - 1e-9 && this.sim.time >= this.nextSpawnRetryAt) {
-      this.pendingColor ??= this.endlessColor();
-      if (!this.spawnEndlessGoal(this.pendingColor)) {
-        console.warn("Could not place an endless goal and its source; retrying in one second");
-        this.nextSpawnRetryAt = this.sim.time + 1;
-        break;
+      const epoch = this.endlessEpoch + 1;
+      const count = epoch >= 1750 ? 3 : epoch >= 1500 ? 2
+        : epoch >= 1250 ? (epoch % 2 === 0 ? 2 : 1)
+          : epoch >= 1000 && epoch % 3 === 0 ? 2 : 1;
+      this.pendingEpoch ??= { remaining: count };
+      while (this.pendingEpoch.remaining > 0) {
+        this.pendingEpoch.demand ??= (this.pendingEpoch.remaining === count
+          ? PERMANENT_SINKS.find((sink) => sink.milestone === epoch) : undefined) ?? this.endlessDemand();
+        if (!this.spawnEndlessGoal(this.pendingEpoch.demand)) {
+          console.warn("Could not place an endless goal and its source; retrying in one second");
+          this.nextSpawnRetryAt = this.sim.time + 1;
+          return;
+        }
+        this.pendingEpoch.remaining--;
+        this.pendingEpoch.demand = undefined;
       }
       this.endlessProgress = Math.max(0, this.endlessProgress - ENDLESS_EPOCH_PROGRESS);
       this.endlessEpoch++;
-      this.pendingColor = undefined;
+      this.pendingEpoch = undefined;
     }
+  }
+
+  private endlessDemand(): EndlessDemand {
+    const epoch = this.endlessEpoch + 1;
+    if (epoch >= ENDLESS_RULES.blueRedFrom) {
+      let roll = this.random();
+      if (epoch >= ENDLESS_RULES.quadrupleFrom) {
+        if (roll < ENDLESS_RULES.quadrupleChance) return { colors: ["blue", "red", "green", "yellow"] };
+        roll -= ENDLESS_RULES.quadrupleChance;
+      }
+      if (epoch >= ENDLESS_RULES.yellowGreenFrom) {
+        if (roll < ENDLESS_RULES.pairChance) return { colors: ["yellow", "green"] };
+        roll -= ENDLESS_RULES.pairChance;
+      }
+      if (roll < ENDLESS_RULES.pairChance) return { colors: ["blue", "red"] };
+    }
+    return { colors: [this.endlessColor()] };
   }
 
   private endlessColor(): Color {
@@ -968,24 +1030,42 @@ export class Game {
     return roll < yellow + green + (1 - yellow - green) * ENDLESS_RULES.redChance ? "red" : "blue";
   }
 
-  private spawnEndlessGoal(color: Color): boolean {
+  private spawnEndlessGoal(demand: EndlessDemand): boolean {
     const net = this.sim.net;
-    const alternating = color === "red" && this.endlessEpoch + 1 >= ENDLESS_RULES.redSoloFrom;
-    const withSource = color === "red" && (!alternating || this.nextRedHasSource);
-    const positions = this.endlessPositions(withSource, color === "red");
+    const epoch = this.endlessEpoch + 1;
+    const { colors } = demand;
+    const color = colors[0];
+    const fraction = demand.centralFraction;
+    const permanent = fraction !== undefined;
+    const red = colors.length === 1 && color === "red" && !permanent;
+    const redSources = epoch < ENDLESS_RULES.redSourcesUntil;
+    const alternating = red && redSources && epoch >= ENDLESS_RULES.redSoloFrom;
+    const withSource = red && redSources && (!alternating || this.nextRedHasSource);
+    const positions = permanent ? this.permanentPosition(fraction, demand.milestone === 400) : this.endlessPositions(withSource, red);
     if (!positions) return false;
 
-    const inputCount = color === "blue" ? this.blueSinkInputCount() : 1;
+    const inputCount = colors.length === 1 && color === "blue" && !permanent ? this.blueSinkInputCount() : 1;
     const sinkId = net.freshId(`endless${this.nextEndlessId++}_`);
-    net.addTransition({ id: sinkId, ...positions.sink, kind: "sink", autoInterval: 0.6, open: [{ dir: "in", color, count: inputCount }] });
+    net.addTransition({
+      id: sinkId, ...positions.sink, kind: "sink", autoInterval: 0.6,
+      open: colors.map((color) => ({ dir: "in", color, count: inputCount })),
+    });
     this.spawnedAt.set(sinkId, this.sim.time);
-    let goalCount = color === "red" && this.endlessEpoch >= ENDLESS_RULES.variedRedAfter ? this.redCount()
-      : color === "yellow" ? 10 * (1 + Math.floor(this.random() * 3)) : inputCount > 1 ? 6 : 5;
+    let goalCount: number;
+    if (permanent) goalCount = Infinity;
+    else if (colors.length === 4) goalCount = epoch >= ENDLESS_RULES.variedQuadrupleFrom ? (this.random() < 0.5 ? 10 : 15) : 5;
+    else if (colors.length === 2) goalCount = color === "blue" && epoch >= ENDLESS_RULES.variedBlueRedFrom ? this.redCount() : 5;
+    else if (color === "red" && this.endlessEpoch >= ENDLESS_RULES.variedRedAfter) goalCount = this.redCount();
+    else if (color === "yellow") goalCount = 10 * (1 + Math.floor(this.random() * 3));
+    else goalCount = inputCount > 1 ? 6 : 5;
+    if (!permanent && colors.length === 1 && (color === "blue" || color === "green")
+      && epoch >= ENDLESS_RULES.doubledDemandFrom) goalCount *= 2;
     // Keep five in reserve for the next unpaired sink without exceeding a source's 15-token maximum.
     if (alternating) goalCount = Math.min(goalCount, withSource ? 10 + this.redSurplus : this.redSurplus);
-    this.goalDefinitions.push({ sinkId, color, count: goalCount });
-    const factor = color === "yellow" ? 2 : 1;
+    for (const color of colors) this.goalDefinitions.push({ sinkId, color, count: goalCount });
+    const factor = colors.includes("yellow") ? 2 : 1;
     this.startCountdown(sinkId, SINK_GRACE * factor, this.sim.time, COUNTDOWN * factor);
+    if (demand.milestone === 300) this.permanentBluePosition = { ...positions.sink };
     if (positions.source) {
       const proposedSupply = this.endlessEpoch >= ENDLESS_RULES.variedRedAfter ? this.redCount() : 5;
       const supply = Math.max(proposedSupply, goalCount - this.redSurplus + (alternating ? 5 : 0));
@@ -996,11 +1076,40 @@ export class Game {
       });
       this.spawnedAt.set(sourceId, this.sim.time);
       this.startCountdown(sourceId, SOURCE_IDLE);
-    } else if (color === "red") {
+    } else if (red && redSources) {
       this.redSurplus -= goalCount;
     }
     if (alternating) this.nextRedHasSource = !this.nextRedHasSource;
     return true;
+  }
+
+  private permanentPosition(fraction: number, avoidBlue: boolean): EndlessPositions | undefined {
+    const bounds = this.sim.net.liveNodes().reduce((bounds, node) => ({
+      left: Math.min(bounds.left, node.x), right: Math.max(bounds.right, node.x),
+      top: Math.min(bounds.top, node.y), bottom: Math.max(bounds.bottom, node.y),
+    }), { left: 0, right: this.size.width, top: 0, bottom: this.size.height });
+    const width = (bounds.right - bounds.left) * fraction;
+    const height = (bounds.bottom - bounds.top) * fraction;
+    const left = (bounds.left + bounds.right - width) / 2;
+    const top = (bounds.top + bounds.bottom - height) / 2;
+    const candidateAt = (x: number, y: number) => {
+      const sink = { x: left + x * width, y: top + y * height };
+      if (this.placementIssue("transition", sink.x, sink.y) === "crowded") return undefined;
+      if (avoidBlue && this.permanentBluePosition
+        && Math.hypot(sink.x - this.permanentBluePosition.x, sink.y - this.permanentBluePosition.y) < CONNECTION_RANGE) return undefined;
+      return { sink };
+    };
+    for (let i = 0; i < 64; i++) {
+      const candidate = candidateAt(this.random(), this.random());
+      if (candidate) return candidate;
+    }
+    for (let y = 0; y <= 32; y++) {
+      for (let x = 0; x <= 32; x++) {
+        const candidate = candidateAt(x / 32, y / 32);
+        if (candidate) return candidate;
+      }
+    }
+    return undefined;
   }
 
   private blueSinkInputCount(): number {
@@ -1015,7 +1124,7 @@ export class Game {
     return roll < ENDLESS_RULES.redFiveRoll ? 5 : roll < ENDLESS_RULES.redTenRoll ? 10 : 15;
   }
 
-  private endlessPositions(withSource: boolean, red: boolean): { sink: { x: number; y: number }; source?: { x: number; y: number } } | undefined {
+  private endlessPositions(withSource: boolean, red: boolean): EndlessPositions | undefined {
     const net = this.sim.net;
     const nodes = net.liveNodes();
     if (nodes.length === 0) throw new Error("Endless mode needs a live node to spawn near");

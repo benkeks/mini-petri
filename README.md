@@ -19,6 +19,8 @@ Place sizes indicate capacities of 1, 7 or 19 tokens.
 The starting blue source is unlimited, with a 19-token place before the relay and a 7-token destination after it.
 Finite sources show their remaining supply beside them.
 Later goals may require colors you must produce with special transitions rather than collect from a matching source.
+Late epochs add paired and four-color goals, persistent infinite sinks that can still starve, and multiple sinks per epoch.
+Overlapping colored goal circles represent the tokens needed together for one firing.
 
 Drag empty space to pan; use the mouse wheel, trackpad or a two-finger pinch to zoom.
 Leave placement mode before dragging.

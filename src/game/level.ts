@@ -1,7 +1,7 @@
 import type { Color } from "../core/multiset";
 import type { NetSpec, Port } from "../core/net";
 
-/** A goal sink wants to consume `count` tokens of `color`; once all its goals are met it leaves the map. */
+/** A sink leaves once all its goals are met; `count: Infinity` keeps it accepting tokens until starvation. */
 export interface Goal {
   sinkId: string;
   color: Color;

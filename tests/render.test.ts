@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { EventBoundary, FederatedPointerEvent, Graphics, Text } from "pixi.js";
+import type { Color } from "../src/core/multiset";
 import { Game, placementClearance } from "../src/game/game";
 import { endless } from "../src/game/endless";
 import { level2 } from "../src/game/level2";
@@ -185,6 +186,70 @@ describe("endpoint token layouts", () => {
       view.root.destroy({ children: true });
     },
   );
+});
+
+describe("grouped and infinite sink goals", () => {
+  const groups: Color[][] = [["blue", "red"], ["yellow", "green"], ["blue", "red", "green", "yellow"]];
+  function setup(colors: Color[], count: number, portrait: boolean) {
+    const definition = structuredClone(endless);
+    definition.goals = colors.map((color) => ({ sinkId: "starterSink", color, count }));
+    definition.net.transitions.forEach((transition) => { transition.autoInterval = undefined; });
+    definition.net.transitions.find((transition) => transition.id === "starterSink")!.open = colors.map((color) => ({ dir: "in", color }));
+    definition.net.arcs = definition.net.arcs.filter((arc) => arc.id !== "starterInput");
+    const game = new Game(definition);
+    for (let i = 0; i < colors.length; i++) game.connect("starterSink", 0, "starterDestination");
+    game.setPortrait(portrait);
+    const view = new NetView(game);
+    const viewport = { x: 0, y: 0, width: 1400, height: 1400 };
+    view.update(0, viewport);
+    return { game, view, viewport };
+  }
+
+  it.each(groups.flatMap((colors) => [5, 15].flatMap((count) => [false, true].map((portrait) => ({ colors, count, portrait })))))(
+    "renders $count overlapping $colors groups, portrait=$portrait, and removes one whole group on delivery",
+    ({ colors, count, portrait }) => {
+      const { game, view, viewport } = setup(colors, count, portrait);
+      const dots = balancePositions(view, game, "starterSink", 7);
+      expect(dots).toHaveLength(count * colors.length);
+      for (let group = 0; group < count; group++) {
+        const circles = dots.slice(group * colors.length, (group + 1) * colors.length);
+        for (const [x, y] of circles.slice(1)) {
+          expect(Math.hypot(x - circles[0][0], y - circles[0][1])).toBeLessThan(8);
+          expect(Math.hypot(x - circles[0][0], y - circles[0][1])).toBeGreaterThan(0);
+        }
+      }
+      const sink = view.root.children[5].children.find((node) =>
+        node.x === game.sim.net.transitions.get("starterSink")!.x && node.y === game.sim.net.transitions.get("starterSink")!.y)!;
+      const colorsDrawn = drawing(sink.children[0] as Graphics).filter((instruction) =>
+        instruction.action === "stroke" && instruction.path.some((shape) => shape.action === "circle" && shape.data[2] === 7))
+        .map((instruction) => instruction.color);
+      for (const color of colors) expect(colorsDrawn.filter((drawn) => drawn === TOKEN_COLORS[color])).toHaveLength(count);
+      game.sim.net.places.get("starterDestination")!.marking.push(...colors);
+      expect(game.sim.fire("starterSink")).toBe(true);
+      game.sim.step(1);
+      view.update(0.25, viewport);
+      expect(balancePositions(view, game, "starterSink", 7)).toHaveLength((count - 1) * colors.length);
+      view.root.destroy({ children: true });
+    });
+
+  it.each([["blue"] satisfies Color[], ...groups].flatMap((colors) => [false, true].map((portrait) => ({ colors, portrait }))))(
+    "renders a bounded $colors infinity marker, portrait=$portrait, without consuming the display on delivery",
+    ({ colors, portrait }) => {
+      const { game, view, viewport } = setup(colors, Infinity, portrait);
+      expect(balancePositions(view, game, "starterSink", 7)).toHaveLength(colors.length);
+      const sink = game.sim.net.transitions.get("starterSink")!;
+      const node = view.root.children[5].children.find((node) => node.x === sink.x && node.y === sink.y)!;
+      const curves = drawing(node.children[0] as Graphics).flatMap((instruction) => instruction.path)
+        .filter((shape) => shape.action === "bezierCurveTo");
+      expect(curves).toHaveLength(2);
+      game.sim.net.places.get("starterDestination")!.marking.push(...colors);
+      expect(game.sim.fire("starterSink")).toBe(true);
+      game.sim.step(1);
+      view.update(0.25, viewport);
+      expect(balancePositions(view, game, "starterSink", 7)).toHaveLength(colors.length);
+      expect(game.resolved.has("starterSink")).toBe(false);
+      view.root.destroy({ children: true });
+    });
 });
 
 describe("survival popup placement", () => {

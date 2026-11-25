@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { Color } from "../src/core/multiset";
 import design from "../docs/DESIGN.md?raw";
 import { BUILD_RANGE, CLEARANCE, EMISSION_PROGRESS, ENDLESS_EPOCH_PROGRESS, ENDLESS_RULES, Game, PLACE_FOOTPRINT, RESOLVED_LINGER, TRANSITION_FOOTPRINT, withinConnectionRange } from "../src/game/game";
 import { endless } from "../src/game/endless";
@@ -28,6 +29,194 @@ function level(unreachableGoal = false): Level {
 function run(game: Game, seconds: number): void {
   for (let t = 0; t < seconds; t += 1 / 60) game.step(1 / 60);
 }
+
+describe("late endless progression", () => {
+  function setup() {
+    let rolls: number[] = [];
+    let fallback = 0.95;
+    const game = new Game(endless, () => rolls.shift() ?? fallback);
+    game.sim.net.transitions.get("starterSource")!.autoInterval = undefined;
+    const advance = (nextRolls: number[] = []) => {
+      rolls = [...nextRolls];
+      game.sim.net.places.get("starterPlace")!.marking = [];
+      for (let i = 0; i < 6; i++) expect(game.sim.fire("starterSource")).toBe(true);
+      const before = new Set(game.sim.net.transitions.keys());
+      game.step(0);
+      const spawned = [...game.sim.net.transitions.values()].filter((transition) => !before.has(transition.id));
+      game.sim.step(1);
+      game.step(0.001);
+      return spawned;
+    };
+    const reach = (target: number) => {
+      while (game.epoch < target) {
+        const before = game.epoch;
+        advance();
+        expect(game.epoch).toBe(before + 1);
+      }
+    };
+    return { game, advance, reach, fallback: (value: number) => { fallback = value; } };
+  }
+
+  it.each([
+    { color: "blue", roll: 0.95, tail: 0.7, before: 5, after: 10, weight: 1 },
+    { color: "blue", roll: 0.95, tail: 0.95, before: 6, after: 12, weight: 3 },
+    { color: "green", roll: 0.15, tail: 0.95, before: 5, after: 10, weight: 1 },
+  ])("doubles new $color demand at 125, including weight $weight", ({ color, roll, tail, before, after, weight }) => {
+    const { game, advance, reach, fallback } = setup();
+    reach(123);
+    fallback(tail);
+    const previous = advance([roll]).find((transition) => transition.kind === "sink")!;
+    expect(game.goalsFor(previous.id)).toMatchObject([{ color, count: before }]);
+    const next = advance([roll]).find((transition) => transition.kind === "sink")!;
+    expect(game.goalsFor(next.id)).toMatchObject([{ color, count: after }]);
+    expect(next.open).toMatchObject([{ count: weight }]);
+    expect(game.goalsFor(previous.id)[0].count).toBe(before);
+  });
+
+  it.each([
+    { epoch: 149, colors: ["yellow"], count: 30, tail: 0.95 },
+    { epoch: 150, colors: ["blue", "red"], count: 5, tail: 0.95 },
+    { epoch: 164, colors: ["blue", "red"], count: 5, tail: 0.95 },
+    { epoch: 165, colors: ["blue", "red"], count: 10, tail: 0.8 },
+    { epoch: 165, colors: ["blue", "red"], count: 15, tail: 0.95 },
+    { epoch: 179, colors: ["blue", "red"], count: 15, tail: 0.95 },
+    { epoch: 180, colors: ["yellow", "green"], count: 5, tail: 0.95 },
+    { epoch: 199, colors: ["yellow", "green"], count: 5, tail: 0.95 },
+    { epoch: 200, colors: ["blue", "red", "green", "yellow"], count: 5, tail: 0.95 },
+    { epoch: 249, colors: ["blue", "red", "green", "yellow"], count: 5, tail: 0.95 },
+    { epoch: 250, colors: ["blue", "red", "green", "yellow"], count: 10, tail: 0.49 },
+    { epoch: 250, colors: ["blue", "red", "green", "yellow"], count: 15, tail: 0.95 },
+  ])("introduces $colors with $count firings at epoch $epoch", ({ epoch, colors, count, tail }) => {
+    const { game, advance, reach, fallback } = setup();
+    reach(epoch - 1);
+    fallback(tail);
+    const spawned = advance([0]);
+    expect(spawned).toHaveLength(1);
+    const sink = spawned[0];
+    expect(sink.open?.map((port) => port.color)).toEqual(colors);
+    expect(sink.open?.every((port) => port.dir === "in" && port.count === 1)).toBe(true);
+    expect(game.goalsFor(sink.id).map((goal) => goal.count)).toEqual(colors.map(() => count));
+  });
+
+  it("creates every permanent milestone once in its region, stops red sources, and increases sink cadence without duplicate retries", () => {
+    const { game, advance } = setup();
+    const milestones = new Map<number, { colors: Color[]; fraction: number }>([
+      [300, { colors: ["blue"], fraction: 0.3 }], [400, { colors: ["red"], fraction: 0.5 }],
+      [500, { colors: ["green"], fraction: 0.65 }], [600, { colors: ["yellow"], fraction: 0.75 }],
+      [725, { colors: ["red", "blue"], fraction: 1 }], [850, { colors: ["yellow", "green"], fraction: 1 }],
+      [1000, { colors: ["blue", "red", "green", "yellow"], fraction: 1 }],
+    ]);
+    let blueId = "";
+    const seen: number[] = [];
+    for (let epoch = 1; epoch <= 1751; epoch++) {
+      if (epoch === 350) game.setPortrait(true);
+      const before = new Set(game.sim.net.transitions.keys());
+      const nodes = game.sim.net.liveNodes();
+      const bounds = {
+        left: Math.min(0, ...nodes.map((node) => node.x)), right: Math.max(game.size.width, ...nodes.map((node) => node.x)),
+        top: Math.min(0, ...nodes.map((node) => node.y)), bottom: Math.max(game.size.height, ...nodes.map((node) => node.y)),
+      };
+      const originalPlacement = game.placementIssue.bind(game);
+      const blocked = epoch === 1500 ? vi.spyOn(game, "placementIssue").mockImplementation((...args) =>
+        [...game.spawnedAt.keys()].some((id) => !before.has(id)) ? "crowded" : originalPlacement(...args)) : undefined;
+      const warning = epoch === 1500 ? vi.spyOn(console, "warn").mockImplementation(() => {}) : undefined;
+      const spawned = advance(epoch === 624 ? [0.99, 0.4] : epoch === 625 || epoch === 626 ? [0.99, 0.4] : []);
+      if (blocked) {
+        expect(game.epoch).toBe(1499);
+        expect(spawned).toHaveLength(1);
+        expect(warning).toHaveBeenCalled();
+        blocked.mockRestore();
+        warning!.mockRestore();
+        game.sim.step(1);
+        game.step(0);
+      }
+      const created = [...game.sim.net.transitions.values()].filter((transition) => !before.has(transition.id));
+      expect(game.epoch).toBe(epoch);
+      const sinks = created.filter((transition) => transition.kind === "sink");
+      const expected = epoch >= 1750 ? 3 : epoch >= 1500 ? 2 : epoch >= 1250 ? (epoch % 2 === 0 ? 2 : 1)
+        : epoch >= 1000 && epoch % 3 === 0 ? 2 : 1;
+      expect(sinks).toHaveLength(expected);
+      if (epoch === 624) expect(created.some((transition) => transition.kind === "source")).toBe(true);
+      if (epoch >= 625) expect(created.every((transition) => transition.kind !== "source")).toBe(true);
+      if (epoch === 625 || epoch === 626) expect(game.goalsFor(sinks[0].id)).toMatchObject([{ color: "red", count: 15 }]);
+      const permanent = sinks.filter((sink) => game.goalsFor(sink.id).every((goal) => goal.count === Infinity));
+      const milestone = milestones.get(epoch);
+      expect(permanent).toHaveLength(milestone ? 1 : 0);
+      if (!milestone) continue;
+      seen.push(epoch);
+      const sink = permanent[0];
+      expect(sink.open?.map((port) => port.color)).toEqual(milestone.colors);
+      expect(sink.open?.every((port) => port.count === 1)).toBe(true);
+      const x = (sink.x - bounds.left) / (bounds.right - bounds.left);
+      const y = (sink.y - bounds.top) / (bounds.bottom - bounds.top);
+      for (const fraction of [x, y]) {
+        expect(fraction).toBeGreaterThanOrEqual((1 - milestone.fraction) / 2 - 1e-9);
+        expect(fraction).toBeLessThanOrEqual((1 + milestone.fraction) / 2 + 1e-9);
+      }
+      if (epoch === 300) blueId = sink.id;
+      if (epoch === 400) {
+        const blue = game.sim.net.transitions.get(blueId)!;
+        expect(Math.hypot(sink.x - blue.x, sink.y - blue.y)).toBeGreaterThanOrEqual(300);
+      }
+    }
+    expect(seen).toEqual([...milestones.keys()]);
+  }, 30000);
+
+  it.each([["blue", "red"], ["yellow", "green"], ["blue", "red", "green", "yellow"]] satisfies Color[][])(
+    "consumes complete %j groups atomically from a shared place and resolves after five firings", (...colors) => {
+      const definition = structuredClone(endless);
+      definition.goals = colors.map((color) => ({ sinkId: "starterSink", color, count: 5 }));
+      definition.net.transitions.forEach((transition) => { transition.autoInterval = undefined; });
+      definition.net.transitions.find((transition) => transition.id === "starterSink")!.open = colors.map((color) => ({ dir: "in", color }));
+      definition.net.arcs = definition.net.arcs.filter((arc) => arc.id !== "starterInput");
+      const game = new Game(definition);
+      for (let i = 0; i < colors.length; i++) expect(game.connect("starterSink", 0, "starterDestination")).toBe(true);
+      const place = game.sim.net.places.get("starterDestination")!;
+      place.marking.push(...colors.slice(1));
+      const partial = [...place.marking];
+      expect(game.sim.fire("starterSink")).toBe(false);
+      expect(place.marking).toEqual(partial);
+      place.marking = [];
+      for (let firing = 1; firing <= 5; firing++) {
+        place.marking.push(...colors);
+        expect(game.sim.fire("starterSink")).toBe(true);
+        expect(place.marking).toEqual([]);
+        expect(game.score).toBe((firing - 1) * colors.length);
+        game.sim.step(1);
+        expect(game.score).toBe(firing * colors.length);
+      }
+      expect(game.sim.fire("starterSink")).toBe(false);
+      expect(game.resolved.has("starterSink")).toBe(true);
+    });
+
+  it("keeps infinite goals consuming and scoring, extends their countdown, and still allows starvation", () => {
+    const definition = structuredClone(endless);
+    definition.goals[0].count = Infinity;
+    definition.net.transitions.forEach((transition) => { transition.autoInterval = undefined; });
+    const game = new Game(definition, () => 0.95, { survival: true });
+    for (let i = 0; i < 8; i++) {
+      game.sim.net.places.get("starterDestination")!.marking.push("blue");
+      expect(game.sim.fire("starterSink")).toBe(true);
+      game.sim.step(1);
+    }
+    expect(game.score).toBe(8);
+    expect(game.goalsFor("starterSink")).toMatchObject([{ count: Infinity, delivered: 8, done: false }]);
+    expect(game.resolved.has("starterSink")).toBe(false);
+    expect(game.sim.net.transitions.get("starterSink")!.disabled).toBeFalsy();
+    game.sim.step(172);
+    game.sim.net.places.get("starterDestination")!.marking.push("blue");
+    expect(game.sim.fire("starterSink")).toBe(true);
+    game.sim.step(1);
+    expect(game.score).toBe(9);
+    expect(game.countdownProgress("starterSink")).toBe(1);
+    game.sim.step(59);
+    expect(game.failed.has("starterSink")).toBe(false);
+    game.sim.step(10);
+    expect(game.failed.has("starterSink")).toBe(true);
+    expect(game.lives).toBe(9);
+    expect(game.offers.size).toBe(0);
+  });
+});
 
 describe("survival mode", () => {
   function survivalGame(sinks = 1) {
@@ -261,7 +450,7 @@ describe("epoch overview", () => {
     const section = design.split("## Epoch progression")[1]?.split("### Powerup unlocks")[0];
     expect(section).toBeDefined();
     expect(section).toContain(`Private progress gains 1 unit per elapsed second and ${EMISSION_PROGRESS} per emitted source token.\nEvery ${ENDLESS_EPOCH_PROGRESS} units creates one new goal epoch`);
-    const rows = section!.split("\n").filter((line) => /^\| \d/.test(line));
+    const rows = section!.split("\n").filter((line) => /^\| (?:\d|Exactly \d)/.test(line));
     expect(rows).toEqual([
       `| 1–${r.blueOnlyEpochs} | Blue sink, requiring 5 tokens, one per firing. |`,
       `| ${r.blueOnlyEpochs + 1} | Red sink and paired red source, each with 5 tokens. |`,
@@ -273,6 +462,24 @@ describe("epoch overview", () => {
       `| ${r.blueTripleAfter + 1} onward | Each blue sink has a ${percent(1 - r.blueTripleRoll)}% chance of consuming 3 tokens per firing, a ${percent(r.blueTripleRoll - r.blueDoubleRoll)}% chance of consuming 2, and otherwise consumes 1. |`,
       `| ${r.redSoloFrom} onward | Red sinks alternate between paired and source-free, starting with a paired sink. Paired sources reserve at least 5 tokens for the next source-free sink; sink demands and source supplies remain 5, 10, or 15. |`,
       `| ${r.yellowFrom} onward | Each epoch is ${percent((1 - r.greenChance - r.yellowChance) * (1 - r.redChance))}% blue, ${percent((1 - r.greenChance - r.yellowChance) * r.redChance)}% red, ${percent(r.greenChance)}% green, or ${percent(r.yellowChance)}% yellow. Yellow sinks have no source, require 10, 20, or 30 tokens with equal probability, and have twice the normal grace and countdown. |`,
+      `| ${r.doubledDemandFrom} onward | New single-color blue and green sinks require twice as many tokens, without changing their input weights or existing sinks. |`,
+      `| ${r.blueRedFrom} onward | A ${percent(r.pairChance)}% chance of a blue-red sink requiring 5 pairs, one blue and one red token per firing, without a paired source. |`,
+      `| ${r.variedBlueRedFrom} onward | Blue-red demands become 5 (${percent(r.redFiveRoll)}%), 10 (${percent(r.redTenRoll - r.redFiveRoll)}%), or 15 (${percent(1 - r.redTenRoll)}%) pairs. |`,
+      `| ${r.yellowGreenFrom} onward | A separate ${percent(r.pairChance)}% chance of a yellow-green sink requiring 5 pairs, without a paired source. |`,
+      `| ${r.quadrupleFrom} onward | A separate ${percent(r.quadrupleChance)}% chance of a four-color sink requiring 5 blue-red-green-yellow quadruples. |`,
+      `| ${r.variedQuadrupleFrom} onward | Four-color sinks require 10 or 15 quadruples with equal probability, never 5. |`,
+      "| Exactly 300 | One infinite blue sink inside the central 30% of the map extent on both axes. |",
+      "| Exactly 400 | One infinite red sink inside the central 50%, at least 300 units from where the infinite blue sink appeared. |",
+      "| Exactly 500 | One infinite green sink inside the central 65%. |",
+      "| Exactly 600 | One infinite yellow sink inside the central 75%. |",
+      `| ${r.redSourcesUntil} onward | No new red sources; ordinary red sinks still appear and require 5, 10 or 15 tokens without the earlier supply-balance cap. Existing red sources are unchanged. |`,
+      "| Exactly 725 | One infinite red-blue pair sink anywhere within the map extent. |",
+      "| Exactly 850 | One infinite yellow-green pair sink anywhere within the map extent. |",
+      "| Exactly 1000 | One infinite four-color sink anywhere within the map extent. |",
+      "| 1000–1249 | Epochs divisible by 3 create 2 sinks; other epochs create 1. |",
+      "| 1250–1499 | Even epochs create 2 sinks; odd epochs create 1, replacing the rule of thirds. |",
+      "| 1500–1749 | Every epoch creates 2 sinks. |",
+      "| 1750 onward | Every epoch creates 3 sinks. |",
     ]);
   });
 });

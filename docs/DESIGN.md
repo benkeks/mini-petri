@@ -207,7 +207,10 @@ Completed goals are checked off and disappear.
 
 The initial sink exists before the first epoch. Private progress gains 1 unit per elapsed second and 10 per emitted source token.
 Every 60 units creates one new goal epoch; if placement fails, it retries rather than advancing.
+Late epochs can create several sinks for the same 60 progress units; a retry keeps already-created sinks rather than duplicating them.
 New transitions have open colored ports, use normal clearance, and favor positions near the starting source, with an outer-edge fallback.
+The single-color percentages below describe the ordinary color pool; unlocked pair and quadruple chances are checked first and replace that ordinary choice.
+Milestone infinite sinks take the first ordinary spawn slot of their exact epoch rather than adding an extra sink.
 
 | Spawned epoch | Goal and source changes |
 | --- | --- |
@@ -221,9 +224,41 @@ New transitions have open colored ports, use normal clearance, and favor positio
 | 51 onward | Each blue sink has a 10% chance of consuming 3 tokens per firing, a 15% chance of consuming 2, and otherwise consumes 1. |
 | 75 onward | Red sinks alternate between paired and source-free, starting with a paired sink. Paired sources reserve at least 5 tokens for the next source-free sink; sink demands and source supplies remain 5, 10, or 15. |
 | 100 onward | Each epoch is 40% blue, 40% red, 10% green, or 10% yellow. Yellow sinks have no source, require 10, 20, or 30 tokens with equal probability, and have twice the normal grace and countdown. |
+| 125 onward | New single-color blue and green sinks require twice as many tokens, without changing their input weights or existing sinks. |
+| 150 onward | A 10% chance of a blue-red sink requiring 5 pairs, one blue and one red token per firing, without a paired source. |
+| 165 onward | Blue-red demands become 5 (75%), 10 (15%), or 15 (10%) pairs. |
+| 180 onward | A separate 10% chance of a yellow-green sink requiring 5 pairs, without a paired source. |
+| 200 onward | A separate 5% chance of a four-color sink requiring 5 blue-red-green-yellow quadruples. |
+| 250 onward | Four-color sinks require 10 or 15 quadruples with equal probability, never 5. |
+| Exactly 300 | One infinite blue sink inside the central 30% of the map extent on both axes. |
+| Exactly 400 | One infinite red sink inside the central 50%, at least 300 units from where the infinite blue sink appeared. |
+| Exactly 500 | One infinite green sink inside the central 65%. |
+| Exactly 600 | One infinite yellow sink inside the central 75%. |
+| 625 onward | No new red sources; ordinary red sinks still appear and require 5, 10 or 15 tokens without the earlier supply-balance cap. Existing red sources are unchanged. |
+| Exactly 725 | One infinite red-blue pair sink anywhere within the map extent. |
+| Exactly 850 | One infinite yellow-green pair sink anywhere within the map extent. |
+| Exactly 1000 | One infinite four-color sink anywhere within the map extent. |
+| 1000–1249 | Epochs divisible by 3 create 2 sinks; other epochs create 1. |
+| 1250–1499 | Even epochs create 2 sinks; odd epochs create 1, replacing the rule of thirds. |
+| 1500–1749 | Every epoch creates 2 sinks. |
+| 1750 onward | Every epoch creates 3 sinks. |
 
-Blue sinks with multi-token inputs require 6 tokens in total; other blue sinks require 5. This keeps each target divisible by its input weight.
-Red counts are adjusted when needed so cumulative red supply never falls below cumulative red sink demand, including source-free sinks.
+Before epoch 125, blue sinks with multi-token inputs require 6 tokens in total and other blue sinks require 5; from 125 these become 12 and 10 respectively.
+Each target remains divisible by its input weight.
+Through epoch 624, ordinary red counts are adjusted so cumulative paired source supply covers ordinary red sink demand, including alternating source-free red sinks.
+Composite and infinite sinks are not part of that supply guarantee.
+At epoch 200 and later, the selection weights are 5% quadruples, 10% yellow-green pairs, 10% blue-red pairs, and 75% ordinary single-color choices.
+
+Each colored input of a composite sink can be wired to the same place or to a separate place.
+All required colors are consumed atomically; each delivered token scores, and a finite sink leaves after its requested number of complete firings.
+Each remaining pair or quadruple is shown as one group of mostly overlapping circles in its required colors.
+Infinite sinks show a colored group and an infinity marker, keep accepting and scoring complete firings, and never resolve into powerup offers.
+They retain normal starvation, countdown, deadline-extension and life-loss rules; a starved milestone sink is not respawned.
+Any sink containing yellow uses double grace and countdown.
+
+For milestone placement, map extent is the bounding rectangle of live nodes together with the initial level rectangle, in the current orientation.
+The specified central fraction is applied independently to width and height; clearance still applies, but placement need not lie within an existing node's build radius.
+The blue milestone's original position is remembered across orientation changes and after its death for the red milestone's exclusion distance.
 
 ### Powerup unlocks
 

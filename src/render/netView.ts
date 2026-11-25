@@ -89,6 +89,13 @@ interface TransitionNode {
   balance: Map<string, { position: Pt; from: Pt; target: Pt; elapsed: number }>;
 }
 
+interface BalanceToken {
+  key: string;
+  color: number;
+  group?: number;
+  offset?: Pt;
+}
+
 interface RewardNode {
   offer: PowerupOffer;
   root: Container;
@@ -629,12 +636,15 @@ export class NetView {
     this.drawBalance(n, Array.from({ length: supply }, (_, i) => ({ key: String(i), color })), -1, 3.2, true, dt);
   }
 
-  private drawBalance(n: TransitionNode, tokens: { key: string; color: number }[], preferred: -1 | 1, radius: number, filled: boolean, dt: number): void {
+  private drawBalance(n: TransitionNode, tokens: BalanceToken[], preferred: -1 | 1, radius: number, filled: boolean, dt: number): void {
     const side = this.clearSide(n.t, preferred);
+    const grouped = tokens.some((token) => token.group !== undefined);
+    const count = grouped ? new Set(tokens.map((token) => token.group)).size : tokens.length;
     const active = new Set(tokens.map((token) => token.key));
     for (const key of n.balance.keys()) if (!active.has(key)) n.balance.delete(key);
     tokens.forEach((token, i) => {
-      const target = this.endpointCirclePosition(n.t, i, tokens.length, side);
+      const position = this.endpointCirclePosition(n.t, token.group ?? i, count, side, grouped ? 22 : 19);
+      const target = { x: position.x + (token.offset?.x ?? 0), y: position.y + (token.offset?.y ?? 0) };
       let dot = n.balance.get(token.key);
       if (!dot) {
         dot = { position: target, from: target, target, elapsed: BALANCE_TWEEN_TIME };
@@ -652,9 +662,8 @@ export class NetView {
     });
   }
 
-  private endpointCirclePosition(t: Transition, index: number, count: number, side: -1 | 1): Pt {
+  private endpointCirclePosition(t: Transition, index: number, count: number, side: -1 | 1, gap = 19): Pt {
     const perLine = 5;
-    const gap = 19;
     const line = Math.floor(index / perLine);
     const inLine = Math.min(perLine, count - line * perLine);
     const across = ((index % perLine) - (inLine - 1) / 2) * gap;
@@ -835,18 +844,45 @@ export class NetView {
     g.stroke({ width, color, alpha });
   }
 
-  /** Empty circles downstream of a goal sink, one per token still wanted; a check mark once resolved. */
+  /** Grouped colored goals, an infinity marker for open-ended sinks, or a check mark once resolved. */
   private drawGoal(n: TransitionNode, now: number, dt: number): void {
     const resolvedAt = this.game.resolved.get(n.t.id);
     if (resolvedAt !== undefined) {
       this.drawResolved(n, now, resolvedAt);
       return;
     }
-    const wanted: { key: string; color: number }[] = [];
-    this.game.goalsFor(n.t.id).forEach((goal, index) => {
-      for (let i = goal.delivered; i < goal.count; i++) wanted.push({ key: `${index}:${i}`, color: TOKEN_COLORS[goal.color] });
-    });
+    const goals = this.game.goalsFor(n.t.id);
+    const infinite = goals.some((goal) => !Number.isFinite(goal.count));
+    const wanted: BalanceToken[] = [];
+    if (goals.length > 1 || infinite) {
+      const count = infinite ? 1 : Math.max(0, ...goals.map((goal) => goal.count - goal.delivered));
+      for (let i = 0; i < count; i++) {
+        goals.forEach((goal, index) => {
+          if (!infinite && i >= goal.count - goal.delivered) return;
+          wanted.push({
+            key: infinite ? `infinite:${index}` : `${index}:${goal.delivered + i}`,
+            color: TOKEN_COLORS[goal.color], group: i,
+            offset: goals.length === 1 ? { x: 0, y: 0 }
+              : { x: ((index % 2) - 0.5) * 5, y: goals.length > 2 ? (Math.floor(index / 2) - 0.5) * 5 : 0 },
+          });
+        });
+      }
+    } else {
+      goals.forEach((goal, index) => {
+        for (let i = goal.delivered; i < goal.count; i++) wanted.push({ key: `${index}:${i}`, color: TOKEN_COLORS[goal.color] });
+      });
+    }
     this.drawBalance(n, wanted, 1, 7, false, dt);
+    if (infinite) {
+      const point = this.endpointCirclePosition(n.t, 0, 1, this.clearSide(n.t, 1));
+      const { portrait } = this.layouts.get(n.t.id)!;
+      const x = point.x + (portrait ? 26 : 0);
+      const y = point.y + (portrait ? 0 : 26);
+      n.gfx.moveTo(x, y)
+        .bezierCurveTo(x - 16, y - 18, x - 16, y + 18, x, y)
+        .bezierCurveTo(x + 16, y - 18, x + 16, y + 18, x, y)
+        .stroke({ width: 2.5, color: THEME.ink });
+    }
   }
 
   private drawResolved(n: TransitionNode, now: number, at: number, failed = false): void {

@@ -224,6 +224,70 @@ describe("toolbar layout", () => {
   });
 
   describe("restart confirmation", () => {
+    it("collapses mobile portrait controls and dismisses the menu after actions or outside taps", () => {
+      const game = new Game(endless, Math.random, { survival: true });
+      game.setPortrait(true);
+      const view = new NetView(game);
+      const controller = new Controller(game, view);
+      let pauses = 0;
+      let fullscreenToggles = 0;
+      const hud = new Hud(game, controller, {
+        toggleFullscreen: () => { fullscreenToggles++; },
+        restart: () => {},
+        requestRestart: () => {},
+        togglePause: () => { pauses++; },
+        selectBrush: () => {},
+        focusSink: () => {},
+      });
+      vi.spyOn(hud, "layout").mockReturnValue({ top: 102, bottom: 100 });
+      const control = (label: string) => {
+        const child = hud.root.children.find((item) => item.label === label);
+        if (!child) throw new Error(`Missing ${label}`);
+        return child;
+      };
+      const event = new FederatedPointerEvent(new EventBoundary(hud.root));
+      expect(control("meta-menu").visible).toBe(true);
+      expect(control("meta-fullscreen-icon").visible).toBe(true);
+      expect(control("meta-fullscreen").visible).toBe(false);
+      expect(control("meta-pause").visible).toBe(false);
+      expect(control("meta-restart").visible).toBe(false);
+      control("meta-menu").emit("pointertap", event);
+      expect(control("meta-pause").visible).toBe(true);
+      expect(control("meta-endless").visible).toBe(true);
+      expect(control("meta-restart").visible).toBe(true);
+      expect(game.paused).toBe(false);
+      expect(hud.blocks({ x: 200, y: 200 })).toBe(true);
+      control("meta-pause").emit("pointertap", event);
+      expect(pauses).toBe(1);
+      expect(control("meta-pause").visible).toBe(false);
+      control("meta-menu").emit("pointertap", event);
+      control("meta-menu-dismiss").emit("pointertap", event);
+      expect(control("meta-restart").visible).toBe(false);
+      control("meta-fullscreen-icon").emit("pointertap", event);
+      expect(fullscreenToggles).toBe(1);
+      control("meta-menu").emit("pointertap", event);
+      expect(hud.closeMenu()).toBe(true);
+      expect(hud.closeMenu()).toBe(false);
+      hud.root.destroy({ children: true });
+      view.root.destroy({ children: true });
+    });
+
+    it("keeps portrait desktop meta controls visible", () => {
+      const game = new Game(endless);
+      game.setPortrait(true);
+      const view = new NetView(game);
+      const controller = new Controller(game, view);
+      const hud = new Hud(game, controller, {
+        restart: () => {}, requestRestart: () => {}, togglePause: () => {},
+        selectBrush: () => {}, focusSink: () => {},
+      });
+      expect(hud.root.children.find((child) => child.label === "meta-menu")?.visible).toBe(false);
+      expect(hud.root.children.find((child) => child.label === "meta-pause")?.visible).toBe(true);
+      expect(hud.root.children.find((child) => child.label === "meta-restart")?.visible).toBe(true);
+      hud.root.destroy({ children: true });
+      view.root.destroy({ children: true });
+    });
+
     it("provides a fullscreen toggle when requested and updates its enter/exit label", () => {
       const game = new Game(endless);
       const view = new NetView(game);

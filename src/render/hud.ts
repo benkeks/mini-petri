@@ -13,6 +13,7 @@ const REMOVE_EXTRA_GAP = 8;
 const COIN_ROW = 48;
 const COIN_SHAKE_TIME = 0.35;
 const TOOL_SELECT_TIME = 0.2;
+const META_ICON_SIZE = 40;
 const WARNING_START = 124;
 const WARNING_GAP = 24;
 const WARNING_ROW = 44;
@@ -149,6 +150,11 @@ export class Hud {
   private readonly restart: Text;
   private readonly skip: Text;
   private readonly fullscreen?: Text;
+  private readonly menuButton = new Graphics();
+  private readonly fullscreenIcon = new Graphics();
+  private readonly menuDismiss = new Graphics();
+  private menuOpen = false;
+  private fullscreenActive = false;
   private readonly hint: Text;
   private readonly toolbar = new Container();
   private readonly coinLayer = new Graphics();
@@ -207,14 +213,39 @@ export class Hud {
     this.lives = new Text({ text: "", style: { ...style, fontSize: 16, fontWeight: "bold", fill: 0xffffff } });
     this.lives.anchor.set(0.5);
     this.restart = new Text({ text: "RESTART", style: { ...style, fontSize: 15, fontWeight: "bold" } });
+    this.restart.label = "meta-restart";
     this.pause = new Text({ text: "PAUSE", style: { ...style, fontSize: 15, fontWeight: "bold" } });
+    this.pause.label = "meta-pause";
     this.skip = new Text({ text: "SKIP TO ENDLESS", style: { ...style, fontSize: 15, fontWeight: "bold" } });
+    this.skip.label = "meta-endless";
     const toggleFullscreen = actions.toggleFullscreen;
     if (toggleFullscreen) {
       this.fullscreen = new Text({ text: "FULLSCREEN", style: { ...style, fontSize: 15, fontWeight: "bold" } });
       this.fullscreen.label = "meta-fullscreen";
       this.fullscreen.on("pointertap", toggleFullscreen);
     }
+    this.menuButton.label = "meta-menu";
+    this.fullscreenIcon.label = "meta-fullscreen-icon";
+    for (const icon of [this.menuButton, this.fullscreenIcon]) {
+      icon.eventMode = "static";
+      icon.cursor = "pointer";
+      icon.hitArea = new Rectangle(0, 0, META_ICON_SIZE, META_ICON_SIZE);
+      icon.on("pointerover", () => { icon.tint = THEME.warn; });
+      icon.on("pointerout", () => { icon.tint = 0xffffff; });
+    }
+    this.menuButton.on("pointertap", () => {
+      this.menuOpen = !this.menuOpen;
+      this.updateNavigationVisibility();
+      this.layout(this.width, this.height);
+    });
+    this.fullscreenIcon.on("pointertap", () => {
+      this.closeMenu();
+      toggleFullscreen?.();
+    });
+    this.menuDismiss.eventMode = "static";
+    this.menuDismiss.label = "meta-menu-dismiss";
+    this.menuDismiss.on("pointertap", () => this.closeMenu());
+    this.drawNavigationIcons();
     for (const control of this.metaControls()) {
       control.anchor.set(1, 0);
       control.eventMode = "static";
@@ -222,8 +253,8 @@ export class Hud {
       control.on("pointerover", () => { control.tint = THEME.warn; });
       control.on("pointerout", () => { control.tint = 0xffffff; });
     }
-    this.restart.on("pointertap", onRestart);
-    this.pause.on("pointertap", () => actions.togglePause());
+    this.restart.on("pointertap", () => { this.closeMenu(); onRestart(); });
+    this.pause.on("pointertap", () => { this.closeMenu(); actions.togglePause(); });
     this.skip.on("pointertap", () => this.showEndlessConfirmation());
     this.hint = new Text({
       text: "",
@@ -294,10 +325,13 @@ export class Hud {
       this.shade,
       this.confettiLayer,
       this.popup,
+      this.menuDismiss,
       ...(this.fullscreen ? [this.fullscreen] : []),
       this.pause,
       this.restart,
       this.skip,
+      this.fullscreenIcon,
+      this.menuButton,
       this.confirmationShade,
       this.confirmation,
       this.deathFlash,
@@ -305,10 +339,13 @@ export class Hud {
     this.listenForResources(game);
     this.buildToolbar();
     this.hidePopup();
+    this.updateNavigationVisibility();
   }
 
   setGame(game: Game): void {
     this.game = game;
+    this.menuOpen = false;
+    this.updateNavigationVisibility();
     this.confirming = false;
     this.confirmationShade.visible = this.confirmation.visible = false;
     this.coinFlights = [];
@@ -329,7 +366,47 @@ export class Hud {
   }
 
   setFullscreenActive(active: boolean): void {
+    this.fullscreenActive = active;
     if (this.fullscreen) this.fullscreen.text = active ? "EXIT FULLSCREEN" : "FULLSCREEN";
+    this.drawNavigationIcons();
+  }
+
+  closeMenu(): boolean {
+    if (!this.menuOpen) return false;
+    this.menuOpen = false;
+    this.updateNavigationVisibility();
+    this.layout(this.width, this.height);
+    return true;
+  }
+
+  private compactNavigation(): boolean {
+    return this.game.portrait && !!this.fullscreen;
+  }
+
+  private updateNavigationVisibility(): void {
+    const compact = this.compactNavigation();
+    if (!compact) this.menuOpen = false;
+    this.menuButton.visible = this.fullscreenIcon.visible = compact;
+    this.menuDismiss.visible = compact && this.menuOpen;
+    if (this.fullscreen) this.fullscreen.visible = !compact;
+    this.pause.visible = (!compact || this.menuOpen) && !this.game.complete;
+    this.skip.visible = (!compact || this.menuOpen) && this.game.survival && !this.game.complete;
+    this.restart.visible = !compact || this.menuOpen;
+  }
+
+  private drawNavigationIcons(): void {
+    this.menuButton.clear();
+    for (const y of [12, 20, 28]) this.menuButton.moveTo(10, y).lineTo(30, y);
+    this.menuButton.stroke({ width: 2.5, color: THEME.ink, cap: "round" });
+    this.fullscreenIcon.clear();
+    for (const [x, y, dx, dy] of [[10, 10, 1, 1], [30, 10, -1, 1], [10, 30, 1, -1], [30, 30, -1, -1]]) {
+      const cornerX = x + (this.fullscreenActive ? dx * 6 : 0);
+      const cornerY = y + (this.fullscreenActive ? dy * 6 : 0);
+      const direction = this.fullscreenActive ? -1 : 1;
+      this.fullscreenIcon.moveTo(cornerX + dx * 6 * direction, cornerY)
+        .lineTo(cornerX, cornerY).lineTo(cornerX, cornerY + dy * 6 * direction);
+    }
+    this.fullscreenIcon.stroke({ width: 2.5, color: THEME.ink, cap: "round", join: "round" });
   }
 
   showNotice(message: string): void {
@@ -351,6 +428,7 @@ export class Hud {
 
   private showConfirmation(kind: "restart" | "endless"): void {
     if (this.confirming) return;
+    this.closeMenu();
     this.confirmationKind = kind;
     this.confirmTitle.text = kind === "restart" ? "RESTART GAME?" : "EXIT SURVIVAL MODE?";
     this.confirmDetail.text = kind === "restart" ? "ALL PROGRESS WILL BE LOST." : "CONTINUE PLAYING WITHOUT PRESSURE.";
@@ -385,7 +463,7 @@ export class Hud {
 
   /** Screen-space UI areas, excluding the otherwise open world behind them. */
   blocks(point: Pt): boolean {
-    return this.confirming || this.game.complete || this.regions.some((region) => region.contains(point.x, point.y));
+    return this.menuOpen || this.confirming || this.game.complete || this.regions.some((region) => region.contains(point.x, point.y));
   }
 
   /** Destination for a collected reward in screen coordinates. */
@@ -427,6 +505,13 @@ export class Hud {
       this.backplates.roundRect(rect.x, rect.y, rect.width, rect.height, 7)
         .fill({ color: 0xe7e0dc, alpha: 0.85 }).stroke({ width: 1, color: THEME.muted, alpha: 0.4 });
     }
+    for (const icon of [this.menuButton, this.fullscreenIcon]) {
+      if (!icon.visible) continue;
+      const rect = new Rectangle(icon.x, icon.y, META_ICON_SIZE, META_ICON_SIZE);
+      this.regions.push(rect);
+      this.backplates.roundRect(rect.x, rect.y, rect.width, rect.height, 7)
+        .fill({ color: 0xe7e0dc, alpha: 0.85 }).stroke({ width: 1, color: THEME.muted, alpha: 0.4 });
+    }
   }
 
   private listenForResources(game: Game): void {
@@ -454,7 +539,8 @@ export class Hud {
 
   private navigationKey(): string {
     return [this.title.visible ? this.title.width : 0, this.stats.width, this.meta.width,
-      this.fullscreen?.text, this.pause.text, this.pause.visible, this.skip.text, this.skip.visible].join(":");
+      this.fullscreen?.text, this.pause.text, this.pause.visible, this.skip.text, this.skip.visible,
+      this.compactNavigation(), this.menuOpen].join(":");
   }
 
   private controlBox(control: Text): Rectangle {
@@ -508,21 +594,27 @@ export class Hud {
     this.coins.position.set(this.coinBaseX + this.coinShakeOffset(), resourceY);
     this.lives.position.set(portrait ? width / 2 + 27 : 88, resourceY);
     this.skip.text = portrait ? "ENDLESS" : "SKIP TO ENDLESS";
-    this.pause.visible = !this.game.complete;
-    this.skip.visible = this.game.survival && !this.game.complete;
+    this.updateNavigationVisibility();
+    const compact = this.compactNavigation();
+    this.menuDismiss.clear().rect(0, 0, width, height).fill({ color: THEME.background, alpha: 0.001 });
     const controls = this.metaControls().filter((control) => control.visible);
     const scoreRight = 16 + Math.max(this.stats.width, this.meta.width, this.title.visible ? this.title.width : 0);
-    const controlWidth = Math.max(...controls.map((control) => control.width));
+    const iconLeft = width - 16 - META_ICON_SIZE * 2 - 8;
+    const iconY = scoreRight + 16 <= iconLeft ? this.stats.y : this.meta.y + this.meta.height + 12;
+    this.menuButton.position.set(width - 16 - META_ICON_SIZE, iconY);
+    this.fullscreenIcon.position.set(iconLeft, iconY);
+    const controlWidth = Math.max(0, ...controls.map((control) => control.width));
     const stacked = portrait;
     this.navigationWidth = stacked ? controlWidth : undefined;
-    this.navigationHeight = Math.max(...controls.map((control) => control.height)) + 12;
+    this.navigationHeight = Math.max(compact ? META_ICON_SIZE : 0,
+      Math.max(0, ...controls.map((control) => control.height)) + 12);
     const controlsY = width < 600 ? 64 : 12;
     if (stacked) {
       const left = width - 24 - controlWidth;
-      const top = scoreRight + 16 <= left ? this.stats.y : this.meta.y + this.meta.height + 12;
+      const top = compact ? iconY + META_ICON_SIZE + 8 : scoreRight + 16 <= left ? this.stats.y : this.meta.y + this.meta.height + 12;
       controls.forEach((control, i) => {
         control.anchor.set(0.5, 0);
-        control.position.set(width - 16 - controlWidth / 2, top + i * (this.navigationHeight + 4));
+        control.position.set(width - (compact ? 24 : 16) - controlWidth / 2, top + i * (this.navigationHeight + 4));
       });
     } else {
       let right = width - 16;
@@ -577,7 +669,8 @@ export class Hud {
     const bottom = portrait ? resourceHeight + toolbarH : Math.max(resourceHeight, toolbarH, sideHint ? this.hint.height + 16 : 0);
     this.hint.position.set(sideHint ? width - 12 - hintWidth / 2 : width / 2, sideHint ? height - 8 : height - bottom - 8);
     const top = Math.max(width < 600 ? 102 : this.title.visible ? 92 : 68,
-      ...controls.map((control) => control.y - 6 + this.navigationHeight + 12));
+      compact ? iconY + META_ICON_SIZE + 12 : 0,
+      ...(compact ? [] : controls.map((control) => control.y - 6 + this.navigationHeight + 12)));
     const reservedBottom = bottom + (this.hint.visible && !sideHint ? HINT_SPACE : 0);
     this.viewportCenter = { x: width / 2, y: top + Math.max(1, height - top - reservedBottom) / 2 };
     return { top, bottom: reservedBottom };
@@ -680,8 +773,7 @@ export class Hud {
     this.coins.text = String(g.coins);
     this.lives.text = g.survival ? String(g.lives) : "\u221e";
     this.lives.visible = g.level.mode === "endless";
-    this.skip.visible = g.survival && !g.complete;
-    this.pause.visible = !g.complete;
+    this.updateNavigationVisibility();
     const pauseLabel = g.paused ? "RESUME" : "PAUSE";
     if (this.pause.text !== pauseLabel) {
       this.pause.text = pauseLabel;

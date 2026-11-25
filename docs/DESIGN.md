@@ -152,6 +152,10 @@ Completed goals are checked off and disappear.
   The group is top-aligned with the score when space permits, or sits below the score metadata to avoid overlap.
   Subtle rounded boxes share the controls' clickable bounds.
   Likely smartphones (mobile user agent, or a small coarse-pointer touch screen) also show a fullscreen toggle before pause.
+  In mobile portrait mode, pause, endless and restart collapse into a hamburger menu at the upper right.
+  A separate rectangle-corner fullscreen icon sits immediately to its left and reflects enter/exit fullscreen state.
+  The menu closes after an action, an outside tap or Escape, and when leaving portrait mode; opening it does not pause gameplay.
+  Outside taps dismiss it without acting on the network behind it.
   Its label follows native fullscreen state; unavailable or denied fullscreen requests show a temporary HUD notice.
   Both confirmations pause the game while open, and cancellation restores its prior pause state.
 - Coins appear inside an orange coin circle next to the survival heart and life count.

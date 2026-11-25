@@ -265,7 +265,7 @@ async function main(): Promise<void> {
       return;
     }
     if (e.key.toLowerCase() === "r" && !e.repeat) requestRestart();
-    if (e.key === "Escape") controller.cancel();
+    if (e.key === "Escape" && !hud.closeMenu()) controller.cancel();
   });
 }
 

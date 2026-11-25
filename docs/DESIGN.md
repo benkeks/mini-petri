@@ -90,6 +90,8 @@ Completed goals are checked off and disappear.
   Plugs can be picked with any brush, switching to the firing brush; the next tap on a place connects them.
   Tapping empty space with a plug selected builds and connects a capacity-1 place, subject to the place tool and ordinary placement rules.
   Tapping a connector while a plug is selected creates a nearby capacity-1 place connecting both ports, or just that port when tapped again.
+  Touch creation from a selected plug requires either 40 screen pixels from its selection tap or 250 ms since selection, preventing accidental rapid nearby creation.
+  This also protects automatically selected remaining plugs; mouse taps and connections to existing places are unchanged.
   Eligible transition bodies are highlighted too; tapping one chooses its first connectible input, then output, for the new place.
   Placement checks both endpoints' reach and all build and clearance constraints before changing the net; a blocked action gives denial feedback and preserves the selection.
   In firing mode, tapping a place first and then a plug connects them in the other order.

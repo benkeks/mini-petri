@@ -69,9 +69,9 @@ describe("controller", () => {
       deny: (p) => denied.push(p),
     };
     const controller = new Controller(game, view);
-    const tap = (next: Pick) => {
+    const tap = (next: Pick, touch?: Parameters<Controller["tap"]>[1]) => {
       pick = next;
-      controller.tap({ x: 0, y: 0 });
+      controller.tap({ x: 0, y: 0 }, touch);
     };
     return { game, view, controller, tap, denied };
   }
@@ -447,6 +447,66 @@ describe("controller", () => {
     game.setPortrait(portrait);
     return game;
   }
+
+  it.each([
+    { kind: "port", tid: "left", index: 0 },
+    { kind: "port", tid: "right", index: 0 },
+    { kind: "transition", id: "right" },
+    { kind: "empty", x: 1000, y: 1120 },
+  ] satisfies Pick[])("blocks rapid nearby touch creation on $kind until 250 ms", (pick) => {
+    const { game, controller, tap, denied } = setup(connectorGame(220, true));
+    tap({ kind: "port", tid: "left", index: 0 }, { screen: { x: 100, y: 100 }, time: 1000 });
+    tap(pick, { screen: { x: 139.99, y: 100 }, time: 1249 });
+    expect(game.sim.net.places.size).toBe(0);
+    expect(game.sim.net.arcs.size).toBe(0);
+    expect(controller.selected).toEqual({ tid: "left", index: 0 });
+    expect(denied).toEqual([pick]);
+    tap(pick, { screen: { x: 139.99, y: 100 }, time: 1250 });
+    expect(game.sim.net.places.size).toBe(1);
+    expect(denied).toHaveLength(1);
+  });
+
+  it("allows immediate touch creation at a 40-screen-pixel distance", () => {
+    const { game, tap, denied } = setup(connectorGame());
+    tap({ kind: "port", tid: "left", index: 0 }, { screen: { x: 100, y: 100 }, time: 1000 });
+    tap({ kind: "port", tid: "right", index: 0 }, { screen: { x: 124, y: 132 }, time: 1001 });
+    expect(game.sim.net.places.size).toBe(1);
+    expect(denied).toHaveLength(0);
+  });
+
+  it("allows rapid nearby touch connections to existing places", () => {
+    const { game, tap, denied } = setup();
+    const id = game.buildPlace(820, 520)!;
+    tap({ kind: "port", tid: "sinkG", index: 0 }, { screen: { x: 100, y: 100 }, time: 1000 });
+    tap({ kind: "place", id }, { screen: { x: 100, y: 100 }, time: 1001 });
+    expect(game.sim.net.inputs("sinkG")[0].from).toBe(id);
+    expect(denied).toHaveLength(0);
+  });
+
+  it("protects the next automatically selected port after a touch creation", () => {
+    const game = connectorGame();
+    game.sim.net.transitions.get("left")!.open!.push({ dir: "out", color: "red" });
+    const { controller, tap, denied } = setup(game);
+    const pick = { kind: "port", tid: "left", index: 0 } as const;
+    tap(pick, { screen: { x: 100, y: 100 }, time: 1000 });
+    tap(pick, { screen: { x: 100, y: 100 }, time: 1250 });
+    expect(game.sim.net.places.size).toBe(1);
+    expect(controller.selected).toEqual({ tid: "left", index: 0 });
+    tap(pick, { screen: { x: 100, y: 100 }, time: 1251 });
+    expect(game.sim.net.places.size).toBe(1);
+    expect(denied).toHaveLength(1);
+    tap(pick, { screen: { x: 100, y: 100 }, time: 1500 });
+    expect(game.sim.net.places.size).toBe(2);
+  });
+
+  it("does not delay mouse creation after selecting a port by touch", () => {
+    const { game, tap, denied } = setup(connectorGame());
+    const pick = { kind: "port", tid: "left", index: 0 } as const;
+    tap(pick, { screen: { x: 100, y: 100 }, time: 1000 });
+    tap(pick);
+    expect(game.sim.net.places.size).toBe(1);
+    expect(denied).toHaveLength(0);
+  });
 
   it.each([false, true].flatMap((portrait) => [false, true].map((reverse) => ({ portrait, reverse }))))(
     "bridges connectors with a location, portrait=$portrait, reverse=$reverse", ({ portrait, reverse }) => {

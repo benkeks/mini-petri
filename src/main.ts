@@ -193,7 +193,7 @@ async function main(): Promise<void> {
     if (tap && inViewport(tap)) {
       const oldTransition = controller.selected?.tid;
       const oldPlace = controller.selectedPlace;
-      controller.tap(camera.toWorld(tap));
+      controller.tap(camera.toWorld(tap), event.pointerType === "touch" ? { screen: tap, time: event.timeStamp } : undefined);
       updateBounds();
       const selected = controller.selected;
       const place = controller.selectedPlace;

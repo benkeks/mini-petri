@@ -3,6 +3,9 @@ import type { Kit } from "../game/level";
 import type { Pt } from "../render/geometry";
 import type { Overlay, Pick } from "../render/netView";
 
+const TOUCH_CREATION_DELAY = 250;
+const TOUCH_CREATION_DISTANCE = 40;
+
 interface ControllerView {
   overlay: Overlay;
   pick(p: Pt): Pick;
@@ -46,6 +49,7 @@ export class Controller {
   selectedPlace?: string;
   private pointer?: Pt;
   private hasInteracted = false;
+  private touchSelection?: { port: { tid: string; index: number }; screen: Pt; time: number };
 
   constructor(
     private game: Game,
@@ -60,6 +64,7 @@ export class Controller {
     this.selected = undefined;
     this.selectedPlace = undefined;
     this.pointer = undefined;
+    this.touchSelection = undefined;
   }
 
   /** Selects `b`; selecting the active brush again switches back to firing. */
@@ -72,12 +77,14 @@ export class Controller {
     this.hasInteracted = true;
     this.selected = undefined;
     this.selectedPlace = undefined;
+    this.touchSelection = undefined;
   }
 
   cancel(): void {
     this.brush = FIRE;
     this.selected = undefined;
     this.selectedPlace = undefined;
+    this.touchSelection = undefined;
   }
 
   move(p?: Pt): void {
@@ -109,11 +116,29 @@ export class Controller {
     }
   }
 
-  tap(p: Pt): void {
+  tap(p: Pt, touch?: { screen: Pt; time: number }): void {
     this.pointer = p;
     const game = this.game;
     if (game.complete || game.paused) return;
     const pick = this.view.pick(p);
+    const selection = this.touchSelection;
+    if (touch && selection && selection.port === this.selected && game.level.tools?.place
+      && (pick.kind === "empty" || pick.kind === "port" || pick.kind === "transition")
+      && touch.time - selection.time < TOUCH_CREATION_DELAY
+      && Math.hypot(touch.screen.x - selection.screen.x, touch.screen.y - selection.screen.y) < TOUCH_CREATION_DISTANCE) {
+      this.view.deny(pick);
+      return;
+    }
+    const selected = this.selected;
+    this.applyTap(p, pick);
+    if (this.selected !== selected) {
+      this.touchSelection = touch && this.selected
+        ? { port: this.selected, screen: { ...touch.screen }, time: touch.time } : undefined;
+    }
+  }
+
+  private applyTap(p: Pt, pick: Pick): void {
+    const game = this.game;
     if (pick.kind === "reward") {
       const offer = game.offers.get(pick.id);
       if (!this.effect(game.collectOffer(pick.id, pick.index))) this.view.deny(pick);

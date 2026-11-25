@@ -2,16 +2,10 @@
 
 A small Mini Metro-style browser and smartphone game built on colored Petri nets (TypeScript + PixiJS v8).
 
-```sh
-npm install
-npm run dev     # play at http://localhost:5173
-npm test        # unit tests (Vitest)
-npm run build   # type-check + production build
-```
-
-The current build of `main` is deployed to <https://benkeks.github.io/mini-petri/>.
+[![Play Mini Petri](docs/animatedscreenshot.gif)](https://benkeks.github.io/mini-petri/)
 
 ## How to play
+
 Route colored tokens from sources to matching goals (sinks).
 Circles hold tokens; bars are transitions; colored lines show which tokens a connection moves.
 Empty circles beside a goal show what it still needs.
@@ -33,6 +27,7 @@ The upper left shows score, game time and epoch.
 Supported smartphones also offer a fullscreen button.
 
 ### Building and upgrades
+
 Use the bottom toolbar; tap the selected tool again or press Escape to return to firing.
 
 - **Connect:** tap a loose plug and a place in either order.
@@ -50,6 +45,7 @@ New transitions cannot fire until every plug is connected.
 An unconnected one-token place expires after two idle minutes; connecting or upgrading it prevents this.
 
 ### Survival and rewards
+
 You start with **10 lives and 40 coins**.
 Unfilled sinks eventually enter a countdown; deliveries buy extra time.
 Ordinary sinks allow three minutes before a one-minute countdown; each delivery during it adds ten seconds.
@@ -71,18 +67,32 @@ These cost 50 coins initially, rising by 10 per purchase, with a maximum of 10 l
 Toolbar badges show free uses in green, limited paid uses in black and prices in orange.
 
 ## Petri nets behind the game
+
 The map *is* a colored Petri net, edited while it runs.
 Firing atomically consumes inputs and reserves output capacity.
 Tokens animate in continuous time and become usable only on arrival; outputs start moving only after all inputs reach the transition.
 
 See the [design notes](docs/DESIGN.md) for detailed rules, controls and presentation, the [map vocabulary](docs/DESIGN.md#reading-the-map) for Petri-net terminology, and [epoch progression](docs/DESIGN.md#epoch-progression) for spawn thresholds and reward unlocks.
 
-## Code layout
+## Building the code
+
+```sh
+npm install
+npm run dev     # play at http://localhost:5173
+npm test        # unit tests (Vitest)
+npm run build   # type-check + production build
+```
+
+The current build of `main` is deployed to <https://benkeks.github.io/mini-petri/>.
+
+### Code layout
+
 - `src/core` — pure simulation: multisets, net model, `Simulation` (`fire`, `step(dt)`, auto-fire timers).
   No Pixi dependency.
 - `src/game` — level definitions and `Game` rules (goals, source ramp, portrait transposition), plus building, removal and upgrade rules.
 - `src/input` — `Controller`: brushes and taps to game actions.
 - `src/render` — Pixi views (`NetView` with picking, `Hud` with toolbar) and styling.
 
-## License
+### License
+
 MIT — see [LICENSE](LICENSE).

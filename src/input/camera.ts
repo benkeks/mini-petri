@@ -36,8 +36,9 @@ export class Camera {
     });
     this.viewport = viewport;
     this.maxScale = (ultraWide ? viewport.width : Math.min(viewport.width, viewport.height)) / (2 * CONNECTION_RANGE);
-    this.minScale = Math.min(this.maxScale, 0.96 * Math.min(viewport.width / world.width, viewport.height / world.height));
-    this.scale = reset ? this.minScale : clamp(this.scale, this.minScale, this.maxScale);
+    const initialScale = Math.min(this.maxScale, 0.96 * Math.min(viewport.width / world.width, viewport.height / world.height));
+    this.minScale = initialScale / 4;
+    this.scale = reset ? initialScale : clamp(this.scale, this.minScale, this.maxScale);
     const center = reset ? { x: world.width / 2, y: world.height / 2 } : previousCenter;
     this.x = viewport.x + viewport.width / 2 - center.x * this.scale;
     this.y = viewport.y + viewport.height / 2 - center.y * this.scale;
@@ -108,19 +109,6 @@ export class Camera {
     this.x = to.x - anchor.x * this.scale;
     this.y = to.y - anchor.y * this.scale;
     this.clamp();
-  }
-
-  /** Reveal the connection circle, centering axes on which it cannot fit. */
-  showConnection(center: Pt, range = CONNECTION_RANGE): void {
-    const v = this.viewport;
-    const radius = range * this.scale;
-    const rx = Math.min(radius, v.width / 2);
-    const ry = Math.min(radius, v.height / 2);
-    const x = center.x * this.scale + this.x;
-    const y = center.y * this.scale + this.y;
-    const dx = x - rx < v.x ? v.x - (x - rx) : x + rx > v.x + v.width ? v.x + v.width - (x + rx) : 0;
-    const dy = y - ry < v.y ? v.y - (y - ry) : y + ry > v.y + v.height ? v.y + v.height - (y + ry) : 0;
-    this.pan(dx, dy);
   }
 
   private clamp(): void {

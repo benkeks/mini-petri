@@ -140,12 +140,29 @@ describe("sink rewards", () => {
     const { game, finish } = setup();
     const offer = finish(0);
     const appearingAt = offer.expiresAt - POWERUP_LIFETIME;
+    const coins = game.coins;
+    const events: { amount: number; x: number; y: number }[] = [];
+    game.onCoins((event) => events.push(event));
     expect(appearingAt).toBeGreaterThan(0);
     game.step(offer.expiresAt - game.sim.time - 0.01);
     expect(game.offers.has(offer.id)).toBe(true);
+    expect(game.coins).toBe(coins);
     game.step(0.02);
     expect(game.offers.has(offer.id)).toBe(false);
     expect(game.collectOffer(offer.id, 0)).toBe(false);
+    expect(game.coins).toBe(coins + 1);
+    expect(events).toEqual([{ amount: 1, x: offer.x, y: offer.y }]);
+    game.step(1);
+    expect(game.coins).toBe(coins + 1);
+  });
+
+  it("does not grant an expiry coin for a collected offer", () => {
+    const { game, finish } = setup();
+    const offer = finish(0);
+    expect(game.collectOffer(offer.id, 0)).toBe(true);
+    const coins = game.coins;
+    game.step(POWERUP_LIFETIME + 1);
+    expect(game.coins).toBe(coins);
   });
 
   it("keeps reward positions aligned when the world orientation changes", () => {
@@ -367,7 +384,13 @@ describe("sink rewards", () => {
     expect(view.overlay.target?.({ kind: "transition", id: transition.id })).toBe(true);
     expect(game.coins).toBe(coins);
     expect(game.powerupStock(powerup.id)).toBe(1);
-    controller.tap({ x: transition.x, y: transition.y });
+    expect(controller.press({ x: transition.x, y: transition.y })).toBe(true);
+    controller.sync();
+    expect(view.overlay.pressed).toEqual({ kind: "transition", id: transition.id });
+    expect(game.sim.net.inputs(transition.id)[0].color).toBeUndefined();
+    expect(game.coins).toBe(coins);
+    expect(game.powerupStock(powerup.id)).toBe(1);
+    controller.release({ x: transition.x, y: transition.y });
     expect(denied).toHaveLength(0);
     expect(controller.brush.kind).toBe("fire");
     expect(controller.selected).toBeUndefined();

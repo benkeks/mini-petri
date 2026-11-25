@@ -8,6 +8,7 @@ interface Pointer {
   last: Pt;
   draggable: boolean;
   moved: boolean;
+  preview: boolean;
 }
 
 const midpoint = (a: Pt, b: Pt): Pt => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
@@ -19,9 +20,12 @@ export class Navigation {
 
   constructor(private readonly camera: Camera) {}
 
-  down(id: number, point: Pt, draggable: boolean): void {
-    this.pointers.set(id, { start: point, last: point, draggable, moved: false });
-    if (this.pointers.size > 1) for (const pointer of this.pointers.values()) pointer.moved = true;
+  down(id: number, point: Pt, draggable: boolean, preview = false): void {
+    this.pointers.set(id, { start: point, last: point, draggable, moved: false, preview });
+    if (this.pointers.size > 1) for (const pointer of this.pointers.values()) {
+      pointer.moved = true;
+      pointer.preview = false;
+    }
   }
 
   move(id: number, point: Pt): void {
@@ -49,7 +53,7 @@ export class Navigation {
     if (!pointer) return undefined;
     this.move(id, point);
     this.pointers.delete(id);
-    return pointer.moved ? undefined : point;
+    return pointer.moved && !pointer.preview ? undefined : point;
   }
 
   cancel(id?: number): void {

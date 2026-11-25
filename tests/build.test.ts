@@ -73,8 +73,204 @@ describe("controller", () => {
       pick = next;
       controller.tap({ x: 0, y: 0 }, touch);
     };
-    return { game, view, controller, tap, denied };
+    const press = (next: Pick) => {
+      pick = next;
+      return controller.press(next.kind === "empty" ? { x: next.x, y: next.y } : { x: 0, y: 0 });
+    };
+    const release = (next: Pick) => {
+      pick = next;
+      controller.release(next.kind === "empty" ? { x: next.x, y: next.y } : { x: 0, y: 0 });
+    };
+    return { game, view, controller, tap, press, release, denied };
   }
+
+  it.each(["port-first", "place-first", "transition-body"] as const)("drags between existing endpoints: %s", (order) => {
+    const { game, controller, press, release, view } = setup();
+    const place = { kind: "place", id: "pB" } as const;
+    const port = { kind: "port", tid: "sinkG", index: 0 } as const;
+    const from = order === "port-first" ? port : place;
+    const to = order === "port-first" ? place : order === "place-first" ? port : { kind: "transition", id: "sinkG" } as const;
+    game.sim.net.transitions.get("sinkG")!.x = 500;
+    expect(press(from)).toBe(true);
+    const version = game.sim.net.version;
+    controller.sync();
+    expect(game.sim.net.version).toBe(version);
+    release(to);
+    expect(game.sim.net.inputs("sinkG")).toHaveLength(1);
+    expect(game.sim.net.inputs("sinkG")[0].from).toBe("pB");
+    controller.sync();
+    expect(view.overlay.connection).toBeUndefined();
+  });
+
+  it("drags a place into empty space to build a relay, and a port to build a place", () => {
+    const { game, controller, press, release } = setup();
+    expect(press({ kind: "place", id: "pB" })).toBe(true);
+    const version = game.sim.net.version;
+    controller.move({ x: 280, y: 700 });
+    controller.sync();
+    expect(game.sim.net.version).toBe(version);
+    release({ kind: "empty", x: 280, y: 700 });
+    const tid = controller.selected!.tid;
+    expect(game.sim.net.inputs(tid)[0].from).toBe("pB");
+    expect(press({ kind: "port", tid, index: 0 })).toBe(true);
+    release({ kind: "empty", x: 450, y: 760 });
+    expect(game.sim.net.outputs(tid)).toHaveLength(1);
+    expect(controller.selected).toBeUndefined();
+  });
+
+  it("keeps a simple press/release as endpoint selection and cancels an uncommitted wiring drag", () => {
+    const { game, controller, press, release } = setup();
+    const port = { kind: "port", tid: "sinkG", index: 0 } as const;
+    const version = game.sim.net.version;
+    press(port);
+    release(port);
+    expect(controller.selected).toEqual({ tid: "sinkG", index: 0 });
+    expect(game.sim.net.version).toBe(version);
+    controller.cancel();
+    press({ kind: "place", id: "pB" });
+    controller.cancelPress();
+    release({ kind: "empty", x: 280, y: 700 });
+    expect(controller.selectedPlace).toBeUndefined();
+    expect(game.sim.net.version).toBe(version);
+  });
+
+  it("retains touch creation protection when starting a wiring drag", () => {
+    const { game, controller, view, denied } = setup();
+    view.pick = () => ({ kind: "port", tid: "sinkG", index: 0 });
+    const version = game.sim.net.version;
+    controller.press({ x: 960, y: 520 }, { screen: { x: 100, y: 100 }, time: 0 });
+    view.pick = () => ({ kind: "empty", x: 820, y: 520 });
+    controller.release({ x: 820, y: 520 }, { screen: { x: 139, y: 100 }, time: 249 });
+    expect(game.sim.net.version).toBe(version);
+    expect(denied).toHaveLength(1);
+    controller.press({ x: 820, y: 520 });
+    controller.release({ x: 820, y: 520 }, { screen: { x: 140, y: 100 }, time: 249 });
+    expect(game.sim.net.inputs("sinkG")).toHaveLength(1);
+  });
+
+  it("previews a place on press and builds only at the valid release position", () => {
+    const { game, controller, view, tap, press, release } = setup();
+    tap({ kind: "port", tid: "sinkG", index: 0 });
+    const before = game.sim.net.places.size;
+    expect(press({ kind: "empty", x: 820, y: 520 })).toBe(true);
+    controller.sync();
+    expect(view.overlay.pointer).toEqual({ x: 820, y: 520 });
+    expect(view.overlay.build?.kind).toBe("place");
+    expect(game.sim.net.places.size).toBe(before);
+    release({ kind: "empty", x: 830, y: 520 });
+    expect(game.sim.net.places.size).toBe(before + 1);
+    const id = game.sim.net.inputs("sinkG")[0].from;
+    expect(game.sim.net.places.get(id)).toMatchObject({ x: 830, y: 520 });
+  });
+
+  it("previews a transition without spending coins or stock, and revalidates release", () => {
+    const { game, controller, view, press, release } = setup();
+    controller.setBrush({ kind: "kit", kit: game.level.tools!.kits![0] });
+    const before = game.sim.net.transitions.size;
+    press({ kind: "empty", x: 820, y: 520 });
+    controller.sync();
+    expect(view.overlay.build?.kind).toBe("transition");
+    expect(game.sim.net.transitions.size).toBe(before);
+    expect(game.coins).toBe(STARTING_COINS);
+    // Another node appears during the press, making this formerly valid point unavailable.
+    game.sim.net.addPlace({ id: "blocker", x: 820, y: 520, capacity: 1, marking: [] });
+    release({ kind: "empty", x: 820, y: 520 });
+    expect(game.sim.net.transitions.size).toBe(before);
+    expect(controller.brush.kind).toBe("kit");
+    expect(controller.hint()).toContain("Not enough space");
+    press({ kind: "empty", x: 800, y: 700 });
+    release({ kind: "empty", x: 800, y: 700 });
+    expect(game.sim.net.transitions.size).toBe(before + 1);
+    expect(controller.brush.kind).toBe("fire");
+  });
+
+  it("can abort a build with cancellation or tool selection", () => {
+    const { game, controller, press, release } = setup();
+    const kit = game.level.tools!.kits![0];
+    const before = game.sim.net.transitions.size;
+    controller.setBrush({ kind: "kit", kit });
+    press({ kind: "empty", x: 820, y: 520 });
+    controller.cancelPress();
+    release({ kind: "empty", x: 820, y: 520 });
+    expect(game.sim.net.transitions.size).toBe(before);
+    press({ kind: "empty", x: 820, y: 520 });
+    controller.setBrush({ kind: "remove" });
+    release({ kind: "empty", x: 820, y: 520 });
+    expect(game.sim.net.transitions.size).toBe(before);
+  });
+
+  it("previews deletions and aborts when released off the original target", () => {
+    const { game, controller, view, press, release } = setup();
+    controller.setBrush({ kind: "remove" });
+    press({ kind: "place", id: "pR" });
+    controller.sync();
+    expect(view.overlay.removing).toBe(true);
+    expect(view.overlay.pressed).toEqual({ kind: "place", id: "pR" });
+    expect(game.sim.net.places.get("pR")!.ghost).toBeFalsy();
+    release({ kind: "place", id: "pB" });
+    expect(game.sim.net.places.get("pR")!.ghost).toBeFalsy();
+    expect(game.sim.net.places.get("pB")!.ghost).toBeFalsy();
+    press({ kind: "place", id: "pR" });
+    controller.cancelPress();
+    release({ kind: "place", id: "pR" });
+    expect(game.sim.net.places.get("pR")!.ghost).toBeFalsy();
+    press({ kind: "place", id: "pR" });
+    release({ kind: "place", id: "pR" });
+    expect(game.sim.net.places.get("pR")!.ghost).toBe(true);
+    expect(controller.brush.kind).toBe("remove");
+  });
+
+  it("leaves empty-space deletion presses available for camera panning", () => {
+    const { controller, press, release, denied } = setup();
+    controller.setBrush({ kind: "remove" });
+    expect(press({ kind: "empty", x: 820, y: 520 })).toBe(false);
+    release({ kind: "place", id: "pR" });
+    expect(denied).toHaveLength(0);
+    expect(controller.brush.kind).toBe("remove");
+  });
+
+  it("shows a build failure reason for ten real seconds or until tool selection", () => {
+    const { game, controller, tap } = setup();
+    const kit = game.level.tools!.kits![0];
+    controller.setBrush({ kind: "kit", kit });
+    tap({ kind: "empty", x: 5000, y: 5000 });
+    expect(controller.hint()).toContain("Outside building range");
+    controller.sync(9.999);
+    expect(controller.hint()).toContain("Outside building range");
+    controller.sync(0.002);
+    expect(controller.hint()).toContain("Tap inside the white area");
+    tap({ kind: "empty", x: 5000, y: 5000 });
+    controller.setBrush({ kind: "auto" });
+    expect(controller.hint()).toContain("automate");
+    expect(controller.hint()).not.toContain("Outside building range");
+    controller.cancel();
+    tap({ kind: "port", tid: "sinkG", index: 0 });
+    game.sim.net.addPlace({ id: "farAnchor", x: 1500, y: 1000, capacity: 1, marking: [] });
+    tap({ kind: "empty", x: 1500, y: 1120 });
+    expect(controller.hint()).toContain("Outside connection range");
+  });
+
+  it("returns to the default tool after capacity upgrades and life purchases", () => {
+    const { game, controller, tap } = setup();
+    controller.setBrush({ kind: "capacity" });
+    tap({ kind: "place", id: "pR" });
+    expect(game.sim.net.places.get("pR")!.capacity).toBe(19);
+    expect(controller.brush.kind).toBe("fire");
+    const survival = new Game(endless, Math.random, { survival: true });
+    survival.sim.net.transitions.get("starterSource")!.autoInterval = undefined;
+    survival.sim.step(240);
+    const { controller: other } = setup(survival);
+    survival.offers.set("money", {
+      id: "money", x: 0, y: 0, expiresAt: survival.sim.time + 120,
+      choices: [{ id: "money", label: "Coins", afterEpoch: 0, kind: "coins", amount: 20 },
+        { id: "other", label: "Coins", afterEpoch: 0, kind: "coins", amount: 5 }],
+    });
+    survival.collectOffer("money", 0);
+    other.setBrush({ kind: "remove" });
+    other.setBrush({ kind: "life" });
+    expect(survival.lives).toBe(10);
+    expect(other.brush.kind).toBe("fire");
+  });
 
   it("keeps the introduction after ineffective clicks and unlocks help after a successful firing", () => {
     const game = new Game(endless);
@@ -119,6 +315,9 @@ describe("controller", () => {
     reach(100);
     expect(controller.hint()).not.toBe("");
     reach(101);
+    expect(controller.hint()).toBe("");
+    controller.setBrush({ kind: "kit", kit: game.relayKit()! });
+    controller.tap({ x: 100000, y: 100000 });
     expect(controller.hint()).toBe("");
   });
 
@@ -287,7 +486,7 @@ describe("controller", () => {
     const { game, view, controller, tap } = setup();
     tap({ kind: "port", tid, index: 0 });
     controller.sync();
-    expect(view.overlay.build).toEqual({ kind: "place", capacity: 1, connection: { tid, index: 0 } });
+    expect(view.overlay.build).toMatchObject({ kind: "place", capacity: 1, connection: { tid, index: 0 } });
     tap({ kind: "empty", x, y });
     const arcs = direction === "in" ? game.sim.net.inputs(tid) : game.sim.net.outputs(tid);
     expect(arcs).toHaveLength(1);
@@ -447,6 +646,20 @@ describe("controller", () => {
     game.setPortrait(portrait);
     return game;
   }
+
+  it("previews the exact bridge position without mutation until release", () => {
+    const { game, controller, view, tap, press, release } = setup(connectorGame());
+    tap({ kind: "port", tid: "left", index: 0 });
+    press({ kind: "port", tid: "right", index: 0 });
+    controller.sync();
+    const preview = view.overlay.build?.position;
+    expect(preview).toBeDefined();
+    expect(game.sim.net.places.size).toBe(0);
+    expect(game.sim.net.arcs.size).toBe(0);
+    release({ kind: "port", tid: "right", index: 0 });
+    expect([...game.sim.net.places.values()][0]).toMatchObject(preview!);
+    expect(game.sim.net.arcs.size).toBe(2);
+  });
 
   it.each([
     { kind: "port", tid: "left", index: 0 },
@@ -653,7 +866,7 @@ describe("controller", () => {
     expect(controller.selectedPlace).toBeUndefined();
   });
 
-  it("uses the same tool to automate and speed up a transition", () => {
+  it("returns to firing after each automation or speed upgrade", () => {
     const { game, view, controller, tap } = setup();
     expect(brushesOf(game).filter((brush) => brush.kind === "auto")).toHaveLength(1);
     controller.setBrush({ kind: "auto" });
@@ -661,11 +874,15 @@ describe("controller", () => {
     expect(view.overlay.target?.({ kind: "transition", id: "tSplit" })).toBe(true);
     tap({ kind: "transition", id: "tSplit" });
     expect(game.sim.net.transitions.get("tSplit")!.autoInterval).toBe(4);
+    expect(controller.brush.kind).toBe("fire");
+    controller.setBrush({ kind: "auto" });
     controller.sync();
     expect(view.overlay.target?.({ kind: "transition", id: "tSplit" })).toBe(true);
     tap({ kind: "transition", id: "tSplit" });
     expect(game.sim.net.transitions.get("tSplit")!.autoInterval).toBeCloseTo(2.4);
+    expect(controller.brush.kind).toBe("fire");
     while (game.upgradeAuto("tSplit")) {}
+    controller.setBrush({ kind: "auto" });
     controller.sync();
     expect(view.overlay.target?.({ kind: "transition", id: "tSplit" })).toBe(false);
     expect(view.overlay.target?.({ kind: "transition", id: "srcR" })).toBe(false);
@@ -974,14 +1191,80 @@ describe("upgrades", () => {
     expect(events).toEqual([5]);
   });
 
-  it("only rewards settled tokens when a removed place swallows an incoming token", () => {
+  it("returns only settled matching tokens when a removed place swallows an incoming token", () => {
     const game = new Game(level2);
     expect(game.sim.fire("srcR")).toBe(true);
     expect(game.sim.incoming("pR")).toEqual({ red: 1 });
     expect(game.remove("pR")).toBe(true);
-    expect(game.coins).toBe(STARTING_COINS + 1);
+    expect(game.sim.net.transitions.get("srcR")!.supply).toBe(6);
+    expect(game.coins).toBe(STARTING_COINS);
     game.step(2);
-    expect(game.coins).toBe(STARTING_COINS + 1);
+    expect(game.sim.net.transitions.get("srcR")!.supply).toBe(6);
+    expect(game.coins).toBe(STARTING_COINS);
+  });
+
+  it("caps returned source tokens at the initial supply and rewards only the leftovers", () => {
+    const game = new Game(level2);
+    const source = game.sim.net.transitions.get("srcR")!;
+    const place = game.sim.net.places.get("pR")!;
+    expect(game.sim.fire("srcR")).toBe(true);
+    game.sim.step(1);
+    place.marking.push("red", "blue");
+    const marking = [...place.marking];
+    expect(game.remove("pR", false)).toBe(true);
+    expect(source.supply).toBe(5);
+    expect(place.marking).toEqual(marking);
+    expect(game.remove("pR")).toBe(true);
+    expect(source.supply).toBe(6);
+    expect(game.coins).toBe(STARTING_COINS + marking.length - 1);
+    expect(place.marking).toEqual([]);
+  });
+
+  it("revives a still-visible exhausted source without paying another exhaustion reward", () => {
+    const definition = structuredClone(level2);
+    definition.net.transitions.find((t) => t.id === "srcR")!.supply = 1;
+    definition.net.places.find((p) => p.id === "pR")!.marking = [];
+    const game = new Game(definition);
+    expect(game.sim.fire("srcR")).toBe(true);
+    game.sim.step(1);
+    expect(game.exhausted.has("srcR")).toBe(true);
+    expect(game.remove("pR")).toBe(true);
+    expect(game.exhausted.has("srcR")).toBe(false);
+    expect(game.sim.net.transitions.get("srcR")!.supply).toBe(1);
+    const destination = game.buildConnectedPlace("srcR", 0, 100, 360);
+    expect(destination).toBeDefined();
+    expect(game.sim.fire("srcR")).toBe(true);
+    expect(game.coins).toBe(STARTING_COINS + 5);
+  });
+
+  it("refunds complete weighted source emissions, but not disconnected tokens", () => {
+    const definition = structuredClone(level2);
+    definition.net.arcs.find((a) => a.id === "a1")!.count = 2;
+    definition.net.places.find((p) => p.id === "pR")!.marking = [];
+    const game = new Game(definition);
+    expect(game.sim.fire("srcR")).toBe(true);
+    game.sim.step(1);
+    game.sim.net.places.get("pR")!.marking.push("red", "blue");
+    game.remove("pR");
+    expect(game.sim.net.transitions.get("srcR")!.supply).toBe(6);
+    expect(game.coins).toBe(STARTING_COINS + 2);
+
+    const disconnected = new Game(level2);
+    disconnected.sim.fire("srcR");
+    disconnected.remove("a1");
+    disconnected.remove("pR");
+    expect(disconnected.sim.net.transitions.get("srcR")!.supply).toBe(5);
+    expect(disconnected.coins).toBe(STARTING_COINS + 1);
+  });
+
+  it("protects the first main source's large output place while allowing its arcs to be rewired", () => {
+    const game = new Game(endless);
+    const version = game.sim.net.version;
+    expect(game.remove("starterPlace", false)).toBe(false);
+    expect(game.remove("starterPlace")).toBe(false);
+    expect(game.sim.net.version).toBe(version);
+    expect(game.sim.net.places.get("starterPlace")!.ghost).toBeFalsy();
+    expect(game.remove("starterOutput")).toBe(true);
   });
 
   it("make transitions automatic, then faster, and places larger", () => {

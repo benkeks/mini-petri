@@ -666,14 +666,14 @@ export class Hud {
     });
     this.toolbar.visible = n > 1;
 
-    const bottom = portrait ? resourceHeight + toolbarH : Math.max(resourceHeight, toolbarH, sideHint ? this.hint.height + 16 : 0);
+    const bottom = portrait ? resourceHeight + toolbarH : Math.max(resourceHeight, toolbarH);
     this.hint.position.set(sideHint ? width - 12 - hintWidth / 2 : width / 2, sideHint ? height - 8 : height - bottom - 8);
     const top = Math.max(width < 600 ? 102 : this.title.visible ? 92 : 68,
       compact ? iconY + META_ICON_SIZE + 12 : 0,
       ...(compact ? [] : controls.map((control) => control.y - 6 + this.navigationHeight + 12)));
     const reservedBottom = bottom + (this.hint.visible && !sideHint ? HINT_SPACE : 0);
     this.viewportCenter = { x: width / 2, y: top + Math.max(1, height - top - reservedBottom) / 2 };
-    return { top, bottom: reservedBottom };
+    return { top, bottom };
   }
 
   private buildToolbar(): void {

@@ -86,10 +86,10 @@ describe("camera", () => {
     expect(2 * CONNECTION_RANGE * c.scale).toBeLessThanOrEqual(viewport.height);
     expect(c.toWorld(point)).toEqual(anchor);
     c.zoom(0.001, point);
-    expect(c.scale).toBeCloseTo(0.64);
+    expect(c.scale).toBeCloseTo(0.16);
   });
 
-  it("allows width-based zoom on ultra-wide phones and keeps selected connections visible", () => {
+  it("allows width-based zoom on ultra-wide phones", () => {
     const c = camera();
     const wide = { x: 0, y: 68, width: 844, height: 180 };
     const anchor = { x: 422, y: 158 };
@@ -97,12 +97,6 @@ describe("camera", () => {
     c.zoom(100, anchor);
     expect(c.scale).toBeCloseTo(844 / (2 * CONNECTION_RANGE));
     expect(c.scale).toBeGreaterThan(4 * wide.height / (2 * CONNECTION_RANGE));
-    c.showConnection({ x: 1100, y: 700 });
-    expect(1100 * c.scale + c.x).toBeCloseTo(anchor.x);
-    expect(700 * c.scale + c.y).toBeCloseTo(anchor.y);
-    const position = { x: c.x, y: c.y };
-    c.showConnection({ x: 1100, y: 700 });
-    expect({ x: c.x, y: c.y }).toEqual(position);
     c.layout(viewport, world, false);
     expect(c.scale).toBeCloseTo(viewport.height / (2 * CONNECTION_RANGE));
   });
@@ -141,31 +135,6 @@ describe("camera", () => {
     expect(c.toWorld({ x: 400, y: 364 }).y).toBeCloseTo(964);
   });
 
-  it("pans enough to fit a connection circle without moving an already visible circle", () => {
-    const c = camera();
-    c.zoom(100, { x: 400, y: 364 });
-    c.showConnection({ x: 1100, y: 700 });
-    const center = { x: 1100 * c.scale + c.x, y: 700 * c.scale + c.y };
-    const radius = CONNECTION_RANGE * c.scale;
-    expect(center.x - radius).toBeGreaterThanOrEqual(viewport.x);
-    expect(center.x + radius).toBeLessThanOrEqual(viewport.x + viewport.width);
-    expect(center.y - radius).toBeGreaterThanOrEqual(viewport.y);
-    expect(center.y + radius).toBeLessThanOrEqual(viewport.y + viewport.height);
-    const position = { x: c.x, y: c.y };
-    c.showConnection({ x: 1100, y: 700 });
-    expect({ x: c.x, y: c.y }).toEqual(position);
-  });
-
-  it("frames an upgraded connection ring without panning to an impossible fit or changing zoom", () => {
-    const c = camera();
-    c.zoom(100, { x: 400, y: 364 });
-    const scale = c.scale;
-    c.showConnection({ x: 1100, y: 700 }, 420);
-    expect(1100 * c.scale + c.x).toBeCloseTo(400);
-    expect(700 * c.scale + c.y).toBeCloseTo(364);
-    expect(c.scale).toBe(scale);
-  });
-
   it("preserves the world center on resize and clamps zoom to the new viewport", () => {
     const c = camera();
     c.zoom(100, { x: 400, y: 364 });
@@ -178,6 +147,21 @@ describe("camera", () => {
 });
 
 describe("navigation", () => {
+  it("releases a dragged edit preview without panning, but never commits a pinch", () => {
+    const c = camera();
+    const nav = new Navigation(c);
+    const position = { x: c.x, y: c.y };
+    nav.down(1, { x: 400, y: 364 }, false, true);
+    nav.move(1, { x: 470, y: 400 });
+    expect({ x: c.x, y: c.y }).toEqual(position);
+    expect(nav.up(1, { x: 470, y: 400 })).toEqual({ x: 470, y: 400 });
+    nav.down(1, { x: 350, y: 364 }, false, true);
+    nav.down(2, { x: 450, y: 364 }, false);
+    nav.move(2, { x: 500, y: 364 });
+    expect(nav.up(2, { x: 500, y: 364 })).toBeUndefined();
+    expect(nav.up(1, { x: 350, y: 364 })).toBeUndefined();
+  });
+
   it("distinguishes a tap from an empty-space drag and never drags in placement mode", () => {
     const c = camera();
     const nav = new Navigation(c);

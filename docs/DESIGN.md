@@ -41,6 +41,7 @@ Completed goals are checked off and disappear.
 ## Removal and ghosts
 - Removing marks an arc, place or transition as a `ghost`; `inputs`/`outputs` and enabling ignore ghosts.
 - The remove tool cannot remove source or sink transitions, though their arcs may still be removed.
+  The first main source's large output place is indestructible too, but its connections can be rewired.
 - Ghosting an arc gives its (live) transition the arc back as an open port, so it is disabled until reconnected.
   Ghosting a transition ghosts its arcs; ghosting a place drops its marking and ghosts its arcs.
 - Tokens already moving on ghost arcs finish their trip and firings in progress complete; output tokens arriving at a ghost place are dropped.
@@ -48,6 +49,10 @@ Completed goals are checked off and disappear.
 - Resolved goal sinks are still removed at once with `Simulation.removeTransition`.
 - Exhausted sources show the same check mark and fade as resolved goals, then become ghosts so their outgoing tokens can finish before the source and its arcs are collected.
   Source exhaustion does not count towards level completion.
+- Deleting a finite source's connected output place returns matching settled tokens as complete emissions, capped at its initial firing supply.
+  In-flight tokens, ghost connections and outputs shared with another place are not returned; a settled token can be returned only once.
+  Returning tokens can revive a still-live exhausted source and restart its idle countdown, but never pays another exhaustion reward.
+  Returned tokens do not also earn deletion coins; other settled tokens keep their usual coin refund.
 - An unconnected capacity-1 place is ghosted after 120 seconds without a tap or token arrival.
   Connecting it clears the idle timer; disconnecting it starts a fresh timer.
   Larger places never expire, and in-flight tokens on ghost arcs finish as usual.
@@ -60,7 +65,7 @@ Completed goals are checked off and disappear.
   Capacity upgrades immediately update placement rules, the range overlay and camera bounds.
 - Arc reach is determined by the connected place's capacity level: 300, 360 or 420 units between centers, increasing by one fifth of the original 300-unit range per level.
   Wiring works identically when selecting either endpoint; newly built one-token places retain the 300-unit limit.
-  Only selected places display and frame their upgraded reach.
+  Only selected places display their upgraded reach.
   Selected transitions and new transition previews show the primary 300-unit ring, but upgraded places beyond it remain highlighted and connectible.
   Existing level arcs are unchanged.
 - Built transitions come from kits (`{ id, ports }`) and start with all ports open; built ids are fresh (`p1`, `t1`, `c1`, …).
@@ -68,7 +73,8 @@ Completed goals are checked off and disappear.
   A place cannot be upgraded if the larger footprint would overlap another node.
   In endless and survival runs, the capacity toolbar button and capacity rewards unlock at completed epoch 10; fixed levels retain their declared tools.
 - Each run starts with 40 coins. Paid upgrades share a price starting at 5; each successful paid upgrade increases the next price by 1 for the rest of the run.
-  Free upgrades, failed checks and removal do not change that price. Exhausting a finite source awards 5, and removing a place awards one per settled token.
+  Free upgrades, failed checks and removal do not change that price.
+  Exhausting a finite source awards 5 once per source, and removing a place awards one per settled token not returned to a source.
   Removing a node refunds half of its total purchased upgrade costs, rounded to the nearest integer; existing upgrades and swallowed incoming tokens do not count.
   Ordinary node construction and connections are free; limited transition kits charge their displayed price when successfully built.
   An otherwise valid paid action that fails for insufficient coins briefly shakes the coin counter and its circle, without shaking the heart; feasibility and hover checks remain silent.
@@ -79,6 +85,7 @@ Completed goals are checked off and disappear.
   Sources, sinks, incompatible connections and unavailable kits cannot be converted.
 - When a resolved sink disappears, two distinct randomly selected powerups appear at its position for 120 seconds.
   Collecting one discards the other. The available rewards and their unlocks are listed in [Epoch progression](#epoch-progression).
+  An uncollected offer awards one coin at its position when its timer expires, once rather than once per choice.
   Free upgrades stack on the existing upgrade tool and are consumed before paid uses; limited kits stack in separate toolbar buttons.
   Free upgrades do not contribute to removal refunds. Invalid or unaffordable actions consume neither stock nor coins.
 - All `Game` actions take `apply = false` to only check feasibility; the view uses this to highlight targets.
@@ -99,15 +106,33 @@ Completed goals are checked off and disappear.
   Tapping empty space with a place selected builds an available one-to-one relay with its input connected, then selects its output.
   This ordinary relay has no redundant toolbar button; other transition kits retain theirs.
   After building a transition its first plug is selected, and after each connection the next one, so wiring is a sequence of taps on places.
-  Build brushes revert to firing after a successful build; removal and upgrade brushes stay active.
+  Build and upgrade brushes revert to firing after a successful action; deletion stays active after removals, and failed actions retain the selected tool for retrying.
+  Buying a life also returns to firing after success.
   Special-transition brushes highlight compatible normal transitions and convert them when tapped, selecting any new open ports for wiring.
 - Denied taps shake the node, or show a red ripple on empty space.
-- Background drags pan unless a placement brush is active; a tap is dispatched only after release without a drag or pinch.
+  Failed builds temporarily replace enabled tool help with the reason, such as clearance, building range, connection reach or insufficient coins.
+  The reason expires after ten real seconds or any tool selection; normal epoch-based help suppression still applies.
+- Builds preview on mouse/touch down without spending coins, consuming kits or mutating the net.
+  Dragging adjusts the preview; release revalidates the final position and only then commits.
+  Connector bridges preview the same exact place position used on release.
+  Node previews include each colored, weighted connector and the octilinear arcs to the proposed place or relay.
+  Preview and committed nodes share bar orientation, connector spacing and arc-routing logic.
+  Connecting existing nodes previews the actual colored, weighted arc clipped to the existing place's outline, in either selection order.
+  Deletions preview the original pressed target and commit only when released on that same live removable target; dragging off aborts.
+  Releasing outside the play area, Escape, pointer cancellation, lost capture, or beginning a pinch cancels an edit.
+- Background drags pan unless an edit is being previewed; ordinary taps require release without a drag or pinch.
+  In the default tool, dragging from an open connector or place starts wiring immediately and commits at the released endpoint.
+  Dropping in empty space builds a connected place or relay; a press and release on the starting endpoint still selects it for two-tap wiring.
+  Touch-created places retain the 250 ms or 40-screen-pixel creation guard, measured from the initial press for a drag.
+  Empty-space drags still pan in deletion mode; pressing a removable target instead previews that deletion.
   Wheel and two-pointer pinch gestures zoom around the pointer or pinch midpoint.
+  Zoom-out reaches one quarter of the initial framing scale without changing the starting view.
 - The world renders across the screen; compact HUD backplates protect text and controls, and those areas do not pass taps through to the net.
   Mouse hover highlights actionable targets and changes the cursor; empty draggable space uses a grab cursor.
 - The camera center stays within the live nodes' bounds expanded by each node's build range.
-  Selecting a loose end or place pans enough to show its connection-range circle where it fits, and centers axes where the circle is too large for the HUD-free viewport at the current zoom.
+  Selecting construction tools, places or connectors never automatically scrolls the camera.
+  HUD reflows, including tooltip appearance and disappearance, preserve the current screen-space camera transform.
+  Tooltips overlay the world rather than changing the camera's reserved viewport; actual screen resizes still reframe normally.
 
 ## Continuous-time firing semantics
 - Firing is atomic: input tokens are removed and output tokens are committed to their target places at the moment of firing.
@@ -262,7 +287,9 @@ When changing progression, update this overview and the boundary tests in [game.
 - Spawned sources and sinks fade and scale in, and shrink and fade out when resolved or timed out. Reward choices similarly animate in and out without delaying collection or expiry.
 - Active expiry countdowns show a shrinking ring: black for sources, which cost no lives, and red for sinks.
   Timed-out sources and sinks show a cross before disappearing.
-- Open ports dangle as short stubs with a plug, against the flow for inputs and along it for outputs; plugs pulse softly, the selected one strongly, with a line to the pointer.
+- Open ports use thinner dashed stubs and small dashed 5-unit-radius plugs, against the flow for inputs and along it for outputs.
+  Dashed highlights pulse softly, the selected one more strongly, with a line to the pointer; hit tolerance is unchanged.
+- Deletion mode gives the background a subtle tint matching the brown-red removal cross, with a stronger outline around a held deletion target.
 - Ghosts are drawn at 30% opacity.
 - Build brushes show the union of build ranges in white against a grey background, with blocked clearance areas around all nodes greyed out for the selected node kind. The overlay fades in and out over 250 ms and previews the node under the pointer, red if it cannot go there.
   When wiring from a place, plugs whose transitions cannot connect are dimmed instead of pulsing or highlighting on hover.

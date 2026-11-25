@@ -50,6 +50,10 @@ export class Controller {
   private pointer?: Pt;
   private hasInteracted = false;
   private touchSelection?: { port: { tid: string; index: number }; screen: Pt; time: number };
+  private pressed?: Pick;
+  private wiringStart?: Pick;
+  private failureHint?: { text: string; remaining: number };
+  private bridgePreview?: { key: string; position?: Pt };
 
   constructor(
     private game: Game,
@@ -65,12 +69,18 @@ export class Controller {
     this.selectedPlace = undefined;
     this.pointer = undefined;
     this.touchSelection = undefined;
+    this.pressed = undefined;
+    this.wiringStart = undefined;
+    this.failureHint = undefined;
+    this.bridgePreview = undefined;
   }
 
   /** Selects `b`; selecting the active brush again switches back to firing. */
   setBrush(b: Brush): void {
+    this.cancelPress();
+    this.failureHint = undefined;
     if (b.kind === "life") {
-      this.effect(this.game.buyLife({ x: this.game.size.width / 2, y: this.game.size.height / 2 }));
+      if (this.effect(this.game.buyLife({ x: this.game.size.width / 2, y: this.game.size.height / 2 }))) this.cancel();
       return;
     }
     this.brush = sameBrush(b, this.brush) ? FIRE : b;
@@ -80,11 +90,67 @@ export class Controller {
     this.touchSelection = undefined;
   }
 
+  /** Starts an edit preview without mutating the net. Other actions remain ordinary taps. */
+  press(p: Pt, touch?: { screen: Pt; time: number }): boolean {
+    this.cancelPress();
+    if (this.game.complete || this.game.paused) return false;
+    this.pointer = p;
+    const pick = this.view.pick(p);
+    if (this.brush.kind === "fire" && this.game.level.tools && !this.selected && !this.selectedPlace
+      && (pick.kind === "port" || pick.kind === "place")) {
+      this.wiringStart = pick;
+      this.pressed = pick;
+      if (pick.kind === "port") {
+        this.selected = { tid: pick.tid, index: pick.index };
+        this.touchSelection = touch ? { port: this.selected, screen: { ...touch.screen }, time: touch.time } : undefined;
+      } else {
+        this.selectedPlace = pick.id;
+        this.game.touchPlace(pick.id);
+      }
+      this.hasInteracted = true;
+      return true;
+    }
+    const edits = this.brush.kind === "kit" || (this.brush.kind === "remove" && pick.kind !== "empty")
+      || (!!this.selected && (pick.kind === "empty" || pick.kind === "port" || pick.kind === "transition" || pick.kind === "place"))
+      || (!!this.selectedPlace && (pick.kind === "port" || pick.kind === "transition" || pick.kind === "place"
+        || (pick.kind === "empty" && !!this.game.relayKit())));
+    if (edits && pick.kind !== "reward") this.pressed = pick;
+    return !!this.pressed;
+  }
+
+  release(p: Pt, touch?: { screen: Pt; time: number }): void {
+    const pressed = this.pressed;
+    const wiringStart = this.wiringStart;
+    this.pressed = undefined;
+    this.wiringStart = undefined;
+    if (!pressed) return;
+    if (wiringStart && samePick(wiringStart, this.view.pick(p))) {
+      this.touchSelection = touch && this.selected
+        ? { port: this.selected, screen: { ...touch.screen }, time: touch.time } : undefined;
+      return;
+    }
+    // Dragging off a deletion target aborts instead of deleting a different object.
+    if (this.brush.kind === "remove" && !samePick(pressed, this.view.pick(p))) return;
+    this.tap(p, touch);
+  }
+
+  cancelPress(): void {
+    if (this.wiringStart) {
+      this.selected = undefined;
+      this.selectedPlace = undefined;
+      this.touchSelection = undefined;
+      this.wiringStart = undefined;
+    }
+    this.pressed = undefined;
+  }
+
   cancel(): void {
+    this.cancelPress();
     this.brush = FIRE;
     this.selected = undefined;
     this.selectedPlace = undefined;
     this.touchSelection = undefined;
+    this.failureHint = undefined;
   }
 
   move(p?: Pt): void {
@@ -126,7 +192,7 @@ export class Controller {
       && (pick.kind === "empty" || pick.kind === "port" || pick.kind === "transition")
       && touch.time - selection.time < TOUCH_CREATION_DELAY
       && Math.hypot(touch.screen.x - selection.screen.x, touch.screen.y - selection.screen.y) < TOUCH_CREATION_DISTANCE) {
-      this.view.deny(pick);
+      this.deny(pick, "Wait 250 ms or move at least 40 screen pixels before creating a place.");
       return;
     }
     const selected = this.selected;
@@ -141,7 +207,7 @@ export class Controller {
     const game = this.game;
     if (pick.kind === "reward") {
       const offer = game.offers.get(pick.id);
-      if (!this.effect(game.collectOffer(pick.id, pick.index))) this.view.deny(pick);
+      if (!this.effect(game.collectOffer(pick.id, pick.index))) this.deny(pick);
       else if (offer) this.view.rewardCollected?.(offer, pick.index);
       return;
     }
@@ -149,7 +215,7 @@ export class Controller {
     if (this.selectedPlace && pick.kind === "empty" && game.relayKit()) {
       const tid = game.buildConnectedTransition(this.selectedPlace, pick.x, pick.y);
       if (tid === undefined) {
-        this.view.deny(pick);
+        this.deny(pick);
         return;
       }
       this.selectedPlace = undefined;
@@ -162,14 +228,14 @@ export class Controller {
       const tid = pick.kind === "port" ? pick.tid : pick.id;
       const index = pick.kind === "port" ? pick.index : this.firstConnectiblePort(tid, place);
       this.selectedPlace = undefined;
-      if (index === undefined || !this.effect(game.connect(tid, index, place))) this.view.deny(pick);
+      if (index === undefined || !this.effect(game.connect(tid, index, place))) this.deny(pick);
       return;
     }
     if (pick.kind === "port" || (pick.kind === "transition" && this.selected && game.level.tools?.place)) {
       const tid = pick.kind === "port" ? pick.tid : pick.id;
       const index = pick.kind === "port" ? pick.index : this.firstBridgeablePort(tid);
       if (index === undefined) {
-        this.view.deny(pick);
+        this.deny(pick);
         return;
       }
       this.brush = FIRE;
@@ -177,7 +243,7 @@ export class Controller {
       if (this.selected && game.level.tools?.place) {
         const from = this.selected;
         if (!this.effect(game.connectPorts(from, { tid, index }, true, p))) {
-          this.view.deny(pick);
+          this.deny(pick);
           return;
         }
         const remaining = [from.tid, tid].find((tid) => game.sim.net.transitions.get(tid)?.open?.length);
@@ -193,7 +259,7 @@ export class Controller {
       const { tid, index } = this.selected;
       if (pick.kind === "empty") {
         if (game.buildConnectedPlace(tid, index, pick.x, pick.y) === undefined) {
-          this.view.deny(pick);
+          this.deny(pick);
           return;
         }
         this.selected = game.sim.net.transitions.get(tid)?.open?.length ? { tid, index: 0 } : undefined;
@@ -204,7 +270,7 @@ export class Controller {
       if (pick.kind === "place" && this.effect(game.connect(tid, index, pick.id))) {
         // Keep wiring the same transition while it has loose ends.
         if (game.sim.net.transitions.get(tid)?.open?.length) this.selected = { tid, index: 0 };
-      } else if (pick.kind === "place") this.view.deny(pick);
+      } else if (pick.kind === "place") this.deny(pick);
       return;
     }
     if (this.brush.kind === "fire" && pick.kind === "place" && this.game.level.tools) {
@@ -213,11 +279,16 @@ export class Controller {
       return;
     }
     this.selectedPlace = undefined;
-    if (!this.act(pick, true)) this.view.deny(pick);
+    if (!this.act(pick, true)) this.deny(pick);
+    else if (this.brush.kind === "auto" || this.brush.kind === "capacity") this.brush = FIRE;
   }
 
   /** Updates what the view shows for the current brush and pointer; call once per frame. */
-  sync(): void {
+  sync(dt = 0): void {
+    if (this.failureHint) {
+      this.failureHint.remaining -= dt;
+      if (this.failureHint.remaining <= 0) this.failureHint = undefined;
+    }
     const game = this.game;
     if (this.brush.kind === "kit" && !game.availableKits().includes(this.brush.kit)) this.brush = FIRE;
     const b = this.brush;
@@ -233,11 +304,35 @@ export class Controller {
     const canBuildConnected = this.selected && this.game.level.tools?.place && selectedTransition && !selectedTransition.ghost
       && selectedTransition.open?.[this.selected.index];
     const relay = this.selectedPlace && game.relayKit();
+    const hover = this.pointer && this.view.pick(this.pointer);
+    const existingPort = this.selectedPlace && hover?.kind === "transition"
+      ? this.firstConnectiblePort(hover.id, this.selectedPlace) : undefined;
+    const connection = this.selected && hover?.kind === "place"
+      ? { ...this.selected, pid: hover.id }
+      : this.selectedPlace && hover?.kind === "port"
+        ? { tid: hover.tid, index: hover.index, pid: this.selectedPlace }
+        : this.selectedPlace && hover?.kind === "transition" && existingPort !== undefined
+          ? { tid: hover.id, index: existingPort, pid: this.selectedPlace } : undefined;
+    const bridgeIndex = hover?.kind === "port" ? hover.index
+      : hover?.kind === "transition" && this.selected ? this.firstBridgeablePort(hover.id) : undefined;
+    let bridge: Pt | undefined;
+    let bridgeTo: { tid: string; index: number } | undefined;
+    if (this.pressed && this.selected && bridgeIndex !== undefined && hover
+      && (hover.kind === "port" || hover.kind === "transition")) {
+      const to = { tid: hover.kind === "port" ? hover.tid : hover.id, index: bridgeIndex };
+      const key = JSON.stringify([game.sim.net.version, this.selected, to, this.pointer]);
+      if (this.bridgePreview?.key !== key) {
+        this.bridgePreview = { key, position: game.connectorPlacePosition(this.selected, to, this.pointer) };
+      }
+      bridge = this.bridgePreview.position;
+      if (bridge) bridgeTo = to;
+    }
     this.view.overlay = {
       pointer: this.pointer,
+      connection,
       hoverAction: (pick) => this.interactive(pick),
-      build: canBuildConnected ? { kind: "place", capacity: 1, connection: this.selected }
-        : relay ? { kind: "transition", ports: relay.ports.filter((port) => port.dir === "out"), fromPlace: this.selectedPlace }
+      build: canBuildConnected ? { kind: "place", capacity: 1, connection: this.selected, position: bridge, bridgeTo }
+        : relay ? { kind: "transition", ports: relay.ports, fromPlace: this.selectedPlace }
         : b.kind === "kit" ? { kind: "transition", ports: b.kit.ports, canPlace: (x, y) => game.canBuildTransition(b.kit, x, y) } : undefined,
       target: this.selected
         ? (pick) => pick.kind === "place"
@@ -261,6 +356,7 @@ export class Controller {
         }
         : undefined,
       removing: !this.selected && b.kind === "remove",
+      pressed: this.pressed && hover && samePick(this.pressed, hover) ? hover : undefined,
       selected: this.selected,
       selectedPlace: this.selectedPlace,
     };
@@ -270,8 +366,11 @@ export class Controller {
   hint(): string {
     if (this.game.level.mode === "endless") {
       if (this.game.epoch > 100) return "";
-      if (!this.hasInteracted && this.game.epoch < 2) return "Move tokens from sources to sinks. Tap a transition to make it fire.";
       if (this.game.epoch > 10 && this.brush.kind === "fire") return "";
+    }
+    if (this.failureHint) return this.failureHint.text;
+    if (this.game.level.mode === "endless") {
+      if (!this.hasInteracted && this.game.epoch < 2) return "Move tokens from sources to sinks. Tap a transition to make it fire.";
     }
     if (this.selected) return this.game.level.tools?.place
       ? "Tap a place to connect, a connector to add a nearby place, or empty space to build a small place."
@@ -300,6 +399,32 @@ export class Controller {
   private effect(success: boolean): boolean {
     if (success) this.hasInteracted = true;
     return success;
+  }
+
+  private deny(pick: Pick, reason?: string): void {
+    this.view.deny(pick);
+    const game = this.game;
+    if (reason) {
+      this.failureHint = { text: reason, remaining: 10 };
+    } else if (pick.kind === "empty" && (this.selected || this.selectedPlace || this.brush.kind === "kit")) {
+      const kind = this.selected ? "place" : "transition";
+      const issue = game.placementIssue(kind, pick.x, pick.y);
+      const powerup = this.brush.kind === "kit" ? game.kitPowerup(this.brush.kit) : undefined;
+      const text = issue === "far" ? "Outside building range. Build closer to your network."
+        : issue === "crowded" ? "Not enough space. Leave more room between nodes."
+        : this.selected || this.selectedPlace ? "Outside connection range. Build closer to the selected node."
+        : powerup && game.powerupStock(powerup.id) === 0 ? "No transition kits remaining. Collect another kit reward."
+        : "Not enough coins to build this transition.";
+      this.failureHint = { text, remaining: 10 };
+    } else if (this.selected && (pick.kind === "port" || pick.kind === "transition")) {
+      this.failureHint = { text: "No space for a place within reach of both connectors. Move the connection closer or clear some room.", remaining: 10 };
+    } else if (this.brush.kind === "kit") {
+      this.failureHint = { text: "Cannot convert this node. Use a normal transition with compatible connections and enough coins.", remaining: 10 };
+    } else if (this.brush.kind === "auto" || this.brush.kind === "capacity") {
+      this.failureHint = { text: this.brush.kind === "auto"
+        ? "Cannot upgrade. Choose a normal transition below maximum speed and check your coins."
+        : "Cannot upgrade. Choose a place with room to grow, below maximum capacity, and check your coins.", remaining: 10 };
+    }
   }
 
   private firstConnectiblePort(tid: string, pid: string): number | undefined {
@@ -368,4 +493,10 @@ export class Controller {
 
 export function sameBrush(a: Brush, b: Brush): boolean {
   return a.kind === b.kind && (a.kind !== "kit" || (b.kind === "kit" && a.kit === b.kit));
+}
+
+function samePick(a: Pick, b: Pick): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "port" && b.kind === "port") return a.tid === b.tid && a.index === b.index;
+  return "id" in a && "id" in b && a.id === b.id;
 }

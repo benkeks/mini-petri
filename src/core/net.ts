@@ -15,6 +15,8 @@ export interface Place {
   marking: Color[];
   /** A removed place: it holds no tokens and swallows arrivals until its last arc is gone. */
   ghost?: boolean;
+  /** Player deletion is forbidden for this place. */
+  indestructible?: boolean;
 }
 
 /**
@@ -41,6 +43,8 @@ export interface Transition {
   open?: Port[];
   /** Remaining firings; undefined means unlimited. */
   supply?: number;
+  /** Starting finite source supply, retained when tokens are returned. */
+  initialSupply?: number;
   /** A removed transition: it never fires again but finishes its firings in progress. */
   ghost?: boolean;
   /** Add a copy of the first any-color input to the any-color outputs. */
@@ -97,7 +101,11 @@ export class Net {
 
   addTransition(t: Transition): void {
     this.assertFreeId(t.id);
-    this.transitions.set(t.id, { ...t, open: (t.open ?? []).map((port) => ({ ...port, count: arcCount(port) })) });
+    this.transitions.set(t.id, {
+      ...t,
+      initialSupply: t.initialSupply ?? (t.kind === "source" ? t.supply : undefined),
+      open: (t.open ?? []).map((port) => ({ ...port, count: arcCount(port) })),
+    });
     this.inArcs.set(t.id, []);
     this.outArcs.set(t.id, []);
     this.version++;

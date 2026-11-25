@@ -1,11 +1,10 @@
 import { Container, Graphics, Text } from "pixi.js";
-import { arcCount, type Arc, type Port, type Transition } from "../core/net";
+import { arcCount, Net, type Arc, type Port, type Transition } from "../core/net";
 import { buildRange, connectionRange, placementClearance, POWERUP_LIFETIME, RESOLVED_LINGER, type NodeKind, type PowerupOffer } from "../game/game";
 import type { Game } from "../game/game";
 import type { Powerup } from "../game/powerups";
 import { placeRadius } from "../game/placeSize";
 import {
-  arcRoute,
   distanceToPolyline,
   lerp,
   offsetPolyline,
@@ -13,21 +12,19 @@ import {
   pointAt,
   polylineLength,
   subpath,
+  transitionLayout,
   TOKEN_SLOTS,
   type ArcRoute,
-  type BarSize,
   type Pt,
 } from "./geometry";
-import { THEME, TOKEN_COLORS, TOKEN_RADIUS, TRANSITION_H, TRANSITION_W } from "./style";
+import { THEME, TOKEN_COLORS, TOKEN_RADIUS } from "./style";
 import { drawToolIcon } from "./toolIcon";
 
 const FLASH_TIME = 0.35;
 const SHAKE_TIME = 0.3;
 const MAX_ARROWHEADS = 5;
 const HOP_HEIGHT = 18;
-/** Length of the dangling stub of an open port, beyond the transition's outline. */
-const STUB_LENGTH = 46;
-const PLUG_RADIUS = 8;
+const PLUG_RADIUS = 5;
 /** Extra pick tolerance around targets, in screen pixels. */
 const PICK_SLOP = 12;
 const GHOST_ALPHA = 0.3;
@@ -57,13 +54,17 @@ export interface Overlay {
   /** Picks whose tap would have an effect or give feedback. */
   hoverAction?: (pick: Pick) => boolean;
   /** Shows the build range and a preview of the node to build under the pointer. */
-  build?: { kind: NodeKind; ports?: Port[]; capacity?: number; connection?: { tid: string; index: number }; fromPlace?: string; canPlace?: (x: number, y: number) => boolean };
+  build?: { kind: NodeKind; ports?: Port[]; capacity?: number; connection?: { tid: string; index: number }; bridgeTo?: { tid: string; index: number }; fromPlace?: string; position?: Pt; canPlace?: (x: number, y: number) => boolean };
+  /** Prospective arc between an existing place and an open transition port. */
+  connection?: { tid: string; index: number; pid: string };
   /** Picks the active brush can act on; they are highlighted. */
   target?: (pick: Pick) => boolean;
   /** Nodes and ports reachable from a node preview at the given world position. */
   previewTarget?: (pick: Pick, point: Pt) => boolean;
   /** The active brush removes things: the target under the pointer is tinted red. */
   removing?: boolean;
+  /** Edit target held under the pointer; no mutation happens until release. */
+  pressed?: Pick;
   /** The open port waiting to be connected to a place. */
   selected?: { tid: string; index: number };
   /** The place waiting to be connected to an open port. */
@@ -112,6 +113,7 @@ export class NetView {
   private rangeKind?: NodeKind;
   private rangeViewport?: { x: number; y: number; width: number; height: number };
   private readonly ghostLayer = new Container();
+  private readonly removalBackground = new Graphics();
   private readonly ghostArcLayer = new Graphics();
   private readonly ghostPlaceLayer = new Graphics();
   private readonly arcLayer = new Graphics();
@@ -119,6 +121,7 @@ export class NetView {
   private readonly placeLayer = new Graphics();
   private readonly tokenLayer = new Graphics();
   private readonly overlayLayer = new Graphics();
+  private readonly buildPreview = new Graphics();
   private readonly rewardLayer = new Container();
   private rewardVersion = -1;
   private rewards: RewardNode[] = [];
@@ -130,17 +133,14 @@ export class NetView {
   private readonly overflowTexts = new Map<string, Text>();
   private readonly transitions = new Map<string, TransitionNode>();
   private readonly routes = new Map<string, ArcRoute>();
-  private readonly layouts = new Map<string, { portrait: boolean; bar: BarSize }>();
+  private readonly layouts = new Map<string, ReturnType<typeof transitionLayout>>();
+  private readonly previewLabels = new Container();
   private stubs: PortStub[] = [];
   private readonly placeDeniedAt = new Map<string, number>();
   private ripples: { x: number; y: number; at: number }[] = [];
-  /** Transition bars stand across the flow direction: vertical in landscape, horizontal in portrait. */
-  private readonly bar: BarSize;
-
   constructor(private readonly game: Game) {
-    this.bar = game.portrait ? { w: TRANSITION_H, h: TRANSITION_W } : { w: TRANSITION_W, h: TRANSITION_H };
     this.ghostLayer.alpha = GHOST_ALPHA;
-    this.ghostLayer.addChild(this.ghostArcLayer, this.ghostPlaceLayer);
+    this.ghostLayer.addChild(this.removalBackground, this.ghostArcLayer, this.ghostPlaceLayer);
     this.rangeArea.mask = this.rangeMask;
     this.rangeLayer.addChild(this.rangeBackground, this.rangeArea, this.rangeMask, this.collisionArea);
     this.rangeLayer.visible = false;
@@ -156,7 +156,11 @@ export class NetView {
       this.overlayLayer,
       this.rewardLayer,
     );
-    this.labelLayer.addChild(this.staticLabels);
+    this.labelLayer.addChild(this.staticLabels, this.previewLabels);
+    this.buildPreview.label = "build-preview";
+    this.buildPreview.alpha = 0.65;
+    this.previewLabels.alpha = 0.65;
+    this.overlayLayer.addChild(this.buildPreview);
     game.sim.onFire((e) => {
       const n = this.transitions.get(e.transitionId);
       if (n) n.firedAt = game.sim.time;
@@ -166,6 +170,11 @@ export class NetView {
   update(dt: number, viewport: { x: number; y: number; width: number; height: number }): void {
     const now = this.game.sim.time;
     if (this.builtVersion !== this.game.sim.net.version) this.buildStatic();
+    this.removalBackground.clear();
+    if (this.overlay.removing && !this.game.complete) {
+      this.removalBackground.rect(viewport.x, viewport.y, viewport.width, viewport.height)
+        .fill({ color: THEME.removal, alpha: 0.18 });
+    }
     this.updateBuildArea(dt, viewport);
     this.drawPlaces();
     for (const n of this.transitions.values()) this.drawTransition(n, now, dt);
@@ -251,7 +260,7 @@ export class NetView {
       }
       return best;
     };
-    const stub = closest(this.stubs, (s) => Math.hypot(s.plug.x - p.x, s.plug.y - p.y), PLUG_RADIUS + slop);
+    const stub = closest(this.stubs, (s) => Math.hypot(s.plug.x - p.x, s.plug.y - p.y), 8 + slop);
     if (stub) return { kind: "port", tid: stub.tid, index: stub.index };
     const live = <T extends { ghost?: boolean }>(m: Map<string, T>) => [...m.values()].filter((x) => !x.ghost);
     const t = closest(
@@ -391,56 +400,15 @@ export class NetView {
     this.layouts.clear();
     this.stubs = [];
     for (const t of net.transitions.values()) {
-      const arcs = net.arcsOf(t.id);
-      const live = arcs.filter((arc) => !arc.ghost);
-      const directions = live.map((arc) => {
-        const place = net.pos(arc.from === t.id ? arc.to : arc.from);
-        const dx = Math.abs(place.x - t.x);
-        const dy = Math.abs(place.y - t.y);
-        return dy > dx ? "vertical" : dx > dy ? "horizontal" : "diagonal";
-      });
-      const portrait = directions.length && directions.every((direction) => direction === "vertical") ? true
-        : directions.length && directions.every((direction) => direction === "horizontal") ? false : this.game.portrait;
-      const bar = portrait ? { w: TRANSITION_H, h: TRANSITION_W } : { w: TRANSITION_W, h: TRANSITION_H };
-      this.layouts.set(t.id, { portrait, bar });
-      const length = portrait ? bar.w : bar.h;
-      const half = (portrait ? bar.h : bar.w) / 2;
-      const ports = (t.open ?? []).map((port, index) => ({
-        port, index, side: this.clearSide(t, port.dir === "in" ? -1 : 1),
-      }));
-      for (const sign of [-1, 1] as const) {
-        const side = arcs.filter((a) => (this.arcSide(t, a) || (a.to === t.id ? -1 : 1)) === sign);
-        const placeOf = (a: Arc) => net.pos(a.from === t.id ? a.to : a.from);
-        const across = (a: Arc) => (portrait ? placeOf(a).x : placeOf(a).y);
-        const sorted = [...side].sort((a, b) => across(a) - across(b));
-        const open = ports.filter((port) => port.side === sign);
-        const n = sorted.length + open.length;
-        const spacing = Math.min(16, length / Math.max(1, n));
-        const shiftOf = (i: number) => (i - (n - 1) / 2) * spacing;
-        sorted.forEach((arc, i) => {
-          this.routes.set(arc.id, arcRoute(net, bar, portrait, arc.from, arc.to, shiftOf(i)));
-        });
-        open.forEach(({ port, index }, i) => {
-          const shift = shiftOf(sorted.length + i);
-          const at = (along: number): Pt => (portrait ? { x: t.x + shift, y: t.y + along } : { x: t.x + along, y: t.y + shift });
-          this.stubs.push({ tid: t.id, index, port, edge: at(sign * half), plug: at(sign * (half + STUB_LENGTH)) });
-        });
-      }
+      const layout = transitionLayout(net, t, this.game.portrait);
+      this.layouts.set(t.id, layout);
+      for (const [id, route] of layout.routes) this.routes.set(id, route);
+      this.stubs.push(...layout.stubs);
     }
-  }
-
-  private arcSide(t: Transition, arc: Arc): -1 | 0 | 1 {
-    const place = this.game.sim.net.pos(arc.from === t.id ? arc.to : arc.from);
-    const along = this.layouts.get(t.id)!.portrait ? place.y - t.y : place.x - t.x;
-    return along < 0 ? -1 : along > 0 ? 1 : 0;
   }
 
   private clearSide(t: Transition, preferred: -1 | 1): -1 | 1 {
-    const counts = { [-1]: 0, [1]: 0 };
-    for (const arc of this.game.sim.net.arcsOf(t.id)) {
-      const side = this.arcSide(t, arc);
-      if (!arc.ghost && side !== 0) counts[side]++;
-    }
+    const counts = this.layouts.get(t.id)!.sideCounts;
     const other = preferred === -1 ? 1 : -1;
     return counts[preferred] > counts[other] ? other : preferred;
   }
@@ -463,23 +431,22 @@ export class NetView {
 
   /** Dangling stubs of open ports, each with a plug at its loose end. */
   private drawStubs(): void {
-    const g = this.stubLayer;
-    for (const s of this.stubs) {
-      const color = s.port.color ? TOKEN_COLORS[s.port.color] : THEME.ink;
-      const len = Math.hypot(s.plug.x - s.edge.x, s.plug.y - s.edge.y);
-      const ux = (s.plug.x - s.edge.x) / len;
-      const uy = (s.plug.y - s.edge.y) / len;
-      const loose = { x: s.plug.x - ux * PLUG_RADIUS, y: s.plug.y - uy * PLUG_RADIUS };
-      const pts = s.port.dir === "in" ? [loose, s.edge] : [s.edge, { x: loose.x - ux * 2, y: loose.y - uy * 2 }];
-      const label = this.drawArrow(g, pts, color, arcCount(s.port), 0.8);
-      if (label) this.staticLabels.addChild(label);
-      g.circle(s.plug.x, s.plug.y, PLUG_RADIUS).fill(THEME.background).stroke({ width: 3, color });
-      g.circle(s.plug.x, s.plug.y, 2.5).fill(color);
-    }
+    for (const s of this.stubs) this.drawStub(this.stubLayer, s, this.staticLabels);
+  }
+
+  private drawStub(g: Graphics, s: PortStub, labels: Container, color = s.port.color ? TOKEN_COLORS[s.port.color] : THEME.ink): void {
+    const len = Math.hypot(s.plug.x - s.edge.x, s.plug.y - s.edge.y);
+    const ux = (s.plug.x - s.edge.x) / len;
+    const uy = (s.plug.y - s.edge.y) / len;
+    const loose = { x: s.plug.x - ux * PLUG_RADIUS, y: s.plug.y - uy * PLUG_RADIUS };
+    const pts = s.port.dir === "in" ? [loose, s.edge] : [s.edge, { x: loose.x - ux * 2, y: loose.y - uy * 2 }];
+    const label = this.drawArrow(g, pts, color, arcCount(s.port), 0.6, true);
+    if (label) labels.addChild(label);
+    this.dashedCircle(g, s.plug, PLUG_RADIUS, color, 2);
   }
 
   /** A polyline with `count` arrowheads at its end; returns a count label if there are too many to draw. */
-  private drawArrow(g: Graphics, pts: Pt[], color: number, count: number, size = 1): Text | undefined {
+  private drawArrow(g: Graphics, pts: Pt[], color: number, count: number, size = 1, dashed = false): Text | undefined {
     const b = pts[pts.length - 1];
     const a = pts[pts.length - 2] ?? b;
     const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
@@ -489,9 +456,18 @@ export class NetView {
     const spacing = 13 * size;
     const heads = Math.min(count, MAX_ARROWHEADS);
 
-    g.moveTo(pts[0].x, pts[0].y);
-    for (const q of pts.slice(1, -1)) g.lineTo(q.x, q.y);
-    g.lineTo(b.x - ux * head * 0.5, b.y - uy * head * 0.5).stroke({ width: 4, color, cap: "round", join: "round" });
+    if (dashed) {
+      const length = Math.max(0, len - head * 0.5);
+      for (let d = 0; d < length; d += 10) {
+        g.moveTo(a.x + ux * d, a.y + uy * d)
+          .lineTo(a.x + ux * Math.min(d + 5, length), a.y + uy * Math.min(d + 5, length));
+      }
+      g.stroke({ width: 2, color, cap: "round" });
+    } else {
+      g.moveTo(pts[0].x, pts[0].y);
+      for (const q of pts.slice(1, -1)) g.lineTo(q.x, q.y);
+      g.lineTo(b.x - ux * head * 0.5, b.y - uy * head * 0.5).stroke({ width: 4, color, cap: "round", join: "round" });
+    }
     for (let i = 0; i < heads; i++) {
       const tx = b.x - ux * spacing * i;
       const ty = b.y - uy * spacing * i;
@@ -687,13 +663,69 @@ export class NetView {
     return portrait ? { x: across, y: along } : { x: along, y: across };
   }
 
+  private drawBuildPreview(build: NonNullable<Overlay["build"]>, position: Pt, invalid: boolean, existingPlace?: string): void {
+    const net = this.game.sim.net;
+    const g = this.buildPreview;
+    const ports = [build.connection, build.bridgeTo]
+      .filter((port): port is NonNullable<typeof port> => port !== undefined)
+      .filter((port, index, all) => all.findIndex((other) => other.tid === port.tid && other.index === port.index) === index);
+    const transitions = [...new Set(ports.map((port) => port.tid))].flatMap((id) => {
+      const t = net.transitions.get(id);
+      return t ? [t] : [];
+    });
+    const arcs = transitions.flatMap((t) => net.arcsOf(t.id));
+    const placeIds = new Set(arcs.map((arc) => net.places.has(arc.from) ? arc.from : arc.to));
+    if (build.fromPlace) placeIds.add(build.fromPlace);
+    if (existingPlace) placeIds.add(existingPlace);
+    const places = [...placeIds].flatMap((id) => {
+      const p = net.places.get(id);
+      return p ? [p] : [];
+    });
+    const proposed = new Net({ places, transitions, arcs });
+    const newArcs: Arc[] = [];
+    const color = invalid ? THEME.warn : THEME.ink;
+    if (build.kind === "place") {
+      const id = existingPlace ?? proposed.freshId("previewPlace");
+      if (!existingPlace) proposed.addPlace({ id, ...position, capacity: build.capacity ?? 1, marking: [] });
+      for (const port of ports.sort((a, b) => b.index - a.index)) {
+        const t = proposed.transitions.get(port.tid);
+        if (t && !t.ghost && t.open?.[port.index]) newArcs.push(proposed.connect(t.id, port.index, id));
+      }
+      if (!existingPlace) {
+        g.circle(position.x, position.y, placeRadius(build.capacity ?? 1))
+          .fill(THEME.placeFill).stroke({ width: 5, color });
+      }
+    } else {
+      const id = proposed.freshId("previewTransition");
+      proposed.addTransition({ id, ...position, kind: "normal", open: build.ports ?? [] });
+      const t = proposed.transitions.get(id)!;
+      const input = t.open!.findIndex((port) => port.dir === "in");
+      if (build.fromPlace && proposed.places.has(build.fromPlace) && input !== -1) {
+        newArcs.push(proposed.connect(id, input, build.fromPlace));
+      }
+      const layout = transitionLayout(proposed, t, this.game.portrait);
+      const { w, h } = layout.bar;
+      g.roundRect(position.x - w / 2, position.y - h / 2, w, h, 6).fill(color);
+      for (const stub of layout.stubs) this.drawStub(g, stub, this.previewLabels, invalid ? THEME.warn : undefined);
+    }
+    for (const arc of newArcs) {
+      const tid = proposed.transitions.has(arc.from) ? arc.from : arc.to;
+      const route = transitionLayout(proposed, proposed.transitions.get(tid)!, this.game.portrait).routes.get(arc.id)!;
+      const pts = outsidePlace(route.pts, placeRadius(proposed.places.get(route.placeId)!.capacity));
+      const label = this.drawArrow(g, route.fromPlace ? pts : pts.reverse(),
+        invalid ? THEME.warn : arc.color ? TOKEN_COLORS[arc.color] : THEME.ink, arcCount(arc));
+      if (label) this.previewLabels.addChild(label);
+    }
+  }
+
   /** Build range, preview, highlights of the active brush's targets and denied-tap ripples. */
   private drawOverlay(now: number): void {
     const g = this.overlayLayer.clear();
+    this.buildPreview.clear();
+    for (const label of this.previewLabels.removeChildren()) label.destroy();
     const net = this.game.sim.net;
     const o = this.overlay;
     const pulse = 0.5 + 0.5 * Math.sin(now * 6);
-    const { w, h } = this.bar;
     const hover = o.pointer && !this.game.complete ? this.pick(o.pointer) : undefined;
     const selectedTransition = o.selected && net.transitions.get(o.selected.tid);
     const selectedPlace = o.selectedPlace && net.places.get(o.selectedPlace);
@@ -704,9 +736,16 @@ export class NetView {
       g.circle(connectionOrigin.x, connectionOrigin.y, this.game.connectionRange(connectionOrigin)).stroke({ width: 3, color: THEME.arc, alpha: 0.7 });
     }
 
-    if (o.build) {
-      if (o.pointer && hover?.kind === "empty") {
-        const { x, y } = o.pointer;
+    if (o.connection) {
+      const { pid, ...connection } = o.connection;
+      const place = net.places.get(pid);
+      if (place && !place.ghost && net.transitions.get(connection.tid)?.open?.[connection.index]) {
+        this.drawBuildPreview({ kind: "place", connection }, place,
+          !this.game.connect(connection.tid, connection.index, pid, false), pid);
+      }
+    } else if (o.build) {
+      if (o.pointer && (hover?.kind === "empty" || o.build.position)) {
+        const { x, y } = o.build.position ?? o.pointer;
         if (!connectionOrigin) g.circle(x, y, o.build.kind === "transition" ? this.game.connectionRange()
           : connectionRange({ x, y, capacity: o.build.capacity ?? 1 })).stroke({ width: 3, color: THEME.arc, alpha: 0.7 });
         const connection = o.build.connection;
@@ -714,19 +753,7 @@ export class NetView {
           || (o.build.canPlace && !o.build.canPlace(x, y))
           || (connection && !this.game.canConnectAt(connection.tid, connection.index, x, y))
           || (o.build.fromPlace && !this.game.canBuildConnectedTransition(o.build.fromPlace, x, y));
-        const color = invalid ? THEME.warn : THEME.ink;
-        if (o.build.kind === "place") g.circle(x, y, placeRadius(o.build.capacity)).fill({ color: THEME.placeFill, alpha: 0.6 }).stroke({ width: 5, color, alpha: 0.6 });
-        else {
-          for (const dir of [-1, 1]) {
-            if (!o.build.ports?.some((port) => (port.dir === "in") === (dir < 0))) continue;
-            const half = (this.game.portrait ? h : w) / 2;
-            const [dx, dy] = this.game.portrait ? [0, dir] : [dir, 0];
-            g.moveTo(x + dx * half, y + dy * half)
-              .lineTo(x + dx * (half + STUB_LENGTH), y + dy * (half + STUB_LENGTH))
-              .stroke({ width: 4, color, alpha: 0.4 });
-          }
-          g.roundRect(x - w / 2, y - h / 2, w, h, 6).fill({ color, alpha: 0.6 });
-        }
+        this.drawBuildPreview(o.build, { x, y }, !!invalid);
       }
     }
 
@@ -745,7 +772,7 @@ export class NetView {
         g.stroke({ width: width + 6, color, alpha: alpha * 0.6, cap: "round", join: "round" });
       } else if (pick.kind === "port") {
         const s = this.stubs.find((x) => x.tid === pick.tid && x.index === pick.index);
-        if (s) g.circle(s.plug.x, s.plug.y, PLUG_RADIUS + 6).stroke({ width, color, alpha });
+        if (s) this.dashedCircle(g, s.plug, PLUG_RADIUS + 4, color, width, alpha);
       }
     };
 
@@ -763,11 +790,14 @@ export class NetView {
     if (hover && hover.kind !== "empty" && (o.hoverAction?.(hover) ?? false)) {
       ring(hover, o.removing ? THEME.removal : THEME.ink, 0.5 + 0.35 * pulse, 4 + pulse);
     }
+    if (o.removing && o.pressed && o.target?.(o.pressed)) {
+      ring(o.pressed, THEME.removal, 0.9, 8);
+    }
 
     if (selectedPlace && !selectedPlace.ghost) {
       g.circle(selectedPlace.x, selectedPlace.y, placeRadius(selectedPlace.capacity) + 10 + 3 * pulse)
         .stroke({ width: 3, color: THEME.ink, alpha: 0.65 + 0.25 * pulse });
-      if (o.pointer) {
+      if (o.pointer && this.buildPreview.context.instructions.length === 0) {
         g.moveTo(selectedPlace.x, selectedPlace.y).lineTo(o.pointer.x, o.pointer.y)
           .stroke({ width: 3, color: THEME.ink, alpha: 0.35, cap: "round" });
       }
@@ -778,13 +808,13 @@ export class NetView {
       const selected = o.selected?.tid === s.tid && o.selected.index === s.index;
       if ((selectedPlace || (selectedTransition && !selected && this.game.level.tools?.place))
         && !o.target?.({ kind: "port", tid: s.tid, index: s.index })) {
-        g.circle(s.plug.x, s.plug.y, PLUG_RADIUS + 2).fill(THEME.background)
-          .stroke({ width: 2, color: THEME.muted });
+        g.circle(s.plug.x, s.plug.y, PLUG_RADIUS + 2).fill(THEME.background);
+        this.dashedCircle(g, s.plug, PLUG_RADIUS, THEME.muted, 2);
         continue;
       }
-      const r = PLUG_RADIUS + 4 + (selected ? 4 + 3 * pulse : 2 * pulse);
-      g.circle(s.plug.x, s.plug.y, r).stroke({ width: selected ? 3 : 2, color: THEME.ink, alpha: selected ? 0.9 : 0.25 });
-      if (selected && o.pointer) {
+      const r = PLUG_RADIUS + (selected ? 4 + 2 * pulse : 1 + pulse);
+      this.dashedCircle(g, s.plug, r, THEME.ink, selected ? 2 : 1.5, selected ? 0.9 : 0.25);
+      if (selected && o.pointer && this.buildPreview.context.instructions.length === 0) {
         g.moveTo(s.plug.x, s.plug.y).lineTo(o.pointer.x, o.pointer.y).stroke({ width: 3, color: THEME.ink, alpha: 0.35, cap: "round" });
       }
     }
@@ -794,6 +824,15 @@ export class NetView {
       const k = (now - r.at) / (SHAKE_TIME * 1.5);
       g.circle(r.x, r.y, 10 + k * 26).stroke({ width: 3, color: THEME.warn, alpha: 1 - k });
     }
+  }
+
+  private dashedCircle(g: Graphics, center: Pt, radius: number, color: number, width: number, alpha = 1): void {
+    for (let i = 0; i < 4; i++) {
+      const start = i * Math.PI / 2;
+      g.moveTo(center.x + Math.cos(start) * radius, center.y + Math.sin(start) * radius)
+        .arc(center.x, center.y, radius, start, start + Math.PI / 3);
+    }
+    g.stroke({ width, color, alpha });
   }
 
   /** Empty circles downstream of a goal sink, one per token still wanted; a check mark once resolved. */

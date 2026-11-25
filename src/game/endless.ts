@@ -12,7 +12,7 @@ export const endless: Level = {
   tools: { place: true, kits: [relay], remove: true, auto: true, capacity: true },
   net: {
     places: [
-      { id: "starterPlace", x: 400, y: 400, capacity: 19, marking: [] },
+      { id: "starterPlace", x: 400, y: 400, capacity: 19, marking: [], indestructible: true },
       { id: "starterDestination", x: 800, y: 400, capacity: 7, marking: [] },
     ],
     transitions: [

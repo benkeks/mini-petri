@@ -41,6 +41,7 @@ async function main(): Promise<void> {
       if (game.complete) return;
       game.paused = !game.paused;
       navigation.cancel();
+      controller.cancelPress();
     },
     selectBrush: (b) => controller.setBrush(b),
     focusSink: (sinkId) => {
@@ -103,6 +104,7 @@ async function main(): Promise<void> {
 
   function requestRestart(): void {
     navigation.cancel();
+    controller.cancelPress();
     controller.move();
     mousePosition = undefined;
     hud.showRestartConfirmation();
@@ -121,6 +123,8 @@ async function main(): Promise<void> {
     view.root.position.set(camera.x, camera.y);
   }
 
+  let cameraScreen = { width: 0, height: 0 };
+
   function layout(reset = false): void {
     const w = app.screen.width;
     const h = app.screen.height;
@@ -134,7 +138,12 @@ async function main(): Promise<void> {
     const { top, bottom } = hud.layout(w, h);
     const viewport = { x: 0, y: top, width: Math.max(1, w), height: Math.max(1, h - top - bottom) };
     updateBounds();
-    camera.layout(viewport, game.size, reset, isUltraWide(w, h));
+    if (reset || w !== cameraScreen.width || h !== cameraScreen.height) {
+      camera.layout(viewport, game.size, reset, isUltraWide(w, h));
+      cameraScreen = { width: w, height: h };
+    } else {
+      camera.viewport = viewport;
+    }
     applyCamera();
   }
 
@@ -154,6 +163,8 @@ async function main(): Promise<void> {
   const updatePointer = (p: Pt) => controller.move(camera.toWorld(p));
   let mousePosition: Pt | undefined;
   const modalPointers = new Set<number>();
+  const worldPointers = new Set<number>();
+  let editingPointer: number | undefined;
 
   app.canvas.addEventListener("pointerdown", (event) => {
     if (hud.confirming) {
@@ -163,9 +174,20 @@ async function main(): Promise<void> {
     if (game.complete || event.button !== 0) return;
     const p = screenPoint(event);
     if (!inViewport(p)) return;
+    if (event.pointerType !== "mouse") mousePosition = undefined;
     const pick = view.pick(camera.toWorld(p));
     const brush = controller.brush.kind;
-    navigation.down(event.pointerId, p, pick.kind === "empty" && brush !== "kit");
+    const touch = event.pointerType === "touch" ? { screen: p, time: event.timeStamp } : undefined;
+    const editing = worldPointers.size === 0 && controller.press(camera.toWorld(p), touch);
+    worldPointers.add(event.pointerId);
+    if (worldPointers.size > 1) {
+      controller.cancelPress();
+      editingPointer = undefined;
+    } else {
+      editingPointer = editing ? event.pointerId : undefined;
+      camera.pan(0, 0);
+    }
+    navigation.down(event.pointerId, p, !editing && pick.kind === "empty" && brush !== "kit", editing);
     app.canvas.setPointerCapture(event.pointerId);
     updatePointer(p);
     event.preventDefault();
@@ -184,35 +206,44 @@ async function main(): Promise<void> {
     controller.move();
   });
   app.canvas.addEventListener("pointerup", (event) => {
+    worldPointers.delete(event.pointerId);
+    const editing = editingPointer === event.pointerId;
+    if (editing) editingPointer = undefined;
     if (modalPointers.delete(event.pointerId) || game.complete || hud.confirming) {
       navigation.cancel(event.pointerId);
+      controller.cancelPress();
       return;
     }
     const p = screenPoint(event);
     const tap = navigation.up(event.pointerId, p);
     if (tap && inViewport(tap)) {
-      const oldTransition = controller.selected?.tid;
-      const oldPlace = controller.selectedPlace;
-      controller.tap(camera.toWorld(tap), event.pointerType === "touch" ? { screen: tap, time: event.timeStamp } : undefined);
+      const touch = event.pointerType === "touch" ? { screen: tap, time: event.timeStamp } : undefined;
+      if (editing) controller.release(camera.toWorld(tap), touch);
+      else controller.tap(camera.toWorld(tap), touch);
       updateBounds();
-      const selected = controller.selected;
-      const place = controller.selectedPlace;
-      if (selected && (selected.tid !== oldTransition || oldPlace)) {
-        const transition = game.sim.net.transitions.get(selected.tid);
-        if (transition && !transition.ghost && transition.open?.[selected.index]) camera.showConnection(transition, game.connectionRange(transition));
-      } else if (place && (place !== oldPlace || oldTransition)) {
-        const node = game.sim.net.places.get(place);
-        if (node && !node.ghost) camera.showConnection(node, game.connectionRange(node));
-      }
       updatePointer(tap);
+    } else {
+      controller.cancelPress();
+      controller.move();
     }
+    if (event.pointerType === "touch") controller.move();
     applyCamera();
   });
   app.canvas.addEventListener("pointercancel", (event) => {
+    worldPointers.delete(event.pointerId);
+    if (editingPointer === event.pointerId) editingPointer = undefined;
+    controller.cancelPress();
+    controller.move();
     modalPointers.delete(event.pointerId);
     navigation.cancel(event.pointerId);
   });
   app.canvas.addEventListener("lostpointercapture", (event) => {
+    worldPointers.delete(event.pointerId);
+    if (editingPointer === event.pointerId) {
+      editingPointer = undefined;
+      controller.cancelPress();
+      controller.move();
+    }
     modalPointers.delete(event.pointerId);
     navigation.cancel(event.pointerId);
   });
@@ -248,7 +279,7 @@ async function main(): Promise<void> {
       app.canvas.style.cursor = controller.interactive(pick) ? "pointer"
         : pick.kind === "empty" && controller.brush.kind !== "kit" ? "grab" : "default";
     }
-    controller.sync();
+    controller.sync(dt);
     if (hud.update(dt, (point) => ({ x: point.x * camera.scale + camera.x, y: point.y * camera.scale + camera.y }))) layout();
     const topLeft = camera.toWorld({ x: 0, y: 0 });
     view.update(ticker.elapsedMS / 1000, {

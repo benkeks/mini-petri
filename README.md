@@ -29,8 +29,13 @@ Supported smartphones also offer a fullscreen button.
 ### Building and upgrades
 
 Use the bottom toolbar; tap the selected tool again or press Escape to return to firing.
+Hold to preview a build, drag to adjust it, and release at a valid position to commit.
+Previews show the node's colored connectors and proposed arcs, without moving the camera.
+Release outside the play area or press Escape to cancel.
+Successful builds and upgrades return to the default tool; removal stays active.
 
 - **Connect:** tap a loose plug and a place in either order.
+  Alternatively, drag from a plug or place to the other endpoint; drag into empty space to build a connected place or relay.
   With a plug selected, tap empty buildable space to add a connected one-token place, or another plug to bridge both through a new place when space allows.
   Reachable targets are highlighted.
   You can tap a highlighted transition instead of its plug to choose its first available input, then output.
@@ -39,7 +44,11 @@ Use the bottom toolbar; tap the selected tool again or press Escape to return to
 - **Auto** (clock) automates a transition; further uses make it faster.
 - **Capacity** (plus, unlocked at epoch 10) enlarges a place and increases its building and connection ranges.
 - **Remove** (cross) removes connections or player nodes, but not sources or sinks.
+  The first source's large output place is also protected.
+  Deleting a finite source's output place returns matching settled tokens to its remaining supply, up to its starting amount.
   Cut connections leave reusable plugs; tokens already in flight finish their trips.
+  Its reddish background marks deletion mode; hold to preview a deletion and drag off the target before releasing to abort.
+  Drag empty space to pan without leaving deletion mode.
 
 New transitions cannot fire until every plug is connected.
 An unconnected one-token place expires after two idle minutes; connecting or upgrading it prevents this.
@@ -60,6 +69,7 @@ Ordinary building and wiring are free.
 Paid upgrades start at 5 coins and share a price that rises by 1 after each purchase.
 Finite sources award coins when exhausted; removing upgraded nodes refunds part of their cost.
 When a filled sink disappears, choose one of the two rewards at its position within two minutes.
+Letting the choice expire gives one coin instead.
 Rewards include coins, free upgrades and limited-use transition kits.
 Free upgrades are used first; kits still cost their displayed price when built or used for conversion.
 After your first lost life, the heart tool offers replacement lives.

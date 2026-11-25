@@ -1,5 +1,8 @@
-import type { Net } from "../core/net";
+import type { Net, Port, Transition } from "../core/net";
 import { placeRadius, TOKEN_SPACING } from "../game/placeSize";
+import { TRANSITION_H, TRANSITION_W } from "./style";
+
+const OPEN_PORT_LENGTH = 46;
 
 export interface Pt {
   x: number;
@@ -86,6 +89,54 @@ export function arcRoute(net: Net, bar: BarSize, portrait: boolean, from: string
     pts[n - 1] = { x: b.x - ux * e, y: b.y - uy * e };
   }
   return { pts, placeId, fromPlace };
+}
+
+/** Shared by live nodes and proposed builds so bars, ports and arcs agree before and after release. */
+export function transitionLayout(net: Net, t: Transition, defaultPortrait: boolean) {
+  const arcs = net.arcsOf(t.id);
+  const live = arcs.filter((arc) => !arc.ghost);
+  const placeOf = (arc: (typeof arcs)[number]) => net.pos(arc.from === t.id ? arc.to : arc.from);
+  const directions = live.map((arc) => {
+    const place = placeOf(arc);
+    const dx = Math.abs(place.x - t.x), dy = Math.abs(place.y - t.y);
+    return dy > dx ? "vertical" : dx > dy ? "horizontal" : "diagonal";
+  });
+  const portrait = directions.length && directions.every((direction) => direction === "vertical") ? true
+    : directions.length && directions.every((direction) => direction === "horizontal") ? false : defaultPortrait;
+  const bar = portrait ? { w: TRANSITION_H, h: TRANSITION_W } : { w: TRANSITION_W, h: TRANSITION_H };
+  const sideOf = (arc: (typeof arcs)[number]) => {
+    const place = placeOf(arc);
+    const along = portrait ? place.y - t.y : place.x - t.x;
+    return along < 0 ? -1 : along > 0 ? 1 : 0;
+  };
+  const sideCounts = { [-1]: 0, [1]: 0 };
+  for (const arc of live) {
+    const side = sideOf(arc);
+    if (side) sideCounts[side]++;
+  }
+  const ports = (t.open ?? []).map((port, index) => {
+    const preferred = port.dir === "in" ? -1 : 1;
+    const other = preferred === -1 ? 1 : -1;
+    return { port, index, side: sideCounts[preferred] > sideCounts[other] ? other : preferred };
+  });
+  const routes = new Map<string, ArcRoute>();
+  const stubs: { tid: string; index: number; port: Port; edge: Pt; plug: Pt }[] = [];
+  for (const sign of [-1, 1]) {
+    const sorted = arcs.filter((arc) => (sideOf(arc) || (arc.to === t.id ? -1 : 1)) === sign)
+      .sort((a, b) => (portrait ? placeOf(a).x - placeOf(b).x : placeOf(a).y - placeOf(b).y));
+    const open = ports.filter((port) => port.side === sign);
+    const n = sorted.length + open.length;
+    const spacing = Math.min(16, (portrait ? bar.w : bar.h) / Math.max(1, n));
+    const shiftOf = (i: number) => (i - (n - 1) / 2) * spacing;
+    sorted.forEach((arc, i) => routes.set(arc.id, arcRoute(net, bar, portrait, arc.from, arc.to, shiftOf(i))));
+    open.forEach(({ port, index }, i) => {
+      const shift = shiftOf(sorted.length + i);
+      const half = (portrait ? bar.h : bar.w) / 2;
+      const at = (along: number): Pt => portrait ? { x: t.x + shift, y: t.y + along } : { x: t.x + along, y: t.y + shift };
+      stubs.push({ tid: t.id, index, port, edge: at(sign * half), plug: at(sign * (half + OPEN_PORT_LENGTH)) });
+    });
+  }
+  return { portrait, bar, sideCounts, routes, stubs };
 }
 
 export function polylineLength(pts: Pt[]): number {

@@ -1,4 +1,4 @@
-import { COLORS, expand, total, type Color } from "../core/multiset";
+import { COLORS, expand, total, type Color, type Multiset } from "../core/multiset";
 import { arcCount, Net, type Place, type Transition } from "../core/net";
 import { Simulation } from "../core/simulation";
 import type { Goal, Kit, Level } from "./level";
@@ -135,6 +135,7 @@ export class Game {
   readonly resolved = new Map<string, number>();
   /** Exhausted sources and the time their supply ran out. */
   readonly exhausted = new Map<string, number>();
+  private readonly rewardedSources = new Set<string>();
   /** Transitions that timed out and the time their countdown expired. */
   readonly failed = new Map<string, number>();
   /** Creation times of spawned endless transitions, for their entrance animation. */
@@ -192,7 +193,10 @@ export class Game {
         if (transition.supply === 0) {
           this.countdowns.delete(transition.id);
           this.exhausted.set(transition.id, e.time);
-          this.changeCoins(EXHAUSTED_SOURCE_REWARD, transition);
+          if (!this.rewardedSources.has(transition.id)) {
+            this.rewardedSources.add(transition.id);
+            this.changeCoins(EXHAUSTED_SOURCE_REWARD, transition);
+          }
         }
       }
       const goals = this.goalsOf(e.transitionId);
@@ -357,7 +361,10 @@ export class Game {
 
   private spawnOffer(position: { x: number; y: number }, at: number): void {
     const expiresAt = at + POWERUP_LIFETIME;
-    if (this.sim.time >= expiresAt) return;
+    if (this.sim.time >= expiresAt) {
+      this.changeCoins(1, position);
+      return;
+    }
     const eligible = POWERUPS.filter((powerup) => powerup.kind !== "life" && this.endlessEpoch >= powerup.afterEpoch);
     const draw = (): Powerup => {
       const weights = eligible.map((powerup) => powerup.kind === "coins" && this.coins < 50 ? 3 : 1);
@@ -381,6 +388,7 @@ export class Game {
       if (this.sim.time < offer.expiresAt) continue;
       this.offers.delete(offer.id);
       this.offerVersion++;
+      this.changeCoins(1, offer);
     }
   }
 
@@ -456,18 +464,34 @@ export class Game {
 
   /** Connects open ports through a new nearby place, or checks placement without mutation. */
   connectPorts(from: { tid: string; index: number }, to: { tid: string; index: number }, apply = true, near?: { x: number; y: number }): boolean {
+    if (this.complete || this.paused || !this.level.tools?.place) return false;
     const net = this.sim.net;
-    const source = net.transitions.get(from.tid);
-    const target = net.transitions.get(to.tid);
-    if (this.complete || this.paused || !this.level.tools?.place || !source || !target
-      || source.ghost || target.ghost || !source.open?.[from.index] || !target.open?.[to.index]
-      || Math.hypot(source.x - target.x, source.y - target.y) > CONNECTION_RANGE * 2) return false;
     if (this.connectorSpaceVersion !== net.version) {
       this.connectorSpace.clear();
       this.connectorSpaceVersion = net.version;
     }
     const key = JSON.stringify([from.tid, from.index, to.tid, to.index]);
     if (!apply && this.connectorSpace.has(key)) return this.connectorSpace.get(key) === true;
+    const position = this.connectorPlacePosition(from, to, near);
+    this.connectorSpace.set(key, !!position);
+    if (!position) return false;
+    if (!apply) return true;
+    const id = this.buildPlace(position.x, position.y, 1);
+    if (id === undefined) throw new Error("Could not build a validated connector place");
+    const ports = from.tid === to.tid && from.index === to.index ? [from] : [from, to];
+    for (const port of ports.sort((a, b) => b.index - a.index)) net.connect(port.tid, port.index, id);
+    this.syncUnusedPlaces();
+    return true;
+  }
+
+  /** Shared exact placement for connector previews and committed bridges. */
+  connectorPlacePosition(from: { tid: string; index: number }, to: { tid: string; index: number }, near?: { x: number; y: number }): { x: number; y: number } | undefined {
+    const net = this.sim.net;
+    const source = net.transitions.get(from.tid);
+    const target = net.transitions.get(to.tid);
+    if (this.complete || this.paused || !this.level.tools?.place || !source || !target
+      || source.ghost || target.ghost || !source.open?.[from.index] || !target.open?.[to.index]
+      || Math.hypot(source.x - target.x, source.y - target.y) > CONNECTION_RANGE * 2) return undefined;
     const pointer = near ?? target;
     const valid = (p: { x: number; y: number }) => this.canConnectAt(from.tid, from.index, p.x, p.y)
       && this.canConnectAt(to.tid, to.index, p.x, p.y) && !this.placementIssue("place", p.x, p.y);
@@ -507,22 +531,10 @@ export class Game {
             ({ x: circle.x + Math.cos(a) * r, y: circle.y + Math.sin(a) * r })));
       });
       const found = candidates.sort((a, b) => Math.hypot(a.x - pointer.x, a.y - pointer.y) - Math.hypot(b.x - pointer.x, b.y - pointer.y)).find(valid);
-      if (!found) {
-        this.connectorSpace.set(key, false);
-        return false;
-      }
+      if (!found) return undefined;
       position = found;
     }
-    if (!apply) {
-      this.connectorSpace.set(key, true);
-      return true;
-    }
-    const id = this.buildPlace(position.x, position.y, 1);
-    if (id === undefined) throw new Error("Could not build a validated connector place");
-    const ports = from.tid === to.tid && from.index === to.index ? [from] : [from, to];
-    for (const port of ports.sort((a, b) => b.index - a.index)) net.connect(port.tid, port.index, id);
-    this.syncUnusedPlaces();
-    return true;
+    return position;
   }
 
   /** Available color-preserving one-to-one kit, if building it is enabled. */
@@ -667,9 +679,10 @@ export class Game {
       return true;
     }
     const p = net.places.get(id);
-    if (p && !p.ghost) {
+    if (p && !p.ghost && !p.indestructible) {
       if (apply) {
-        this.changeCoins(p.marking.length, p);
+        const returned = this.returnSourceTokens(p);
+        this.changeCoins(p.marking.length - returned, p);
         this.refundUpgrade(p);
         net.ghostPlace(id);
         this.syncUnusedPlaces();
@@ -677,6 +690,34 @@ export class Game {
       return true;
     }
     return false;
+  }
+
+  private returnSourceTokens(place: Place): number {
+    const net = this.sim.net;
+    const available: Multiset = {};
+    for (const color of place.marking) available[color] = (available[color] ?? 0) + 1;
+    const sources = new Set(net.arcsOf(place.id).filter((arc) => !arc.ghost && arc.to === place.id).map((arc) => arc.from));
+    for (const id of sources) {
+      const source = net.transitions.get(id);
+      if (!source || source.kind !== "source" || source.ghost || this.failed.has(id)
+        || source.supply === undefined || source.initialSupply === undefined) continue;
+      const outputs = net.outputs(id);
+      // Refund only complete emissions, never duplicating tokens emitted to another place.
+      if (outputs.some((arc) => arc.to !== place.id || !arc.color) || source.open?.some((port) => port.dir === "out")) continue;
+      const batch: Multiset = {};
+      for (const arc of outputs) {
+        if (arc.color) batch[arc.color] = (batch[arc.color] ?? 0) + arcCount(arc);
+      }
+      const colors = COLORS.filter((color) => (batch[color] ?? 0) > 0);
+      if (colors.length === 0) continue;
+      const returned = Math.min(source.initialSupply - source.supply,
+        ...colors.map((color) => Math.floor((available[color] ?? 0) / batch[color]!)));
+      if (returned <= 0) continue;
+      source.supply += returned;
+      for (const color of colors) available[color] = (available[color] ?? 0) - returned * batch[color]!;
+      if (this.exhausted.delete(id) && this.level.mode === "endless") this.startCountdown(id, SOURCE_IDLE, this.sim.time);
+    }
+    return place.marking.length - total(available);
   }
 
   /** Automates a manual transition, or speeds up one that is already automatic. */

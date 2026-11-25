@@ -7,7 +7,17 @@ import { POWERUPS } from "../src/game/powerups";
 import { brushesOf, Controller, type Brush } from "../src/input/controller";
 import { Hud, survivalPopupPosition, toolbarLayout } from "../src/render/hud";
 import { NetView } from "../src/render/netView";
-import { THEME } from "../src/render/style";
+import { THEME, TOKEN_COLORS } from "../src/render/style";
+
+function drawing(graphics: Graphics) {
+  return graphics.context.instructions.flatMap((instruction) =>
+    instruction.action === "fill" || instruction.action === "stroke" ? [{
+      action: instruction.action,
+      color: instruction.data.style.color,
+      width: instruction.action === "stroke" ? instruction.data.style.width : undefined,
+      path: instruction.data.path.instructions,
+    }] : []);
+}
 
 function balancePositions(view: NetView, game: Game, id: string, radius: number): number[][] {
   const transition = game.sim.net.transitions.get(id)!;
@@ -396,6 +406,168 @@ describe("toolbar layout", () => {
 });
 
 describe("build area", () => {
+  it.each([false, true].flatMap((portrait) => (["in", "out"] as const).flatMap((dir) =>
+    (["port-first", "place-first", "transition-body"] as const).map((order) => ({ portrait, dir, order })))))(
+    "previews the committed arc between existing nodes: $dir, $order, portrait=$portrait", ({ portrait, dir, order }) => {
+      const game = new Game({ ...level2, goals: [], net: {
+        places: [{ id: "place", x: 1000, y: 1000, capacity: 19, marking: [] }],
+        transitions: [{ id: "transition", x: 1220, y: 1000, kind: "normal", open: [{ dir, color: "yellow", count: 2 }] }],
+        arcs: [],
+      } });
+      game.setPortrait(portrait);
+      const view = new NetView(game);
+      const controller = new Controller(game, view);
+      const viewport = { x: 0, y: 0, width: 2400, height: 2400 };
+      view.update(0, viewport);
+      const port = portrait ? { x: 1000, y: 1220 + (dir === "in" ? -57 : 57) }
+        : { x: 1220 + (dir === "in" ? -57 : 57), y: 1000 };
+      const place = { x: 1000, y: 1000 };
+      const body = portrait ? { x: 1000, y: 1220 } : { x: 1220, y: 1000 };
+      const target = order === "port-first" ? place : order === "place-first" ? port : body;
+      controller.tap(order === "port-first" ? port : place);
+      const version = game.sim.net.version;
+      expect(controller.press(target)).toBe(true);
+      controller.sync();
+      view.update(0, viewport);
+      const proposed = drawing(view.root.children[8].children[0] as Graphics);
+      expect(proposed.filter((item) => item.action === "stroke" && item.width === 4)).toHaveLength(1);
+      expect(proposed[0].color).toBe(TOKEN_COLORS.yellow);
+      expect(game.sim.net.version).toBe(version);
+      controller.release(target);
+      controller.sync();
+      view.update(0, viewport);
+      expect(drawing(view.root.children[2] as Graphics)).toEqual(proposed);
+      expect(game.sim.net.places.size).toBe(1);
+      expect(game.sim.net.transitions.size).toBe(1);
+      view.root.destroy({ children: true });
+    });
+
+  it.each([false, true].flatMap((portrait) => [false, true].map((samePort) => ({ portrait, samePort }))))(
+    "previews the exact place and colored weighted bridge arcs, portrait=$portrait, samePort=$samePort", ({ portrait, samePort }) => {
+      const game = new Game({
+        ...level2, goals: [], net: { places: [], arcs: [], transitions: [
+          { id: "left", x: 1000, y: 1000, kind: "source", open: [{ dir: "out", color: "blue", count: 2 }] },
+          { id: "right", x: 1220, y: 1000, kind: "sink", open: [{ dir: "in", color: "red" }] },
+        ] },
+      });
+      game.setPortrait(portrait);
+      const view = new NetView(game);
+      const controller = new Controller(game, view);
+      const viewport = { x: 0, y: 0, width: 2400, height: 2400 };
+      view.update(0, viewport);
+      const source = portrait ? { x: 1000, y: 1057 } : { x: 1057, y: 1000 };
+      const target = samePort ? source : portrait ? { x: 1000, y: 1163 } : { x: 1163, y: 1000 };
+      controller.tap(source);
+      const version = game.sim.net.version;
+      controller.press(target);
+      controller.sync();
+      view.update(0, viewport);
+      const preview = view.root.children[8].children[0] as Graphics;
+      const proposed = drawing(preview);
+      expect(proposed[0].path[0].action).toBe("circle");
+      const arcs = proposed.slice(2);
+      expect(arcs.filter((item) => item.action === "stroke" && item.width === 4)).toHaveLength(samePort ? 1 : 2);
+      expect(arcs.some((item) => item.color === TOKEN_COLORS.blue)).toBe(true);
+      if (!samePort) expect(arcs.some((item) => item.color === TOKEN_COLORS.red)).toBe(true);
+      expect(game.sim.net.version).toBe(version);
+      expect(game.sim.net.places.size).toBe(0);
+      controller.release(target);
+      controller.sync();
+      view.update(0, viewport);
+      expect(drawing(view.root.children[2] as Graphics)).toEqual(arcs);
+      const place = [...game.sim.net.places.values()][0];
+      expect(proposed[0].path[0].data.slice(0, 2)).toEqual([place.x, place.y]);
+      expect(drawing(view.root.children[4] as Graphics)[0].path).toEqual(proposed[0].path);
+      view.root.destroy({ children: true });
+    });
+
+  it.each([false, true].flatMap((portrait) => ["split", "mix"].map((kitId) => ({ portrait, kitId }))))(
+    "previews each specific $kitId connector before building, portrait=$portrait", ({ portrait, kitId }) => {
+      const game = new Game({ ...level2, goals: [], net: {
+        places: [{ id: "anchor", x: 1000, y: 1000, marking: [] }], transitions: [], arcs: [],
+      } });
+      game.setPortrait(portrait);
+      const view = new NetView(game);
+      const controller = new Controller(game, view);
+      const kit = game.level.tools!.kits!.find((candidate) => candidate.id === kitId)!;
+      const point = { x: 1180, y: 1000 };
+      controller.setBrush({ kind: "kit", kit });
+      controller.press(point);
+      controller.sync();
+      view.update(0, { x: 0, y: 0, width: 2400, height: 2400 });
+      const preview = drawing(view.root.children[8].children[0] as Graphics);
+      expect(preview[0].path[0].action).toBe("roundRect");
+      expect(game.sim.net.transitions.size).toBe(0);
+      controller.release(point);
+      controller.sync();
+      view.update(0, { x: 0, y: 0, width: 2400, height: 2400 });
+      expect(drawing(view.root.children[3] as Graphics)).toEqual(preview.slice(1));
+      view.root.destroy({ children: true });
+    });
+
+  it.each([false, true])("previews a connected relay's actual orientation and input arc, portrait=%s", (portrait) => {
+    const game = new Game({ ...level2, goals: [], net: {
+      places: [{ id: "anchor", x: 1000, y: 1000, marking: [] }], transitions: [], arcs: [],
+    } });
+    game.setPortrait(portrait);
+    const view = new NetView(game);
+    const controller = new Controller(game, view);
+    const point = portrait ? { x: 1180, y: 1000 } : { x: 1000, y: 1180 };
+    controller.tap({ x: 1000, y: 1000 });
+    controller.press(point);
+    controller.sync();
+    const viewport = { x: 0, y: 0, width: 2400, height: 2400 };
+    view.update(0, viewport);
+    const preview = drawing(view.root.children[8].children[0] as Graphics);
+    expect(preview[0].path[0].data.slice(2, 4)).toEqual(portrait ? [22, 64] : [64, 22]);
+    const arcs = preview.filter((item) => item.action === "stroke" && item.width === 4);
+    expect(arcs).toHaveLength(1);
+    controller.release(point);
+    controller.sync();
+    view.update(0, viewport);
+    const actual = drawing(view.root.children[2] as Graphics).filter((item) => item.action === "stroke" && item.width === 4);
+    expect(actual).toEqual(arcs);
+    view.root.destroy({ children: true });
+  });
+
+  it("uses small dashed connectors without shrinking their hit tolerance", () => {
+    const game = new Game(level2);
+    game.sim.net.addTransition({ id: "plug", x: 1500, y: 1000, kind: "normal", open: [{ dir: "out", color: "red" }] });
+    const view = new NetView(game);
+    view.update(0, { x: 0, y: 0, width: 2000, height: 1400 });
+    const stubs = view.root.children[3] as Graphics;
+    const arcs = stubs.context.instructions.flatMap((instruction) =>
+      instruction.action === "stroke" ? instruction.data.path.instructions : [])
+      .filter((shape) => shape.action === "arc" && shape.data[0] === 1557 && shape.data[1] === 1000);
+    expect(arcs).toHaveLength(4);
+    expect(arcs.every((shape) => shape.data[2] === 5)).toBe(true);
+    expect(view.pick({ x: 1576, y: 1000 })).toEqual({ kind: "port", tid: "plug", index: 0 });
+    view.root.destroy({ children: true });
+  });
+
+  it("tints deletion mode and emphasizes only the held removable target", () => {
+    const game = new Game(level2);
+    const view = new NetView(game);
+    const controller = new Controller(game, view);
+    controller.setBrush({ kind: "remove" });
+    controller.press({ x: 280, y: 520 });
+    controller.sync();
+    view.update(0, { x: -300, y: -300, width: 1800, height: 1400 });
+    const tint = view.root.children[1].children[0] as Graphics;
+    expect(tint.context.instructions.some((instruction) =>
+      instruction.action === "fill" && instruction.data.style.color === THEME.removal)).toBe(true);
+    const overlay = view.root.children[8] as Graphics;
+    expect(overlay.context.instructions.some((instruction) =>
+      instruction.action === "stroke" && instruction.data.style.color === THEME.removal
+      && instruction.data.style.width === 8)).toBe(true);
+    expect(game.sim.net.places.get("pB")!.ghost).toBeFalsy();
+    controller.cancel();
+    controller.sync();
+    view.update(0, { x: -300, y: -300, width: 1800, height: 1400 });
+    expect(tint.context.instructions).toHaveLength(0);
+    view.root.destroy({ children: true });
+  });
+
   it("updates connection rings and reachable targets from either selected endpoint after capacity upgrades", () => {
     const definition = structuredClone(level2);
     for (const place of definition.net.places) {
@@ -502,7 +674,7 @@ describe("build area", () => {
     const mutedPlug = overlay.context.instructions.find((instruction) =>
       instruction.action === "stroke" && instruction.data.style.color === THEME.muted
       && instruction.data.path.instructions.some((shape) =>
-        shape.action === "circle" && shape.data[0] === plug.x && shape.data[1] === plug.y));
+        shape.action === "arc" && shape.data[0] === plug.x && shape.data[1] === plug.y));
     expect(mutedPlug).toBeDefined();
     view.root.destroy({ children: true });
   });

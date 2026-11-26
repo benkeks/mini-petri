@@ -532,8 +532,12 @@ describe("sink warning colors", () => {
       const fills = drawing(graphic).filter((instruction) => instruction.action === "fill");
       expect(fills.slice(0, colors.length).map((instruction) => instruction.color)).toEqual(colors.map((color) => TOKEN_COLORS[color]));
       expect(fills.at(-1)?.path.some((shape) => shape.action === "circle")).toBe(true);
+      controller.setBrush({ kind: "kit", kit: endless.tools!.kits![0] });
+      controller.selectedPlace = "starterPlace";
       graphic.emit("pointertap", new FederatedPointerEvent(new EventBoundary(hud.root)));
       expect(focus).toHaveBeenCalledWith("starterSink");
+      expect(controller.brush.kind).toBe("fire");
+      expect(controller.selectedPlace).toBeUndefined();
       game.sim.step(colors.includes("yellow") ? 121 : 61);
       hud["updateWarnings"]();
       expect(hud.root.getChildByLabel("danger-starterSink", true)).toBeNull();
@@ -553,6 +557,77 @@ describe("delivery HUD", () => {
     const icon = (color: Color) => hud.root.getChildByLabel(`delivery-${color}`, true) as Graphics;
     return { hud, view, icon };
   }
+
+  it("hops on gains and tilts on losses for both resource counters", () => {
+    const game = new Game(endless, Math.random, { survival: true });
+    const { hud, view } = makeHud(game);
+    hud["coinBaseX"] = 34;
+    hud["lifeBaseX"] = 88;
+    hud["resourceBaseY"] = 400;
+    hud["lives"].visible = true;
+    game["changeCoins"](20, { x: 0, y: 0 });
+    hud["updateResources"](0.09);
+    expect(hud["coins"].y).toBeCloseTo(393);
+    expect(hud["coinIcon"].y).toBeCloseTo(393);
+    expect(hud["coins"].rotation).toBe(0);
+
+    game["lifeBalance"] = 8;
+    expect(game.buyLife({ x: 0, y: 0 })).toBe(true);
+    hud["updateResources"](0.09);
+    expect(hud["coins"].rotation).toBeCloseTo(0.22);
+    expect(hud["coinIcon"].rotation).toBeCloseTo(0.22);
+    expect(hud["lives"].y).toBeCloseTo(393);
+    expect(hud["lifeIcon"].y).toBeCloseTo(393);
+
+    game["failTransition"]("starterSink", 0);
+    hud["updateResources"](0.09);
+    expect(hud["lives"].rotation).toBeCloseTo(0.22);
+    expect(hud["lifeIcon"].rotation).toBeCloseTo(0.22);
+    hud["updateResources"](0.18);
+    expect(hud["coins"].rotation).toBe(0);
+    expect(hud["lives"].rotation).toBe(0);
+    expect(hud["coins"].y).toBe(400);
+    expect(hud["lives"].y).toBe(400);
+    const life = POWERUPS.find((choice) => choice.kind === "life")!;
+    game.offers.set("heart", { id: "heart", x: 0, y: 0, expiresAt: 120, choices: [life, POWERUPS[0]] });
+    expect(game.collectOffer("heart", 0)).toBe(true);
+    hud["updateResources"](0.09);
+    expect(hud["lives"].y).toBeCloseTo(393);
+    hud.setGame(new Game(endless, Math.random, { survival: true }));
+    game["changeCoins"](1, { x: 0, y: 0 });
+    expect(hud["coinMotion"]).toBeUndefined();
+    expect(hud["lifeMotion"]).toBeUndefined();
+    hud.root.destroy({ children: true });
+    view.root.destroy({ children: true });
+  });
+
+  it("opens statistics from the delivery count and survival result", () => {
+    const game = new Game(endless, Math.random, { survival: true });
+    const view = new NetView(game);
+    const controller = new Controller(game, view);
+    const showStatistics = vi.fn();
+    const hud = new Hud(game, controller, {
+      restart: () => {}, requestRestart: () => {}, togglePause: () => {},
+      selectBrush: () => {}, focusSink: () => {}, showStatistics,
+    });
+    const event = new FederatedPointerEvent(new EventBoundary(hud.root));
+    hud.root.getChildByLabel("delivery-score", true)!.emit("pointertap", event);
+    expect(showStatistics).toHaveBeenCalledTimes(1);
+    game.survivalFailed = true;
+    hud.root.getChildByLabel("result-score", true)!.emit("pointertap", event);
+    expect(showStatistics).toHaveBeenCalledTimes(2);
+    game.complete = true;
+    hud["showPopup"]();
+    expect(showStatistics).toHaveBeenCalledTimes(2);
+    const statisticsButton = hud.root.getChildByLabel("result-statistics", true)!;
+    expect(statisticsButton.visible).toBe(true);
+    expect(drawing(statisticsButton.children[0] as Graphics).some((item) =>
+      item.action === "fill" && item.path.some((shape) => shape.action === "roundRect"))).toBe(true);
+    statisticsButton.emit("pointertap", event);
+    expect(showStatistics).toHaveBeenCalledTimes(3);
+    hud.root.destroy({ children: true });
+    view.root.destroy({ children: true });
+  });
 
   it("adds outlined boxes in unlock order at the exact epoch thresholds", () => {
     const game = new Game(endless);
@@ -667,6 +742,79 @@ describe("toolbar layout", () => {
   });
 
   describe("restart confirmation", () => {
+    it("dismisses confirmation and pause backdrops while preserving a survival result", () => {
+      const game = new Game(endless, Math.random, { survival: true });
+      const view = new NetView(game);
+      const controller = new Controller(game, view);
+      const hud = new Hud(game, controller, {
+        restart: () => {}, requestRestart: () => {},
+        togglePause: () => { game.paused = !game.paused; hud.setPaused(game.paused); },
+        selectBrush: () => {}, focusSink: () => {},
+      });
+      const event = new FederatedPointerEvent(new EventBoundary(hud.root));
+      hud.showEndlessConfirmation();
+      hud["confirmationShade"].emit("pointertap", event);
+      expect(hud.confirming).toBe(false);
+      expect(game.paused).toBe(false);
+      game.paused = true;
+      hud.setPaused(true);
+      hud.showRestartConfirmation();
+      hud["confirmationShade"].emit("pointertap", event);
+      expect(game.paused).toBe(true);
+      hud["pauseShade"].emit("pointertap", event);
+      expect(game.paused).toBe(false);
+      game.complete = true;
+      game.survivalFailed = true;
+      hud["showPopup"]();
+      hud["shade"].emit("pointertap", event);
+      expect(hud["popup"].visible).toBe(true);
+      game.survivalFailed = false;
+      hud["shade"].emit("pointertap", event);
+      expect(hud["popup"].visible).toBe(false);
+      expect(hud["resultDismissed"]).toBe(true);
+      hud.root.destroy({ children: true });
+      view.root.destroy({ children: true });
+    });
+
+    it("fades the pause overlay and confirmation independently and resumes from the center button", () => {
+      const game = new Game(endless, Math.random, { survival: true });
+      const view = new NetView(game);
+      const controller = new Controller(game, view);
+      const hud = new Hud(game, controller, {
+        restart: () => {}, requestRestart: () => {},
+        togglePause: () => {
+          game.paused = !game.paused;
+          hud.setPaused(game.paused);
+        },
+        selectBrush: () => {}, focusSink: () => {},
+      });
+      const pause = hud.root.getChildByLabel("end-pause", true)!;
+      const shade = hud.root.getChildByLabel("pause-shade", true)!;
+      game.paused = true;
+      hud.setPaused(true);
+      hud["animateModals"](0.08);
+      expect(shade.visible).toBe(true);
+      expect(shade.alpha).toBeCloseTo(0.2);
+      expect(hud.blocks({ x: 200, y: 200 })).toBe(true);
+      hud.showRestartConfirmation();
+      hud["animateModals"](0.16);
+      expect(shade.visible).toBe(false);
+      expect(hud["confirmationShade"].alpha).toBeCloseTo(0.4);
+      hud.cancelRestart();
+      hud["animateModals"](0.16);
+      expect(game.paused).toBe(true);
+      expect(shade.visible).toBe(true);
+      expect(hud["confirmationShade"].visible).toBe(false);
+      pause.emit("pointertap", new FederatedPointerEvent(new EventBoundary(hud.root)));
+      expect(game.paused).toBe(false);
+      hud["animateModals"](0.08);
+      expect(shade.alpha).toBeCloseTo(0.2);
+      hud["animateModals"](0.08);
+      expect(shade.visible).toBe(false);
+      hud.root.destroy({ children: true });
+      view.root.destroy({ children: true });
+    });
+
     it("collapses mobile portrait controls and dismisses the menu after actions or outside taps", () => {
       const game = new Game(endless, Math.random, { survival: true });
       game.setPortrait(true);

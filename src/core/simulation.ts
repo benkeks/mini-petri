@@ -75,6 +75,7 @@ export class Simulation {
   private readonly fireListeners: ((e: FireEvent) => void)[] = [];
   private readonly completeListeners: ((e: FireEvent) => void)[] = [];
   private readonly arriveListeners: ((t: InFlightToken, placeId: string, time: number) => void)[] = [];
+  private readonly inputArriveListeners: ((t: InFlightToken, transitionId: string, time: number) => void)[] = [];
   private readonly beforeAutoListeners: (() => boolean | void)[] = [];
 
   constructor(
@@ -97,6 +98,11 @@ export class Simulation {
 
   onArrive(fn: (t: InFlightToken, placeId: string, time: number) => void): void {
     this.arriveListeners.push(fn);
+  }
+
+  /** Called when an input token reaches its transition. */
+  onInputArrive(fn: (t: InFlightToken, transitionId: string, time: number) => void): void {
+    this.inputArriveListeners.push(fn);
   }
 
   /** Called after arrivals, before automatic firing; returning false freezes the rest of this step. */
@@ -157,6 +163,15 @@ export class Simulation {
       for (const { arc, colors } of f.outputs) if (arc.to === pid) addInto(m, toMultiset(colors));
     }
     return m;
+  }
+
+  /** Settled and travelling tokens, including inputs waiting for the rest of their firing. */
+  liveTokens(): Multiset {
+    const live: Multiset = {};
+    for (const place of this.net.places.values()) addInto(live, toMultiset(place.marking));
+    for (const token of this.inFlight) if (token.kind === "output") addInto(live, { [token.color]: 1 });
+    for (const firing of this.firings.values()) addInto(live, firing.consumed);
+    return live;
   }
 
   /** Settled plus incoming tokens of place `pid`; this is what its capacity limits. */
@@ -299,6 +314,7 @@ export class Simulation {
       return;
     }
     const f = this.firings.get(tok.firingId)!;
+    for (const fn of this.inputArriveListeners) fn(tok, f.transitionId, this.time - overshoot);
     if (--f.pendingInputs === 0) this.complete(f, overshoot);
   }
 

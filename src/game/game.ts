@@ -4,6 +4,7 @@ import { Simulation } from "../core/simulation";
 import type { Goal, Kit, Level } from "./level";
 import { PLACE_CAPACITIES, placeLevel, placeRadius } from "./placeSize";
 import { POWERUPS, type Powerup } from "./powerups";
+import { Statistics } from "./statistics";
 
 /** Base build distance for transitions and the smallest places. */
 export const BUILD_RANGE = 220;
@@ -84,6 +85,7 @@ const SINK_GRACE = 180;
 const SOURCE_IDLE = 240;
 const COUNTDOWN = 60;
 const DELIVERY_EXTENSION = 10;
+const INFINITE_SINK_IDLE = 150;
 const ENDLESS_STEP = 1 / 60;
 const TIME_EPSILON = 1e-8;
 
@@ -140,6 +142,7 @@ export interface PowerupOffer {
 /** Game rules on top of the net simulation: goals at sinks and source difficulty ramp. */
 export class Game {
   readonly sim: Simulation;
+  readonly statistics: Statistics;
   /** True when node coordinates are transposed so the net flows top to bottom. */
   portrait = false;
   complete = false;
@@ -156,12 +159,14 @@ export class Game {
   private coinBalance = STARTING_COINS;
   private paidUpgrades = 0;
   private readonly coinListeners: ((event: CoinEvent) => void)[] = [];
+  private readonly lifeListeners: ((amount: number) => void)[] = [];
   private readonly deliveryListeners: ((colors: Multiset) => void)[] = [];
   private readonly insufficientCoinsListeners: (() => void)[] = [];
   private readonly lifeLostListeners: ((position: { x: number; y: number }) => void)[] = [];
   private readonly sinkDeathListeners: ((sink: SinkNotice) => void)[] = [];
   private readonly upgradeSpending = new Map<string, number>();
   private readonly autoUpgradeLevels = new Map<string, number>();
+  private readonly builtTransitions = new Set<string>();
   private readonly inventory = new Map<string, number>();
   readonly offers = new Map<string, PowerupOffer>();
   offerVersion = 0;
@@ -202,6 +207,16 @@ export class Game {
     this.survivalActive = level.mode === "endless" && !!options.survival;
     for (const p of level.net.places) placeRadius(p.capacity);
     this.sim = new Simulation(new Net(level.net));
+    this.statistics = new Statistics(this.sim.liveTokens());
+    for (const transition of this.sim.net.transitions.values()) {
+      if (transition.kind !== "sink") continue;
+      const goals = level.goals.filter((goal) => goal.sinkId === transition.id);
+      const inputs = this.sim.net.inputs(transition.id);
+      const colors = goals.length ? [...new Set(goals.map((goal) => goal.color))] : COLORS.filter((color) =>
+        inputs.some((arc) => arc.color === color)
+        || transition.open?.some((port) => port.dir === "in" && port.color === color));
+      this.statistics.recordSinkCreation(this.sim.time, colors);
+    }
     this.goalDefinitions = level.goals.map((goal) => ({ ...goal }));
     this.nextRampAt = level.ramp.every;
     if (level.mode === "endless") {
@@ -218,6 +233,17 @@ export class Game {
       return !this.survivalFailed;
     });
     this.sim.onArrive((_token, placeId, time) => this.touchPlace(placeId, time));
+    this.sim.onInputArrive((_token, tid, time) => {
+      if (this.survivalFailed) return;
+      const countdown = this.countdowns.get(tid);
+      const goals = this.goalsOf(tid);
+      if (!countdown || !goals.length || !goals.every((goal) => !Number.isFinite(goal.count))) return;
+      if (time + TIME_EPSILON >= countdown.deadline) {
+        this.failTransition(tid, countdown.deadline);
+        return;
+      }
+      this.startCountdown(tid, INFINITE_SINK_IDLE - countdown.duration, time, countdown.duration);
+    });
     for (const t of this.sim.net.transitions.values()) {
       if (t.kind === "source" && t.supply === 0) this.exhausted.set(t.id, this.sim.time);
     }
@@ -266,6 +292,9 @@ export class Game {
     });
     // Goals progress once the consumed tokens have visibly reached the sink.
     this.sim.onComplete((e) => {
+      const transition = this.sim.net.transitions.get(e.transitionId)!;
+      if (transition.kind === "source") this.statistics.record("sources", e.time, e.produced);
+      else if (this.builtTransitions.has(e.transitionId)) this.statistics.record("built", e.time, e.produced);
       const ordinals = this.firingGoalOrdinals.get(e.firingId) ?? [];
       this.firingGoalOrdinals.delete(e.firingId);
       if (this.survivalFailed) return;
@@ -295,6 +324,7 @@ export class Game {
         const count = total(scored);
         if (count > 0) {
           this.score += count;
+          this.statistics.record("deliveries", e.time, scored);
           for (const listener of this.deliveryListeners) listener(scored);
         }
       }
@@ -344,7 +374,7 @@ export class Game {
     if (apply) {
       const price = this.lifePrice;
       this.purchasedLives++;
-      this.lifeBalance++;
+      this.changeLives(1);
       this.changeCoins(-price, position);
     }
     return true;
@@ -353,6 +383,7 @@ export class Game {
   continueEndless(): void {
     if (!this.survival) return;
     this.survivalBaseline = { score: this.score, epoch: this.epoch };
+    this.statistics.endlessAt = this.sim.time;
     this.survivalActive = false;
     this.survivalFailed = false;
     this.complete = false;
@@ -371,6 +402,10 @@ export class Game {
 
   onCoins(fn: (event: CoinEvent) => void): void {
     this.coinListeners.push(fn);
+  }
+
+  onLives(fn: (amount: number) => void): void {
+    this.lifeListeners.push(fn);
   }
 
   onDeliveries(fn: (colors: Multiset) => void): void {
@@ -434,7 +469,7 @@ export class Game {
     this.offerVersion++;
     if (choice.kind === "coins") this.changeCoins(choice.amount, offer);
     else if (choice.kind === "life") {
-      if (this.survival) this.lifeBalance++;
+      if (this.survival) this.changeLives(1);
       else this.changeCoins(5, offer);
     } else this.inventory.set(choice.id, this.powerupStock(choice.id) + 1);
     return true;
@@ -477,6 +512,11 @@ export class Game {
     if (amount === 0) return;
     this.coinBalance += amount;
     for (const fn of this.coinListeners) fn({ amount, x: position.x, y: position.y });
+  }
+
+  private changeLives(amount: number): void {
+    this.lifeBalance += amount;
+    for (const fn of this.lifeListeners) fn(amount);
   }
 
   private canAfford(price: number, notify: boolean): boolean {
@@ -675,6 +715,7 @@ export class Game {
     const id = net.freshId("t");
     net.addTransition({ id, x, y, kind: "normal", open: kit.ports, copyInputColor: kit.copyInputColor });
     net.validateTransition(id);
+    this.builtTransitions.add(id);
     this.useKit(kit, { x, y });
     return id;
   }
@@ -854,8 +895,12 @@ export class Game {
     }
     if (dt === 0) this.spawnEndless();
     for (let remaining = dt; remaining > 1e-9;) {
-      const step = Math.min(remaining, ENDLESS_STEP);
+      while (this.sim.time + TIME_EPSILON >= this.statistics.nextSampleTime) {
+        this.statistics.sample(this.sim.liveTokens());
+      }
+      const step = Math.min(remaining, ENDLESS_STEP, this.statistics.nextSampleTime - this.sim.time);
       this.advance(step);
+      if (this.sim.time + TIME_EPSILON >= this.statistics.nextSampleTime) this.statistics.sample(this.sim.liveTokens());
       if (this.complete) break;
       remaining -= step;
     }
@@ -1006,6 +1051,7 @@ export class Game {
   private expireCountdowns(): void {
     for (const [tid, countdown] of this.countdowns) {
       if (this.sim.time + TIME_EPSILON >= countdown.deadline) this.failTransition(tid, countdown.deadline);
+      if (this.survivalFailed) break;
     }
   }
 
@@ -1022,11 +1068,12 @@ export class Game {
     this.failed.set(tid, at);
     if (t.kind === "sink") {
       const sink = this.sinkNotice(t);
+      this.statistics.recordSinkDeath(at, sink.colors);
       for (const fn of this.sinkDeathListeners) fn(sink);
     }
     if (t.kind === "sink" && this.survival && this.lives > 0) {
       this.lostLife = true;
-      this.lifeBalance--;
+      this.changeLives(-1);
       for (const fn of this.lifeLostListeners) fn({ x: t.x, y: t.y });
       if (this.lives === 0) {
         this.survivalFailed = true;
@@ -1126,6 +1173,7 @@ export class Game {
       id: sinkId, ...positions.sink, kind: "sink", autoInterval: 0.6,
       open: colors.map((color) => ({ dir: "in", color, count: inputCount })),
     });
+    this.statistics.recordSinkCreation(this.sim.time, colors);
     this.spawnedAt.set(sinkId, this.sim.time);
     let goalCount: number;
     if (permanent) goalCount = Infinity;

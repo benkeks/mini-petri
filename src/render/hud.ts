@@ -12,6 +12,7 @@ const TOOL_GAP = 8;
 const REMOVE_EXTRA_GAP = 8;
 const COIN_ROW = 48;
 const COIN_SHAKE_TIME = 0.35;
+const RESOURCE_MOTION_TIME = 0.18;
 const TOOL_SELECT_TIME = 0.2;
 const DELIVERY_JUMP_TIME = 0.4 / 3;
 const DELIVERY_BOX_SPACING = 16;
@@ -25,6 +26,7 @@ const HINT_SPACE = 34;
 
 export interface HudActions {
   toggleFullscreen?(): void;
+  showStatistics?(): void;
   restart(): void;
   requestRestart(): void;
   togglePause(): void;
@@ -53,6 +55,7 @@ interface SinkWarning {
 }
 
 const POP_TIME = 0.55;
+const MODAL_TIME = 0.16;
 const CONFETTI = 36;
 const POPUP_OVERSHOOT = 1.14;
 
@@ -93,6 +96,11 @@ interface Confetto {
 
 interface CoinFlight {
   event: CoinEvent;
+  age: number;
+}
+
+interface ResourceMotion {
+  direction: "gain" | "loss";
   age: number;
 }
 
@@ -149,7 +157,8 @@ export class Hud {
   private readonly meta: Text;
   private readonly coins: Text;
   private readonly lives: Text;
-  private readonly resources = new Graphics();
+  private readonly coinIcon = new Graphics();
+  private readonly lifeIcon = new Graphics();
   private readonly warningLayer = new Container();
   private readonly warnings = new Map<string, SinkWarning>();
   private readonly pause: Text;
@@ -166,7 +175,11 @@ export class Hud {
   private readonly coinLayer = new Graphics();
   private coinFlights: CoinFlight[] = [];
   private coinBaseX = 0;
+  private lifeBaseX = 0;
+  private resourceBaseY = 0;
   private coinShakeAge?: number;
+  private coinMotion?: ResourceMotion;
+  private lifeMotion?: ResourceMotion;
   private readonly heartLayer = new Graphics();
   private heartFlights: { position: Pt; age: number }[] = [];
   private readonly deathFlash = new Graphics();
@@ -179,11 +192,18 @@ export class Hud {
   private readonly card = new Graphics();
   private readonly heading: Text;
   private readonly detail: Text;
+  private readonly statisticsButton = new Container();
   private readonly againButton = new Container();
   private readonly endlessButton = new Container();
   private readonly confettiLayer = new Graphics();
   private readonly confirmationShade = new Graphics();
   private readonly confirmation = new Container();
+  private readonly pauseShade = new Graphics();
+  private readonly pauseButton = new Container();
+  private pauseRequested = false;
+  private pauseProgress = 0;
+  private confirmationProgress = 0;
+  private confirmationFit = 1;
   private wasPaused = false;
   private confirmationKind: "restart" | "endless" = "restart";
   private readonly confirmTitle: Text;
@@ -193,6 +213,7 @@ export class Hud {
   private confetti: Confetto[] = [];
   /** Real seconds since the popup appeared, or undefined while it is hidden. */
   private shownFor?: number;
+  private resultDismissed = false;
   private width = 0;
   private height = 0;
   private fatalSink?: Pt;
@@ -213,6 +234,15 @@ export class Hud {
     this.title = new Text({ text: game.level.name.toUpperCase(), style: { ...style, fontSize: 18, fontWeight: "bold" } });
     this.title.visible = game.level.mode !== "endless";
     this.stats = new Text({ text: "", style: { ...style, fontSize: 24, fontWeight: "bold" } });
+    this.stats.label = "delivery-score";
+    this.stats.cursor = "pointer";
+    this.stats.on("pointertap", () => {
+      if (this.game.level.mode === "endless") this.actions.showStatistics?.();
+    });
+    this.deliveryIcons.cursor = "pointer";
+    this.deliveryIcons.on("pointertap", () => {
+      if (this.game.level.mode === "endless") this.actions.showStatistics?.();
+    });
     for (const color of DELIVERY_COLORS) {
       const icon = new Graphics().roundRect(-5, -5, 10, 10, 1)
         .fill(TOKEN_COLORS[color]).stroke({ width: 1.5, color: 0xffffff });
@@ -225,6 +255,8 @@ export class Hud {
     this.coins.anchor.set(0.5);
     this.lives = new Text({ text: "", style: { ...style, fontSize: 16, fontWeight: "bold", fill: 0xffffff } });
     this.lives.anchor.set(0.5);
+    this.coinIcon.circle(0, 0, 20).fill(0xdd8a25).stroke({ width: 2, color: 0xa97717 });
+    drawHeart(this.lifeIcon, 0, 1, 1.4);
     this.restart = new Text({ text: "RESTART", style: { ...style, fontSize: 15, fontWeight: "bold" } });
     this.restart.label = "meta-restart";
     this.pause = new Text({ text: "PAUSE", style: { ...style, fontSize: 15, fontWeight: "bold" } });
@@ -276,12 +308,37 @@ export class Hud {
     this.hint.anchor.set(0.5, 1);
 
     this.shade.eventMode = "static";
+    this.shade.on("pointertap", () => {
+      if (!this.game.survivalFailed) {
+        this.resultDismissed = true;
+        this.hidePopup();
+      }
+    });
     this.heading = new Text({ text: "LEVEL COMPLETE!", style: { ...style, fontSize: 32, fontWeight: "bold" } });
     this.heading.anchor.set(0.5);
     this.heading.position.set(0, -38);
     this.detail = new Text({ text: "", style: { ...style, fontSize: 17, fill: 0x6e685e } });
+    this.detail.label = "result-score";
+    this.detail.cursor = "pointer";
+    this.detail.eventMode = "static";
+    this.detail.on("pointertap", () => {
+      if (this.game.survivalFailed) this.actions.showStatistics?.();
+    });
     this.detail.anchor.set(0.5);
     this.detail.position.set(0, 4);
+    const statisticsBackground = new Graphics().roundRect(-72, -13, 144, 26, 13)
+      .fill(0xe7e0dc).stroke({ width: 1.5, color: THEME.muted });
+    const statisticsText = new Text({ text: "VIEW STATISTICS", style: { ...style, fontSize: 13, fontWeight: "bold" } });
+    statisticsText.anchor.set(0.5);
+    this.statisticsButton.addChild(statisticsBackground, statisticsText);
+    this.statisticsButton.label = "result-statistics";
+    this.statisticsButton.position.set(0, 8);
+    this.statisticsButton.hitArea = new Rectangle(-72, -13, 144, 26);
+    this.statisticsButton.eventMode = "static";
+    this.statisticsButton.cursor = "pointer";
+    this.statisticsButton.on("pointertap", () => this.actions.showStatistics?.());
+    this.statisticsButton.on("pointerover", () => this.statisticsButton.scale.set(1.05));
+    this.statisticsButton.on("pointerout", () => this.statisticsButton.scale.set(1));
     const button = (c: Container, label: string, onTap: () => void, color: number = THEME.ink) => {
       const bg = new Graphics().roundRect(-72, -20, 144, 40, 20).fill(color);
       const text = new Text({ text: label, style: { ...style, fontSize: 18, fontWeight: "bold", fill: 0xffffff } });
@@ -297,11 +354,20 @@ export class Hud {
     };
     button(this.againButton, "RESTART", () => this.game.survivalFailed ? actions.restart() : onRestart());
     button(this.endlessButton, "ENDLESS", () => this.continueEndless());
+    button(this.pauseButton, "END PAUSE", () => actions.togglePause());
+    this.pauseButton.label = "end-pause";
+    this.pauseShade.label = "pause-shade";
+    this.pauseShade.eventMode = "static";
+    this.pauseShade.on("pointertap", () => {
+      if (this.pauseRequested && !this.confirming) actions.togglePause();
+    });
+    this.pauseShade.visible = this.pauseButton.visible = false;
     this.card.roundRect(-170, -90, 340, 180, 18).fill(THEME.background).stroke({ width: 3, color: THEME.ink });
     this.card.eventMode = "static";
-    this.popup.addChild(this.card, this.againButton, this.endlessButton, this.heading, this.detail);
+    this.popup.addChild(this.card, this.againButton, this.endlessButton, this.heading, this.detail, this.statisticsButton);
 
     this.confirmationShade.eventMode = "static";
+    this.confirmationShade.on("pointertap", () => this.cancelRestart());
     this.confirmationShade.alpha = 0.4;
     const confirmCard = new Graphics().roundRect(-170, -90, 340, 180, 18)
       .fill(THEME.background).stroke({ width: 3, color: THEME.ink });
@@ -328,7 +394,8 @@ export class Hud {
       this.stats,
       this.deliveryIcons,
       this.meta,
-      this.resources,
+      this.coinIcon,
+      this.lifeIcon,
       this.coins,
       this.lives,
       this.warningLayer,
@@ -346,11 +413,14 @@ export class Hud {
       this.skip,
       this.fullscreenIcon,
       this.menuButton,
+      this.pauseShade,
+      this.pauseButton,
       this.confirmationShade,
       this.confirmation,
       this.deathFlash,
     );
     this.listenForResources(game);
+    this.stats.eventMode = this.deliveryIcons.eventMode = game.level.mode === "endless" && actions.showStatistics ? "static" : "none";
     this.updateDeliveryIcons(0);
     this.buildToolbar();
     this.hidePopup();
@@ -359,15 +429,19 @@ export class Hud {
 
   setGame(game: Game): void {
     this.game = game;
+    this.stats.eventMode = this.deliveryIcons.eventMode = game.level.mode === "endless" && this.actions.showStatistics ? "static" : "none";
     this.menuOpen = false;
     this.updateNavigationVisibility();
     this.confirming = false;
-    this.confirmationShade.visible = this.confirmation.visible = false;
+    this.pauseRequested = false;
+    this.resultDismissed = false;
     this.coinFlights = [];
     this.scoredColors.clear();
     for (const box of this.deliveryBoxes.values()) box.jumpAge = undefined;
     this.updateDeliveryIcons(0);
     this.coinShakeAge = undefined;
+    this.coinMotion = this.lifeMotion = undefined;
+    this.coins.rotation = this.coinIcon.rotation = this.lives.rotation = this.lifeIcon.rotation = 0;
     this.coinLayer.clear();
     this.heartFlights = [];
     this.heartLayer.clear();
@@ -431,6 +505,14 @@ export class Hud {
     this.notice = { text: message.toUpperCase(), remaining: 5 };
   }
 
+  setPaused(paused: boolean): void {
+    this.pauseRequested = paused;
+  }
+
+  get manuallyPaused(): boolean {
+    return this.pauseRequested;
+  }
+
   private metaControls(): Text[] {
     return [...(this.fullscreen ? [this.fullscreen] : []), this.pause, this.skip, this.restart];
   }
@@ -454,20 +536,17 @@ export class Hud {
     this.wasPaused = this.game.paused;
     this.game.paused = true;
     this.confirming = true;
-    this.confirmationShade.visible = this.confirmation.visible = true;
   }
 
   cancelRestart(): void {
     if (!this.confirming) return;
     this.game.paused = this.wasPaused;
     this.confirming = false;
-    this.confirmationShade.visible = this.confirmation.visible = false;
   }
 
   confirmRestart(): void {
     if (!this.confirming) return;
     this.confirming = false;
-    this.confirmationShade.visible = this.confirmation.visible = false;
     if (this.confirmationKind === "endless") this.continueEndless();
     else this.actions.restart();
   }
@@ -475,13 +554,15 @@ export class Hud {
   continueEndless(): void {
     if (!this.game.survival) return;
     this.game.continueEndless();
+    this.pauseRequested = false;
     this.controller.cancel();
     this.hidePopup();
   }
 
   /** Screen-space UI areas, excluding the otherwise open world behind them. */
   blocks(point: Pt): boolean {
-    return this.menuOpen || this.confirming || this.game.complete || this.regions.some((region) => region.contains(point.x, point.y));
+    return this.menuOpen || this.confirming || this.confirmationProgress > 0 || this.pauseRequested || this.pauseProgress > 0
+      || this.game.complete || this.regions.some((region) => region.contains(point.x, point.y));
   }
 
   /** Destination for a collected reward in screen coordinates. */
@@ -551,7 +632,13 @@ export class Hud {
       if (this.game === game) this.coinShakeAge = 0;
     });
     game.onCoins((event) => {
-      if (this.game === game) this.coinFlights.push({ event, age: 0 });
+      if (this.game === game) {
+        this.coinFlights.push({ event, age: 0 });
+        this.coinMotion = { direction: event.amount > 0 ? "gain" : "loss", age: 0 };
+      }
+    });
+    game.onLives((amount) => {
+      if (this.game === game) this.lifeMotion = { direction: amount > 0 ? "gain" : "loss", age: 0 };
     });
     game.onLifeLost((position) => {
       if (this.game === game) {
@@ -633,7 +720,11 @@ export class Hud {
       warning.eventMode = "static";
       warning.cursor = "pointer";
       warning.hitArea = new Rectangle(-11, -18, 22, 36);
-      warning.on("pointertap", () => this.actions.focusSink(sink.sinkId));
+      warning.on("pointertap", () => {
+        this.controller.cancel();
+        this.controller.move();
+        this.actions.focusSink(sink.sinkId);
+      });
       warning.on("pointerover", () => warning.scale.set(1.15));
       warning.on("pointerout", () => warning.scale.set(1));
       this.warningLayer.addChild(warning);
@@ -656,11 +747,16 @@ export class Hud {
     const availableStatsWidth = Math.max(1, width - 32 - (iconWidth ? iconWidth + 9 : 0));
     if (this.stats.width > availableStatsWidth) this.stats.style.fontSize = 24 * availableStatsWidth / this.stats.width;
     this.deliveryIcons.position.set(this.stats.x + this.stats.width + 12, this.stats.y + this.stats.height / 2);
+    this.deliveryIcons.hitArea = new Rectangle(-7, -this.stats.height / 2 - 8, iconWidth + 4, this.stats.height + 16);
     this.meta.position.set(16, this.title.visible ? 64 : 38);
     const resourceY = height - COIN_ROW / 2 - (portrait ? 0 : 5);
+    this.resourceBaseY = resourceY;
     this.coinBaseX = portrait ? width / 2 - (this.lives.visible ? 27 : 0) : 34;
+    this.lifeBaseX = portrait ? width / 2 + 27 : 88;
     this.coins.position.set(this.coinBaseX + this.coinShakeOffset(), resourceY);
-    this.lives.position.set(portrait ? width / 2 + 27 : 88, resourceY);
+    this.lives.position.set(this.lifeBaseX, resourceY);
+    this.coinIcon.position.copyFrom(this.coins.position);
+    this.lifeIcon.position.copyFrom(this.lives.position);
     this.skip.text = portrait ? "ENDLESS" : "SKIP TO ENDLESS";
     this.updateNavigationVisibility();
     const compact = this.compactNavigation();
@@ -701,9 +797,11 @@ export class Hud {
     this.navigationState = this.navigationKey();
     if (this.shownFor === undefined) this.popup.position.set(width / 2, height / 2);
     this.shade.clear().rect(0, 0, width, height).fill(THEME.ink);
+    this.pauseShade.clear().rect(0, 0, width, height).fill(THEME.ink);
     this.confirmationShade.clear().rect(0, 0, width, height).fill(THEME.ink);
+    this.pauseButton.position.set(width / 2, height / 2);
     this.confirmation.position.set(width / 2, height / 2);
-    this.confirmation.scale.set(Math.max(0, Math.min(1, (width - 24) / 340, (height - 24) / 180)));
+    this.confirmationFit = Math.max(0, Math.min(1, (width - 24) / 340, (height - 24) / 180));
 
     const n = this.tools.length;
     this.hint.visible = !!this.notice || (this.shownFor === undefined && (this.game.paused || this.controller.hint() !== ""));
@@ -854,14 +952,16 @@ export class Hud {
       this.coinShakeAge += dt;
       if (this.coinShakeAge >= COIN_SHAKE_TIME) this.coinShakeAge = undefined;
     }
-    this.coins.x = this.coinBaseX + this.coinShakeOffset();
-    this.resources.clear().circle(this.coins.x, this.coins.y, 20).fill(0xdd8a25).stroke({ width: 2, color: 0xa97717 });
-    if (this.lives.visible) drawHeart(this.resources, this.lives.x, this.lives.y + 1, 1.4);
+    this.updateResources(dt);
     this.drawCoins(dt, toScreen);
     this.drawHearts(dt, toScreen);
-    if (!g.complete && this.shownFor !== undefined) this.hidePopup();
-    if (g.complete && this.shownFor === undefined) this.showPopup();
+    if (!g.complete) {
+      this.resultDismissed = false;
+      if (this.shownFor !== undefined) this.hidePopup();
+    }
+    if (g.complete && this.shownFor === undefined && !this.resultDismissed) this.showPopup();
     if (this.shownFor !== undefined) this.animatePopup(dt, toScreen);
+    this.animateModals(dt);
     this.deathFlash.clear();
     if (this.flash) {
       this.flash.age += dt;
@@ -876,6 +976,43 @@ export class Hud {
   private coinShakeOffset(): number {
     return this.coinShakeAge === undefined ? 0
       : Math.sin(this.coinShakeAge * 80) * 5 * (1 - this.coinShakeAge / COIN_SHAKE_TIME);
+  }
+
+  private updateResources(dt: number): void {
+    const advance = (motion: ResourceMotion | undefined) => {
+      if (!motion) return undefined;
+      motion.age += dt;
+      return motion.age < RESOURCE_MOTION_TIME ? motion : undefined;
+    };
+    this.coinMotion = advance(this.coinMotion);
+    this.lifeMotion = advance(this.lifeMotion);
+    const apply = (text: Text, icon: Graphics, x: number, motion?: ResourceMotion) => {
+      const progress = motion ? Math.sin(Math.PI * motion.age / RESOURCE_MOTION_TIME) : 0;
+      text.position.set(x, this.resourceBaseY - (motion?.direction === "gain" ? 7 * progress : 0));
+      text.rotation = motion?.direction === "loss" ? 0.22 * progress : 0;
+      icon.position.copyFrom(text.position);
+      icon.rotation = text.rotation;
+    };
+    apply(this.coins, this.coinIcon, this.coinBaseX + this.coinShakeOffset(), this.coinMotion);
+    apply(this.lives, this.lifeIcon, this.lifeBaseX, this.lifeMotion);
+    this.lifeIcon.visible = this.lives.visible;
+  }
+
+  private animateModals(dt: number): void {
+    const advance = (value: number, active: boolean) => Math.max(0, Math.min(1, value + (active ? 1 : -1) * dt / MODAL_TIME));
+    this.pauseProgress = advance(this.pauseProgress, this.pauseRequested && !this.game.complete && !this.confirming);
+    this.confirmationProgress = advance(this.confirmationProgress, this.confirming);
+    this.pauseShade.visible = this.pauseButton.visible = this.pauseProgress > 0;
+    this.pauseShade.alpha = 0.4 * this.pauseProgress;
+    this.pauseButton.alpha = this.pauseProgress;
+    this.pauseButton.scale.set(Math.min(1, (this.width - 24) / 144) * (0.9 + 0.1 * this.pauseProgress));
+    this.pauseButton.eventMode = this.pauseRequested && !this.confirming ? "static" : "none";
+    this.confirmationShade.visible = this.confirmation.visible = this.confirmationProgress > 0;
+    this.confirmationShade.alpha = 0.4 * this.confirmationProgress;
+    this.confirmation.alpha = this.confirmationProgress;
+    this.confirmation.scale.set(this.confirmationFit * (0.9 + 0.1 * this.confirmationProgress));
+    this.confirmation.eventMode = this.confirming ? "auto" : "none";
+    this.confirmation.interactiveChildren = this.confirming;
   }
 
   private drawCoins(dt: number, toScreen: (point: Pt) => Pt): void {
@@ -932,7 +1069,10 @@ export class Hud {
     this.hint.visible = false;
     const failed = this.game.survivalFailed;
     this.heading.text = failed ? "SURVIVAL OVER" : "LEVEL COMPLETE!";
+    this.heading.y = failed ? -56 : -38;
     this.detail.text = failed ? `${this.game.score} DELIVERIES` : `ALL GOALS MET IN ${this.game.completedAt!.toFixed(0)}S`;
+    this.detail.y = failed ? -25 : 4;
+    this.statisticsButton.visible = failed && !!this.actions.showStatistics;
     this.endlessButton.visible = failed;
     this.againButton.position.set(failed ? -77 : 0, 52);
     this.endlessButton.position.set(77, 52);

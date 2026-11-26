@@ -7,7 +7,9 @@ import { Navigation } from "./input/navigation";
 import { isUltraWide, type Pt } from "./render/geometry";
 import { Hud } from "./render/hud";
 import { NetView } from "./render/netView";
+import { StatisticsScreen } from "./render/statistics";
 import { THEME } from "./render/style";
+import "./render/statistics.css";
 
 const STEP = 1 / 60;
 
@@ -30,16 +32,22 @@ async function main(): Promise<void> {
   let boundsOfferVersion = -1;
   let view = createView();
   const controller = new Controller(game, view);
+  let pausedBeforeStatistics = false;
+  const statistics = new StatisticsScreen(() => {
+    if (!game.complete) game.paused = pausedBeforeStatistics;
+  });
   const smartphone = /iPhone|iPod|Android.*Mobile/i.test(navigator.userAgent)
     || (navigator.maxTouchPoints > 0 && window.matchMedia("(pointer: coarse)").matches
       && Math.min(window.screen.width, window.screen.height) <= 600);
   const hud = new Hud(game, controller, {
+    showStatistics: () => showStatistics(),
     toggleFullscreen: smartphone ? () => { void toggleFullscreen(); } : undefined,
     restart: () => load(),
     requestRestart: () => requestRestart(),
     togglePause: () => {
       if (game.complete) return;
       game.paused = !game.paused;
+      hud.setPaused(game.paused);
       navigation.cancel();
       controller.cancelPress();
     },
@@ -93,6 +101,7 @@ async function main(): Promise<void> {
   }
 
   function load(): void {
+    statistics.close();
     game = new Game(endless, Math.random, { survival: true });
     listenForGameOver();
     rebuildView();
@@ -100,6 +109,17 @@ async function main(): Promise<void> {
     boundsVersion = -1;
     boundsOfferVersion = -1;
     layout(true);
+  }
+
+  function showStatistics(): void {
+    if (statistics.open) return;
+    pausedBeforeStatistics = game.paused;
+    game.paused = true;
+    navigation.cancel();
+    controller.cancelPress();
+    controller.move();
+    hud.closeMenu();
+    statistics.show(game);
   }
 
   function requestRestart(): void {
@@ -290,9 +310,18 @@ async function main(): Promise<void> {
   });
 
   window.addEventListener("keydown", (e) => {
+    if (statistics.open) {
+      if (e.key === "Escape") statistics.close();
+      return;
+    }
     if (hud.confirming) {
       if (e.key === "Escape") hud.cancelRestart();
       else if (e.key === "Enter" && !e.repeat) hud.confirmRestart();
+      return;
+    }
+    if (hud.manuallyPaused && e.key === "Escape") {
+      game.paused = false;
+      hud.setPaused(false);
       return;
     }
     if (e.key.toLowerCase() === "r" && !e.repeat) requestRestart();

@@ -158,12 +158,21 @@ Completed goals are checked off and disappear.
   The score increases by matching goal tokens on arrival, and resolving every current goal does not end the game.
   The HUD displays this count as deliveries with colored boxes: blue initially, red at epoch 6, green at 40 and yellow at 100.
   Each box jumps when a delivery of its color increases the count, including simultaneous multicolor deliveries.
-  The HUD shows the number of completed spawn epochs. Pausing freezes simulation time and player actions, but still allows camera navigation.
+  The HUD shows the number of completed spawn epochs.
+  Pausing freezes simulation time and player actions, dims the screen, and shows a centered end-pause button; tapping the backdrop also resumes.
+- Tapping the delivery count opens a statistics screen and pauses the run, restoring the previous pause state on close.
+  At survival's end the result appears first and offers a button for statistics; closing statistics returns to the result.
+  It plots cumulative scored deliveries by color, deliveries per minute, and deliveries alive at ten-second simulation-time samples.
+  The on-the-way plot shows live deliveries by color without cumulative creation-total curves.
+  Alive counts include settled deliveries, output deliveries in flight, and all inputs of a firing until its outputs begin, without counting committed outputs early.
+  Charts mark the time of endless continuation with a black vertical line, sink creation with small colored transition-shaped marks just below the plot, and sink starvation with larger overlapping colored crosses below those marks.
+  The charts share a time axis and scroll position, with roughly one hour fitting in a normal desktop viewport, and can be dragged with the mouse or scrolled normally; continuation preserves the history and restart starts a new one.
 - A blue source (unlimited until epoch 2000), a capacity-19 source place, a capacity-7 destination, a manually fired color-preserving relay and a five-token blue sink form the initial network.
   Endless mode offers the relay kit initially; additional colored transition kits unlock over time.
 - Epoch progression and spawning rules are detailed below.
 - A sink's countdown starts after 180 seconds and expires 60 seconds later; yellow sinks instead have 360 seconds of grace and a 120-second countdown.
-  Every token arriving during a countdown extends its deadline by ten seconds.
+  Every token arriving during a finite sink's countdown extends its deadline by ten seconds.
+  Each input reaching an infinite sink resets its deadline to 150 seconds after that arrival, hiding warnings until the final countdown begins again.
   A spawned source's countdown starts after 240 seconds without an emission and expires 60 seconds later; emission resets the entire timer.
   The initial blue source has no countdown.
   Timed-out transitions are disabled, crossed out, and removed after the same linger as completed goals; source tokens already in flight finish traveling.
@@ -188,12 +197,15 @@ Completed goals are checked off and disappear.
   Outside taps dismiss it without acting on the network behind it.
   Its label follows native fullscreen state; unavailable or denied fullscreen requests show a temporary HUD notice.
   Both confirmations pause the game while open, and cancellation restores its prior pause state.
+  The confirmations and statistics screen animate in and out with a fading backdrop.
+  Tapping outside a dismissible dialog closes it without activating the underlying game; the survival result itself remains open.
 - Coins appear inside an orange coin circle next to the survival heart and life count.
+  Each counter hops on gains and tilts briefly on losses.
   Portrait screens center the counters below the toolbar; landscape screens bottom-align counters and tools in adjacent areas.
   Endless mode keeps the heart with an infinity counter.
   Each lost life animates a heart from the HUD to the timed-out sink, including the final life while the failure popup is open.
   In survival mode, each sink in countdown adds a small exclamation mark beside the heart, striped in all its required token colors.
-  Clicking it smoothly scrolls the camera to that sink in 0.3 seconds; the final-life sink receives a slower 0.65-second scroll on game over.
+  Clicking it cancels the current build selection and smoothly scrolls the camera to that sink in 0.3 seconds; the final-life sink receives a slower 0.65-second scroll on game over.
   Camera scrolling continues while gameplay is frozen; manual pan or zoom interrupts it.
   Warnings jump during the last 15 seconds, stopping if a delivery extends the deadline out of that window.
   Resolved or expired sinks lose their warnings.

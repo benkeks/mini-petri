@@ -189,7 +189,7 @@ Completed goals are checked off and disappear.
   Portrait screens center the counters below the toolbar; landscape screens bottom-align counters and tools in adjacent areas.
   Endless mode keeps the heart with an infinity counter.
   Each lost life animates a heart from the HUD to the timed-out sink, including the final life while the failure popup is open.
-  In survival mode, each sink in countdown adds a small exclamation mark in its token color beside the heart.
+  In survival mode, each sink in countdown adds a small exclamation mark beside the heart, striped in all its required token colors.
   Clicking it smoothly scrolls the camera to that sink in 0.3 seconds; the final-life sink receives a slower 0.65-second scroll on game over.
   Camera scrolling continues while gameplay is frozen; manual pan or zoom interrupts it.
   Warnings jump during the last 15 seconds, stopping if a delivery extends the deadline out of that window.
@@ -225,11 +225,11 @@ Milestone infinite sinks take the first ordinary spawn slot of their exact epoch
 | 75 onward | Red sinks alternate between paired and source-free, starting with a paired sink. Paired sources reserve at least 5 tokens for the next source-free sink; sink demands and source supplies remain 5, 10, or 15. |
 | 100 onward | Each epoch is 40% blue, 40% red, 10% green, or 10% yellow. Yellow sinks have no source, require 10, 20, or 30 tokens with equal probability, and have twice the normal grace and countdown. |
 | 125 onward | New single-color blue and green sinks require twice as many tokens, without changing their input weights or existing sinks. |
-| 150 onward | A 10% chance of a blue-red sink requiring 5 pairs, one blue and one red token per firing, without a paired source. |
-| 165 onward | Blue-red demands become 5 (75%), 10 (15%), or 15 (10%) pairs. |
-| 180 onward | A separate 10% chance of a yellow-green sink requiring 5 pairs, without a paired source. |
-| 200 onward | A separate 5% chance of a four-color sink requiring 5 blue-red-green-yellow quadruples. |
-| 250 onward | Four-color sinks require 10 or 15 quadruples with equal probability, never 5. |
+| 175 onward | A 10% chance of a blue-red sink requiring 5 pairs, one blue and one red token per firing, without a paired source. |
+| 250 onward | A separate 10% chance of a yellow-green sink requiring 5 pairs, without a paired source. |
+| 350 onward | A separate 5% chance of a four-color sink requiring 5 blue-red-green-yellow quadruples. |
+| 450 onward | Blue-red demands become 5 (75%), 10 (15%), or 15 (10%) pairs. |
+| 550 onward | Four-color sinks require 10 or 15 quadruples with equal probability, never 5. |
 | Exactly 300 | One infinite blue sink inside the central 30% of the map extent on both axes. |
 | Exactly 400 | One infinite red sink inside the central 50%, at least 300 units from where the infinite blue sink appeared. |
 | Exactly 500 | One infinite green sink inside the central 65%. |
@@ -247,12 +247,12 @@ Before epoch 125, blue sinks with multi-token inputs require 6 tokens in total a
 Each target remains divisible by its input weight.
 Through epoch 624, ordinary red counts are adjusted so cumulative paired source supply covers ordinary red sink demand, including alternating source-free red sinks.
 Composite and infinite sinks are not part of that supply guarantee.
-At epoch 200 and later, the selection weights are 5% quadruples, 10% yellow-green pairs, 10% blue-red pairs, and 75% ordinary single-color choices.
+At epoch 350 and later, the selection weights are 5% quadruples, 10% yellow-green pairs, 10% blue-red pairs, and 75% ordinary single-color choices.
 
 Each colored input of a composite sink can be wired to the same place or to a separate place.
 All required colors are consumed atomically; each delivered token scores, and a finite sink leaves after its requested number of complete firings.
 Each remaining pair or quadruple is shown as one group of mostly overlapping circles in its required colors.
-Infinite sinks show a colored group and an infinity marker, keep accepting and scoring complete firings, and never resolve into powerup offers.
+Infinite sinks show a colored group and an infinity marker in the required color or overlapping colors, keep accepting and scoring complete firings, and never resolve into powerup offers.
 They retain normal starvation, countdown, deadline-extension and life-loss rules; a starved milestone sink is not respawned.
 Any sink containing yellow uses double grace and countdown.
 

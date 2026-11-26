@@ -74,23 +74,23 @@ describe("late endless progression", () => {
   });
 
   it.each([
-    { epoch: 149, colors: ["yellow"], count: 30, tail: 0.95 },
-    { epoch: 150, colors: ["blue", "red"], count: 5, tail: 0.95 },
-    { epoch: 164, colors: ["blue", "red"], count: 5, tail: 0.95 },
-    { epoch: 165, colors: ["blue", "red"], count: 10, tail: 0.8 },
-    { epoch: 165, colors: ["blue", "red"], count: 15, tail: 0.95 },
-    { epoch: 179, colors: ["blue", "red"], count: 15, tail: 0.95 },
-    { epoch: 180, colors: ["yellow", "green"], count: 5, tail: 0.95 },
-    { epoch: 199, colors: ["yellow", "green"], count: 5, tail: 0.95 },
-    { epoch: 200, colors: ["blue", "red", "green", "yellow"], count: 5, tail: 0.95 },
-    { epoch: 249, colors: ["blue", "red", "green", "yellow"], count: 5, tail: 0.95 },
-    { epoch: 250, colors: ["blue", "red", "green", "yellow"], count: 10, tail: 0.49 },
-    { epoch: 250, colors: ["blue", "red", "green", "yellow"], count: 15, tail: 0.95 },
-  ])("introduces $colors with $count firings at epoch $epoch", ({ epoch, colors, count, tail }) => {
+    { epoch: 174, colors: ["yellow"], count: 30, tail: 0.95, roll: 0 },
+    { epoch: 175, colors: ["blue", "red"], count: 5, tail: 0.95, roll: 0 },
+    { epoch: 249, colors: ["blue", "red"], count: 5, tail: 0.95, roll: 0 },
+    { epoch: 250, colors: ["yellow", "green"], count: 5, tail: 0.95, roll: 0 },
+    { epoch: 349, colors: ["yellow", "green"], count: 5, tail: 0.95, roll: 0 },
+    { epoch: 350, colors: ["blue", "red", "green", "yellow"], count: 5, tail: 0.95, roll: 0 },
+    { epoch: 449, colors: ["blue", "red"], count: 5, tail: 0.95, roll: 0.2 },
+    { epoch: 450, colors: ["blue", "red"], count: 10, tail: 0.8, roll: 0.2 },
+    { epoch: 450, colors: ["blue", "red"], count: 15, tail: 0.95, roll: 0.2 },
+    { epoch: 549, colors: ["blue", "red", "green", "yellow"], count: 5, tail: 0.95, roll: 0 },
+    { epoch: 550, colors: ["blue", "red", "green", "yellow"], count: 10, tail: 0.49, roll: 0 },
+    { epoch: 550, colors: ["blue", "red", "green", "yellow"], count: 15, tail: 0.95, roll: 0 },
+  ])("introduces $colors with $count firings at epoch $epoch", ({ epoch, colors, count, tail, roll }) => {
     const { game, advance, reach, fallback } = setup();
     reach(epoch - 1);
     fallback(tail);
-    const spawned = advance([0]);
+    const spawned = advance([roll]);
     expect(spawned).toHaveLength(1);
     const sink = spawned[0];
     expect(sink.open?.map((port) => port.color)).toEqual(colors);
@@ -464,9 +464,9 @@ describe("epoch overview", () => {
       `| ${r.yellowFrom} onward | Each epoch is ${percent((1 - r.greenChance - r.yellowChance) * (1 - r.redChance))}% blue, ${percent((1 - r.greenChance - r.yellowChance) * r.redChance)}% red, ${percent(r.greenChance)}% green, or ${percent(r.yellowChance)}% yellow. Yellow sinks have no source, require 10, 20, or 30 tokens with equal probability, and have twice the normal grace and countdown. |`,
       `| ${r.doubledDemandFrom} onward | New single-color blue and green sinks require twice as many tokens, without changing their input weights or existing sinks. |`,
       `| ${r.blueRedFrom} onward | A ${percent(r.pairChance)}% chance of a blue-red sink requiring 5 pairs, one blue and one red token per firing, without a paired source. |`,
-      `| ${r.variedBlueRedFrom} onward | Blue-red demands become 5 (${percent(r.redFiveRoll)}%), 10 (${percent(r.redTenRoll - r.redFiveRoll)}%), or 15 (${percent(1 - r.redTenRoll)}%) pairs. |`,
       `| ${r.yellowGreenFrom} onward | A separate ${percent(r.pairChance)}% chance of a yellow-green sink requiring 5 pairs, without a paired source. |`,
       `| ${r.quadrupleFrom} onward | A separate ${percent(r.quadrupleChance)}% chance of a four-color sink requiring 5 blue-red-green-yellow quadruples. |`,
+      `| ${r.variedBlueRedFrom} onward | Blue-red demands become 5 (${percent(r.redFiveRoll)}%), 10 (${percent(r.redTenRoll - r.redFiveRoll)}%), or 15 (${percent(1 - r.redTenRoll)}%) pairs. |`,
       `| ${r.variedQuadrupleFrom} onward | Four-color sinks require 10 or 15 quadruples with equal probability, never 5. |`,
       "| Exactly 300 | One infinite blue sink inside the central 30% of the map extent on both axes. |",
       "| Exactly 400 | One infinite red sink inside the central 50%, at least 300 units from where the infinite blue sink appeared. |",

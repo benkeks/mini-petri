@@ -69,11 +69,11 @@ export const ENDLESS_RULES = {
   yellowFrom: 100,
   yellowChance: 0.1,
   doubledDemandFrom: 125,
-  blueRedFrom: 150,
-  variedBlueRedFrom: 165,
-  yellowGreenFrom: 180,
-  quadrupleFrom: 200,
-  variedQuadrupleFrom: 250,
+  blueRedFrom: 175,
+  variedBlueRedFrom: 450,
+  yellowGreenFrom: 250,
+  quadrupleFrom: 350,
+  variedQuadrupleFrom: 550,
   pairChance: 0.1,
   quadrupleChance: 0.05,
   redSourcesUntil: 625,
@@ -122,6 +122,7 @@ export interface CoinEvent {
 export interface SinkNotice {
   sinkId: string;
   color: Color;
+  colors: Color[];
   x: number;
   y: number;
 }
@@ -353,9 +354,9 @@ export class Game {
   }
 
   private sinkNotice(t: Transition): SinkNotice {
-    const goal = this.goalsOf(t.id)[0];
-    if (!goal) throw new Error(`Countdown sink ${t.id} has no goal`);
-    return { sinkId: t.id, color: goal.color, x: t.x, y: t.y };
+    const colors = [...new Set(this.goalsOf(t.id).map((goal) => goal.color))];
+    if (!colors.length) throw new Error(`Countdown sink ${t.id} has no goal`);
+    return { sinkId: t.id, color: colors[0], colors, x: t.x, y: t.y };
   }
 
   powerupStock(id: string): number {

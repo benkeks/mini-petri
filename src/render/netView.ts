@@ -878,10 +878,13 @@ export class NetView {
       const { portrait } = this.layouts.get(n.t.id)!;
       const x = point.x + (portrait ? 26 : 0);
       const y = point.y + (portrait ? 0 : 26);
-      n.gfx.moveTo(x, y)
-        .bezierCurveTo(x - 16, y - 18, x - 16, y + 18, x, y)
-        .bezierCurveTo(x + 16, y - 18, x + 16, y + 18, x, y)
-        .stroke({ width: 2.5, color: THEME.ink });
+      goals.forEach((goal, index) => {
+        const offset = (index - (goals.length - 1) / 2) * 2.5;
+        n.gfx.moveTo(x, y + offset)
+          .bezierCurveTo(x - 16, y - 18 + offset, x - 16, y + 18 + offset, x, y + offset)
+          .bezierCurveTo(x + 16, y - 18 + offset, x + 16, y + 18 + offset, x, y + offset)
+          .stroke({ width: 2.5, color: TOKEN_COLORS[goal.color] });
+      });
     }
   }
 

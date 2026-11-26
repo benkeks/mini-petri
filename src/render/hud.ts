@@ -44,7 +44,7 @@ interface ToolButton {
 }
 
 interface SinkWarning {
-  text: Text;
+  text: Graphics;
   baseY: number;
   remaining: number;
 }
@@ -564,9 +564,17 @@ export class Hud {
         existing.remaining = sink.remaining;
         continue;
       }
-      const warning = new Text({ text: "!", style: { fontFamily: THEME.font, fontSize: 26, fontWeight: "bold", fill: TOKEN_COLORS[sink.color] } });
+      const warning = new Graphics();
+      const top = -13, height = 17;
+      sink.colors.forEach((color, index) => {
+        const y0 = top + index * height / sink.colors.length;
+        const y1 = top + (index + 1) * height / sink.colors.length;
+        const halfWidth = (y: number) => 4.5 - (y - top) / height;
+        warning.poly([-halfWidth(y0), y0, halfWidth(y0), y0, halfWidth(y1), y1, -halfWidth(y1), y1])
+          .fill(TOKEN_COLORS[color]);
+      });
+      warning.circle(0, 9, 3.5).fill(TOKEN_COLORS[sink.colors[sink.colors.length - 1]]);
       warning.label = `danger-${sink.sinkId}`;
-      warning.anchor.set(0.5);
       warning.eventMode = "static";
       warning.cursor = "pointer";
       warning.hitArea = new Rectangle(-11, -18, 22, 36);

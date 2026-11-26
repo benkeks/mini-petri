@@ -239,15 +239,51 @@ describe("grouped and infinite sink goals", () => {
       expect(balancePositions(view, game, "starterSink", 7)).toHaveLength(colors.length);
       const sink = game.sim.net.transitions.get("starterSink")!;
       const node = view.root.children[5].children.find((node) => node.x === sink.x && node.y === sink.y)!;
-      const curves = drawing(node.children[0] as Graphics).flatMap((instruction) => instruction.path)
-        .filter((shape) => shape.action === "bezierCurveTo");
-      expect(curves).toHaveLength(2);
+      const marker = drawing(node.children[0] as Graphics).filter((instruction) =>
+        instruction.action === "stroke" && instruction.path.some((shape) => shape.action === "bezierCurveTo"));
+      expect(marker.map((instruction) => instruction.color)).toEqual(colors.map((color) => TOKEN_COLORS[color]));
+      expect(marker.every((instruction) => instruction.path.filter((shape) => shape.action === "bezierCurveTo").length === 2)).toBe(true);
       game.sim.net.places.get("starterDestination")!.marking.push(...colors);
       expect(game.sim.fire("starterSink")).toBe(true);
       game.sim.step(1);
       view.update(0.25, viewport);
       expect(balancePositions(view, game, "starterSink", 7)).toHaveLength(colors.length);
       expect(game.resolved.has("starterSink")).toBe(false);
+      view.root.destroy({ children: true });
+    });
+});
+
+describe("sink warning colors", () => {
+  it.each([["blue"] satisfies Color[], ["blue", "red"] satisfies Color[],
+    ["yellow", "green"] satisfies Color[], ["blue", "red", "green", "yellow"] satisfies Color[]])(
+    "shows all %j goal colors in one clickable warning", (...colors) => {
+      const definition = structuredClone(endless);
+      definition.goals = colors.map((color) => ({ sinkId: "starterSink", color, count: Infinity }));
+      definition.net.transitions.forEach((transition) => { transition.autoInterval = undefined; });
+      const game = new Game(definition, () => 0.5, { survival: true });
+      const view = new NetView(game);
+      const controller = new Controller(game, view);
+      const focus = vi.fn();
+      const hud = new Hud(game, controller, {
+        restart: () => {}, requestRestart: () => {}, togglePause: () => {},
+        selectBrush: () => {}, focusSink: focus,
+      });
+      vi.spyOn(hud, "layout").mockReturnValue({ top: 0, bottom: 0 });
+      game.sim.step(colors.includes("yellow") ? 360 : 180);
+      expect(game.endangeredSinks()[0].colors).toEqual(colors);
+      hud["updateWarnings"]();
+      const warning = hud.root.getChildByLabel("danger-starterSink", true);
+      expect(warning).toBeInstanceOf(Graphics);
+      const graphic = warning as Graphics;
+      const fills = drawing(graphic).filter((instruction) => instruction.action === "fill");
+      expect(fills.slice(0, colors.length).map((instruction) => instruction.color)).toEqual(colors.map((color) => TOKEN_COLORS[color]));
+      expect(fills.at(-1)?.path.some((shape) => shape.action === "circle")).toBe(true);
+      graphic.emit("pointertap", new FederatedPointerEvent(new EventBoundary(hud.root)));
+      expect(focus).toHaveBeenCalledWith("starterSink");
+      game.sim.step(colors.includes("yellow") ? 121 : 61);
+      hud["updateWarnings"]();
+      expect(hud.root.getChildByLabel("danger-starterSink", true)).toBeNull();
+      hud.root.destroy({ children: true });
       view.root.destroy({ children: true });
     });
 });

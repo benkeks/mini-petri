@@ -1320,14 +1320,19 @@ describe("upgrades", () => {
     expect(disconnected.coins).toBe(STARTING_COINS + 1);
   });
 
-  it("protects the first main source's large output place while allowing its arcs to be rewired", () => {
+  it("protects the first source's output and place, while allowing other arcs to be rewired", () => {
     const game = new Game(endless);
     const version = game.sim.net.version;
     expect(game.remove("starterPlace", false)).toBe(false);
     expect(game.remove("starterPlace")).toBe(false);
     expect(game.sim.net.version).toBe(version);
     expect(game.sim.net.places.get("starterPlace")!.ghost).toBeFalsy();
-    expect(game.remove("starterOutput")).toBe(true);
+    expect(game.remove("starterOutput", false)).toBe(false);
+    expect(game.remove("starterOutput")).toBe(false);
+    expect(game.sim.net.version).toBe(version);
+    expect(game.sim.net.arcs.get("starterOutput")!.ghost).toBeFalsy();
+    expect(game.remove("starterRelayInput", false)).toBe(true);
+    expect(game.remove("starterRelayInput")).toBe(true);
   });
 
   it("make transitions automatic, then faster, and places larger", () => {

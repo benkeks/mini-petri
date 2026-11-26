@@ -41,7 +41,7 @@ Completed goals are checked off and disappear.
 ## Removal and ghosts
 - Removing marks an arc, place or transition as a `ghost`; `inputs`/`outputs` and enabling ignore ghosts.
 - The remove tool cannot remove source or sink transitions, though their arcs may still be removed.
-  The first main source's large output place is indestructible too, but its connections can be rewired.
+  The first main source's large output place and its original source arc are indestructible; the place's other connections can still be rewired.
 - Ghosting an arc gives its (live) transition the arc back as an open port, so it is disabled until reconnected.
   Ghosting a transition ghosts its arcs; ghosting a place drops its marking and ghosts its arcs.
 - Tokens already moving on ghost arcs finish their trip and firings in progress complete; output tokens arriving at a ghost place are dropped.
@@ -157,6 +157,7 @@ Completed goals are checked off and disappear.
 - Each game owns its goal list and score, so spawned goals and deliveries do not leak across restarts.
   The score increases by matching goal tokens on arrival, and resolving every current goal does not end the game.
   The HUD displays this count as deliveries with colored boxes: blue initially, red at epoch 6, green at 40 and yellow at 100.
+  Its score and endless-mode gain use fixed-width digits, so their labels and boxes shift only when the number of digits changes.
   Each box jumps when a delivery of its color increases the count, including simultaneous multicolor deliveries.
   The HUD shows the number of completed spawn epochs.
   Pausing freezes simulation time and player actions, dims the screen, and shows a centered end-pause button; tapping the backdrop also resumes.

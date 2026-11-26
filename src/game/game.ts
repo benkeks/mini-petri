@@ -791,7 +791,7 @@ export class Game {
     const net = this.sim.net;
     if (this.complete || !this.level.tools?.remove) return false;
     const a = net.arcs.get(id);
-    if (a && !a.ghost) {
+    if (a && !a.ghost && !a.indestructible) {
       if (apply) {
         this.syncUnusedPlaces();
         net.ghostArc(id);
@@ -980,14 +980,16 @@ export class Game {
   }
 
   goals(): GoalStatus[] {
-    return this.goalDefinitions.map((g) => {
-      const delivered = Math.min(g.count, this.delivered.get(deliveryKey(g.sinkId, g.color)) ?? 0);
-      return { ...g, delivered, done: delivered >= g.count };
-    });
+    return this.goalDefinitions.map((goal) => this.goalStatus(goal));
   }
 
   goalsFor(sinkId: string): GoalStatus[] {
-    return this.goals().filter((g) => g.sinkId === sinkId);
+    return this.goalsOf(sinkId).map((goal) => this.goalStatus(goal));
+  }
+
+  private goalStatus(goal: Goal): GoalStatus {
+    const delivered = Math.min(goal.count, this.delivered.get(deliveryKey(goal.sinkId, goal.color)) ?? 0);
+    return { ...goal, delivered, done: delivered >= goal.count };
   }
 
   remainingGoalOrdinals(goal: GoalStatus): number[] {

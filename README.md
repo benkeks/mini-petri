@@ -30,7 +30,7 @@ Release outside the play area, select the starting node again, release far beyon
 - **Extend:** select a place and build a connected relay; special-transition tools build or convert transitions with different functionality.
 - **Auto** (clock) automates a transition; further uses make it faster.
 - **Capacity** (plus, unlocked at epoch 10) enlarges a place and increases its building and connection ranges.
-- **Remove** (cross) removes connections or player nodes, but not sources, sinks or the first source's large output place.
+- **Remove** (cross) removes connections or player nodes, but not sources, sinks, the first source's large output place or its original source arc.
 
 New transitions cannot fire until every plug is connected.
 An unconnected one-delivery place expires after 30 idle seconds; connecting or upgrading it prevents this.

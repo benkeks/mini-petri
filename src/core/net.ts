@@ -65,6 +65,8 @@ export interface Arc {
   count?: number;
   /** A removed arc: tokens on it finish their journey, then it disappears. */
   ghost?: boolean;
+  /** Player deletion is forbidden for this arc. */
+  indestructible?: boolean;
 }
 
 export interface NetSpec {

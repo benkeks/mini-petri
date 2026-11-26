@@ -38,6 +38,7 @@ const APPEAR_TIME = 0.4;
 const REWARD_EXIT_TIME = 0.3;
 const REWARD_FLIGHT_TIME = 0.75;
 const BALANCE_TWEEN_TIME = 0.25;
+const STUBS_PER_CHUNK = 16;
 
 /** What a tap at some point of the world hits. */
 export type Pick =
@@ -88,6 +89,19 @@ interface TransitionNode {
   deniedAt: number;
   deniedColor: number;
   balance: Map<string, { position: Pt; from: Pt; target: Pt; elapsed: number }>;
+  staticSinkKey?: string;
+}
+
+interface StubChunk {
+  root: Container;
+  gfx: Graphics;
+  labels: Container;
+  signature: string;
+}
+
+interface PortGlow {
+  gfx: Graphics;
+  mode?: "normal" | "selected" | "disabled";
 }
 
 interface BalanceToken {
@@ -125,11 +139,14 @@ export class NetView {
   private readonly ghostArcLayer = new Graphics();
   private readonly ghostPlaceLayer = new Graphics();
   private readonly arcLayer = new Graphics();
-  private readonly stubLayer = new Graphics();
+  private readonly stubLayer = new Container();
+  private readonly stubChunks: StubChunk[] = [];
   private readonly placeLayer = new Graphics();
   private readonly tokenLayer = new Graphics();
   private readonly overlayLayer = new Graphics();
   private readonly buildPreview = new Graphics();
+  private readonly portGlowLayer = new Container();
+  private readonly portGlows = new Map<string, PortGlow>();
   private readonly rewardLayer = new Container();
   private rewardVersion = -1;
   private rewards: RewardNode[] = [];
@@ -137,6 +154,7 @@ export class NetView {
   private readonly labelLayer = new Container();
   /** Labels that belong to arcs and transitions; rebuilt with them. */
   private readonly staticLabels = new Container();
+  private readonly stubLabels = new Container();
   private builtVersion = -1;
   private readonly overflowTexts = new Map<string, Text>();
   private readonly transitions = new Map<string, TransitionNode>();
@@ -166,11 +184,11 @@ export class NetView {
       this.overlayLayer,
       this.rewardLayer,
     );
-    this.labelLayer.addChild(this.staticLabels, this.previewLabels);
+    this.labelLayer.addChild(this.staticLabels, this.stubLabels, this.previewLabels);
     this.buildPreview.label = "build-preview";
     this.buildPreview.alpha = 0.65;
     this.previewLabels.alpha = 0.65;
-    this.overlayLayer.addChild(this.buildPreview);
+    this.overlayLayer.addChild(this.buildPreview, this.portGlowLayer);
     game.sim.onFire((e) => {
       if (this.root.destroyed) return;
       const n = this.transitions.get(e.transitionId);
@@ -407,23 +425,15 @@ export class NetView {
     this.builtVersion = this.game.sim.net.version;
     this.arcLayer.clear();
     this.ghostArcLayer.clear();
-    this.stubLayer.clear();
     for (const c of this.staticLabels.removeChildren()) c.destroy();
     for (const t of this.overflowTexts.values()) t.destroy();
     this.overflowTexts.clear();
-    for (const c of this.transitionLayer.removeChildren()) c.destroy({ children: true });
-    const old = new Map(this.transitions);
-    this.transitions.clear();
     this.routes.clear();
     this.buildRoutes();
     this.drawArcs();
     this.drawStubs();
     this.buildTransitions();
     this.buildPlaceLabels();
-    for (const [id, n] of this.transitions) {
-      const prev = old.get(id);
-      if (prev) Object.assign(n, { deniedAt: prev.deniedAt, deniedColor: prev.deniedColor, balance: prev.balance });
-    }
   }
 
   /**
@@ -466,7 +476,50 @@ export class NetView {
 
   /** Dangling stubs of open ports, each with a plug at its loose end. */
   private drawStubs(): void {
-    for (const s of this.stubs) this.drawStub(this.stubLayer, s, this.staticLabels);
+    const activePorts = new Set<string>();
+    for (const stub of this.stubs) {
+      const key = `${stub.tid}:${stub.index}`;
+      activePorts.add(key);
+      let glow = this.portGlows.get(key);
+      if (!glow) {
+        glow = { gfx: new Graphics() };
+        this.portGlowLayer.addChild(glow.gfx);
+        this.portGlows.set(key, glow);
+      }
+      glow.gfx.position.set(stub.plug.x, stub.plug.y);
+    }
+    for (const [key, glow] of this.portGlows) {
+      if (activePorts.has(key)) continue;
+      glow.gfx.destroy();
+      this.portGlows.delete(key);
+    }
+    const count = Math.ceil(this.stubs.length / STUBS_PER_CHUNK);
+    for (let i = 0; i < count; i++) {
+      const stubs = this.stubs.slice(i * STUBS_PER_CHUNK, (i + 1) * STUBS_PER_CHUNK);
+      const signature = JSON.stringify(stubs.map((s) =>
+        [s.edge.x, s.edge.y, s.plug.x, s.plug.y, s.port.dir, s.port.color, arcCount(s.port)]));
+      let node = this.stubChunks[i];
+      if (!node) {
+        const root = new Container();
+        const gfx = new Graphics();
+        const labels = new Container();
+        root.addChild(gfx);
+        this.stubLayer.addChild(root);
+        this.stubLabels.addChild(labels);
+        node = { root, gfx, labels, signature: "" };
+        this.stubChunks.push(node);
+      }
+      if (node.signature === signature) continue;
+      node.signature = signature;
+      node.gfx.clear();
+      for (const label of node.labels.removeChildren()) label.destroy();
+      for (const stub of stubs) this.drawStub(node.gfx, stub, node.labels);
+    }
+    while (this.stubChunks.length > count) {
+      const node = this.stubChunks.pop()!;
+      node.root.destroy({ children: true });
+      node.labels.destroy({ children: true });
+    }
   }
 
   private drawStub(g: Graphics, s: PortStub, labels: Container, color = s.port.color ? TOKEN_COLORS[s.port.color] : THEME.ink): void {
@@ -523,10 +576,21 @@ export class NetView {
   }
 
   private buildTransitions(): void {
+    for (const [id, node] of this.transitions) {
+      if (this.game.sim.net.transitions.has(id)) continue;
+      node.container.destroy({ children: true });
+      this.transitions.delete(id);
+    }
     for (const t of this.game.sim.net.transitions.values()) {
+      const previous = this.transitions.get(t.id);
+      if (previous) {
+        previous.staticSinkKey = undefined;
+        continue;
+      }
       const container = new Container();
       container.position.set(t.x, t.y);
       const gfx = new Graphics();
+      if (t.kind === "sink") gfx.context.batchMode = "batch";
       container.addChild(gfx);
       if (t.ghost) container.alpha = GHOST_ALPHA;
       const node: TransitionNode = { t, container, gfx, deniedAt: -Infinity, deniedColor: THEME.warn, balance: new Map() };
@@ -583,9 +647,19 @@ export class NetView {
     const { t, gfx: g } = n;
     const sim = this.game.sim;
     const goals = t.kind === "sink" ? this.game.goalsFor(t.id) : [];
+    const spawnedAt = this.game.spawnedAt.get(t.id);
+    const effect = this.firingEffects.get(t.id);
+    const stableSink = t.kind === "sink" && !t.ghost && !this.game.resolved.has(t.id) && !this.game.failed.has(t.id)
+      && (spawnedAt === undefined || now - spawnedAt >= APPEAR_TIME)
+      && (this.game.complete || now - n.deniedAt >= SHAKE_TIME)
+      && (this.game.complete || !effect || now - Math.max(effect.attraction, effect.emission) >= FLASH_TIME)
+      && !(this.game.countdownProgress(t.id) ?? 0);
+    const sinkKey = stableSink ? goals.map((goal) => `${goal.color}:${goal.count}:${goal.delivered}`).join("|") : undefined;
+    if (sinkKey !== undefined && n.staticSinkKey === sinkKey
+      && [...n.balance.values()].every((token) => token.elapsed >= BALANCE_TWEEN_TIME)) return;
+    n.staticSinkKey = sinkKey;
     const enabled = sim.isEnabled(t.id);
     g.clear();
-    const spawnedAt = this.game.spawnedAt.get(t.id);
     const entering = spawnedAt === undefined ? 1 : Math.max(0, Math.min(1, (now - spawnedAt) / APPEAR_TIME));
     const gone = t.ghost && (this.game.exhausted.has(t.id) || this.game.failed.has(t.id));
     n.container.alpha = gone ? 0 : (t.ghost ? GHOST_ALPHA : entering);
@@ -598,7 +672,6 @@ export class NetView {
     n.container.position.set(t.x + shake, t.y);
 
     const { portrait, bar: { w, h } } = this.layouts.get(t.id)!;
-    const effect = this.firingEffects.get(t.id);
     for (const phase of ["attraction", "emission"] as const) {
       const age = frozen ? Infinity : now - (effect?.[phase] ?? -Infinity);
       if (age < 0 || age >= FLASH_TIME) continue;
@@ -872,14 +945,23 @@ export class NetView {
     // Keep the selected port clear, but dim connectors that cannot accept the current wiring.
     for (const s of this.stubs) {
       const selected = o.selected?.tid === s.tid && o.selected.index === s.index;
-      if ((selectedPlace || (selectedTransition && !selected && this.game.level.tools?.place))
-        && !o.target?.({ kind: "port", tid: s.tid, index: s.index })) {
-        g.circle(s.plug.x, s.plug.y, PLUG_RADIUS + 2).fill(THEME.background);
-        this.dashedCircle(g, s.plug, PLUG_RADIUS, THEME.muted, 2);
-        continue;
+      const disabled = (selectedPlace || (selectedTransition && !selected && this.game.level.tools?.place))
+        && !o.target?.({ kind: "port", tid: s.tid, index: s.index });
+      const mode = disabled ? "disabled" : selected ? "selected" : "normal";
+      const glow = this.portGlows.get(`${s.tid}:${s.index}`)!;
+      if (glow.mode !== mode) {
+        glow.mode = mode;
+        glow.gfx.clear();
+        if (mode === "disabled") glow.gfx.circle(0, 0, PLUG_RADIUS + 2).fill(THEME.background);
+        this.dashedCircle(glow.gfx, { x: 0, y: 0 },
+          mode === "disabled" ? PLUG_RADIUS : mode === "selected" ? PLUG_RADIUS + 5 : PLUG_RADIUS + 1.5,
+          mode === "disabled" ? THEME.muted : THEME.ink, mode === "normal" ? 1.5 : 2);
       }
-      const r = PLUG_RADIUS + (selected ? 4 + 2 * pulse : 1 + pulse);
-      this.dashedCircle(g, s.plug, r, THEME.ink, selected ? 2 : 1.5, selected ? 0.9 : 0.25);
+      const radius = mode === "disabled" ? PLUG_RADIUS : mode === "selected" ? PLUG_RADIUS + 4 + 2 * pulse : PLUG_RADIUS + 1 + pulse;
+      const base = mode === "disabled" ? PLUG_RADIUS : mode === "selected" ? PLUG_RADIUS + 5 : PLUG_RADIUS + 1.5;
+      glow.gfx.scale.set(radius / base);
+      glow.gfx.alpha = mode === "normal" ? 0.25 : mode === "selected" ? 0.9 : 1;
+      if (disabled) continue;
       if (selected && o.pointer && this.buildPreview.context.instructions.length === 0) {
         g.moveTo(s.plug.x, s.plug.y).lineTo(o.pointer.x, o.pointer.y).stroke({ width: 3, color: THEME.ink, alpha: 0.35, cap: "round" });
       }

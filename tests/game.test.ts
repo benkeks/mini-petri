@@ -176,15 +176,8 @@ describe("late endless progression", () => {
     expect(game.epoch).toBe(2001);
     expect(source.supply).toBe(44);
 
-    expect(game.remove("starterOutput")).toBe(true);
-    game.sim.step(1);
-    game.sim.net.addPlace({ id: "refundPlace", x: source.x - 100, y: source.y, capacity: 1, marking: ["blue"] });
-    game.sim.net.connect(source.id, 0, "refundPlace");
-    expect(game.remove("refundPlace")).toBe(true);
-    expect(source.supply).toBe(45);
-    game.sim.step(1);
-    game.sim.net.connect(source.id, 0, "starterPlace");
-    for (let remaining = 45; remaining > 0; remaining--) {
+    expect(game.remove("starterOutput")).toBe(false);
+    for (let remaining = 44; remaining > 0; remaining--) {
       if (remaining % 10 === 5) {
         game.sim.step(1);
         game.sim.net.places.get("starterPlace")!.marking = [];

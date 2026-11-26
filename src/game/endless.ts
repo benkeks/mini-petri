@@ -21,7 +21,7 @@ export const endless: Level = {
       { id: "starterSink", x: 1000, y: 400, kind: "sink", autoInterval: 0.6 },
     ],
     arcs: [
-      { id: "starterOutput", from: "starterSource", to: "starterPlace", color: "blue" },
+      { id: "starterOutput", from: "starterSource", to: "starterPlace", color: "blue", indestructible: true },
       { id: "starterRelayInput", from: "starterPlace", to: "starterRelay" },
       { id: "starterRelayOutput", from: "starterRelay", to: "starterDestination" },
       { id: "starterInput", from: "starterDestination", to: "starterSink", color: "blue" },

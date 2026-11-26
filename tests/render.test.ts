@@ -21,6 +21,10 @@ function drawing(graphics: Graphics) {
     }] : []);
 }
 
+function stubDrawing(view: NetView) {
+  return view["stubChunks"].flatMap((node) => drawing(node.gfx));
+}
+
 function balancePositions(view: NetView, game: Game, id: string, radius: number): number[][] {
   const transition = game.sim.net.transitions.get(id)!;
   const node = view.root.children[5].children.find((node) => node.x === transition.x && node.y === transition.y)!;
@@ -558,6 +562,41 @@ describe("delivery HUD", () => {
     return { hud, view, icon };
   }
 
+  it("keeps the delivery label and icons stationary until a digit is added", () => {
+    const width = vi.spyOn(Text.prototype, "width", "get").mockImplementation(function (this: Text) {
+      return this.text.length * Number(this.style.fontSize) / 2;
+    });
+    const height = vi.spyOn(Text.prototype, "height", "get").mockReturnValue(24);
+    const game = new Game(endless, Math.random, { survival: true });
+    const { hud, view } = makeHud(game);
+    hud["drawBackplates"] = vi.fn();
+    hud.layout(1200, 800);
+    const positions = (score: number) => {
+      game.score = score;
+      hud.update(0, (point) => point);
+      return [hud["statsLabel"].x, hud["deliveryIcons"].x];
+    };
+    expect(positions(1)).toEqual(positions(8));
+    const single = positions(9);
+    const double = positions(10);
+    expect(double[0]).toBeGreaterThan(single[0]);
+    expect(positions(11)).toEqual(positions(99));
+    expect(positions(100)[0]).toBeGreaterThan(double[0]);
+
+    game.continueEndless();
+    const gainPositions = (gain: number) => {
+      game.score = 100 + gain;
+      hud.update(0, (point) => point);
+      return hud["deliveryIcons"].x;
+    };
+    expect(gainPositions(1)).toBe(gainPositions(9));
+    expect(gainPositions(10)).toBeGreaterThan(gainPositions(9));
+    hud.root.destroy({ children: true });
+    view.root.destroy({ children: true });
+    width.mockRestore();
+    height.mockRestore();
+  });
+
   it("hops on gains and tilts on losses for both resource counters", () => {
     const game = new Game(endless, Math.random, { survival: true });
     const { hud, view } = makeHud(game);
@@ -691,6 +730,72 @@ describe("delivery HUD", () => {
     expect(icon("red").visible).toBe(false);
     expect(icon("red").y).toBe(0);
     hud.root.destroy({ children: true });
+    view.root.destroy({ children: true });
+  });
+});
+
+describe("long-running net rendering", () => {
+  it("splits many dangling connectors into bounded graphics batches", () => {
+    const game = new Game(endless);
+    for (let i = 0; i < 40; i++) {
+      game.sim.net.addTransition({ id: `loose${i}`, x: 1200 + i * 80, y: 800, kind: "source", open: [{ dir: "out", color: "red" }] });
+    }
+    const view = new NetView(game);
+    view.update(0, { x: 0, y: 0, width: 5000, height: 1000 });
+    expect(view["stubChunks"].length).toBeGreaterThan(1);
+    expect(view["stubChunks"].every((chunk) => chunk.gfx.context.instructions.length <= 16 * 8)).toBe(true);
+    const circles = stubDrawing(view).flatMap((instruction) => instruction.path)
+      .filter((shape) => shape.action === "arc");
+    expect(circles).toHaveLength(40 * 4);
+    view.root.destroy({ children: true });
+  });
+
+  it("reuses unchanged connector graphics and removes them when their port disappears", () => {
+    const game = new Game(endless);
+    game.sim.net.addTransition({ id: "loose", x: 1200, y: 800, kind: "source", open: [{ dir: "out", color: "red" }] });
+    const view = new NetView(game);
+    const viewport = { x: 0, y: 0, width: 1400, height: 1000 };
+    view.update(0, viewport);
+    const stub = view["stubChunks"][0];
+    const clear = vi.spyOn(stub.gfx, "clear");
+    game.sim.net.addPlace({ id: "extra", x: 0, y: 0, marking: [] });
+    view.update(0, viewport);
+    expect(view["stubChunks"][0]).toBe(stub);
+    expect(clear).not.toHaveBeenCalled();
+    game.sim.net.connect("loose", 0, "extra");
+    view.update(0, viewport);
+    expect(view["stubChunks"]).toHaveLength(0);
+    expect(stub.root.destroyed).toBe(true);
+    expect(stub.labels.destroyed).toBe(true);
+    view.root.destroy({ children: true });
+  });
+
+  it("reuses unchanged sink graphics while updating deliveries and countdowns", () => {
+    const definition = structuredClone(endless);
+    definition.net.transitions.forEach((transition) => { transition.autoInterval = undefined; });
+    const game = new Game(definition);
+    const view = new NetView(game);
+    const viewport = { x: 0, y: 0, width: 1200, height: 800 };
+    view.update(0.1, viewport);
+    const node = view["transitions"].get("starterSink")!;
+    const clear = vi.spyOn(node.gfx, "clear");
+    view.update(0.1, viewport);
+    expect(clear).not.toHaveBeenCalled();
+
+    game.sim.net.addPlace({ id: "extra", x: 0, y: 0, marking: [] });
+    view.update(0.1, viewport);
+    expect(view["transitions"].get("starterSink")).toBe(node);
+    expect(clear).toHaveBeenCalledTimes(1);
+
+    game.sim.net.places.get("starterDestination")!.marking.push("blue");
+    expect(game.sim.fire("starterSink")).toBe(true);
+    game.sim.step(1);
+    view.update(0.1, viewport);
+    expect(clear).toHaveBeenCalledTimes(2);
+    expect(node.balance.size).toBe(4);
+    game.sim.step(180);
+    view.update(0.1, viewport);
+    expect(clear).toHaveBeenCalledTimes(3);
     view.root.destroy({ children: true });
   });
 });
@@ -1104,7 +1209,7 @@ describe("build area", () => {
       controller.release(point);
       controller.sync();
       view.update(0, { x: 0, y: 0, width: 2400, height: 2400 });
-      expect(drawing(view.root.children[3] as Graphics)).toEqual(preview.slice(1));
+      expect(stubDrawing(view)).toEqual(preview.slice(1));
       view.root.destroy({ children: true });
     });
 
@@ -1138,9 +1243,8 @@ describe("build area", () => {
     game.sim.net.addTransition({ id: "plug", x: 1500, y: 1000, kind: "normal", open: [{ dir: "out", color: "red" }] });
     const view = new NetView(game);
     view.update(0, { x: 0, y: 0, width: 2000, height: 1400 });
-    const stubs = view.root.children[3] as Graphics;
-    const arcs = stubs.context.instructions.flatMap((instruction) =>
-      instruction.action === "stroke" ? instruction.data.path.instructions : [])
+    const arcs = stubDrawing(view).filter((instruction) => instruction.action === "stroke")
+      .flatMap((instruction) => instruction.path)
       .filter((shape) => shape.action === "arc" && shape.data[0] === 1557 && shape.data[1] === 1000);
     expect(arcs).toHaveLength(4);
     expect(arcs.every((shape) => shape.data[2] === 5)).toBe(true);
@@ -1273,11 +1377,12 @@ describe("build area", () => {
     expect(view.pick(plug)).toEqual({ kind: "port", tid: "far", index: 0 });
     expect(controller.interactive(view.pick(plug))).toBe(false);
     view.update(0.25, viewport);
-    const overlay = view.root.children[8] as Graphics;
-    const mutedPlug = overlay.context.instructions.find((instruction) =>
+    const glow = view["portGlows"].get("far:0")!.gfx;
+    expect([glow.x, glow.y]).toEqual([plug.x, plug.y]);
+    const mutedPlug = glow.context.instructions.find((instruction) =>
       instruction.action === "stroke" && instruction.data.style.color === THEME.muted
       && instruction.data.path.instructions.some((shape) =>
-        shape.action === "arc" && shape.data[0] === plug.x && shape.data[1] === plug.y));
+        shape.action === "arc" && shape.data[0] === 0 && shape.data[1] === 0));
     expect(mutedPlug).toBeDefined();
     view.root.destroy({ children: true });
   });

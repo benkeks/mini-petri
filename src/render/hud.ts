@@ -151,6 +151,8 @@ export class Hud {
   private regions: Rectangle[] = [];
   private readonly title: Text;
   private readonly stats: Text;
+  private readonly statsLabel: Text;
+  private readonly statsGain: Text;
   private readonly deliveryIcons = new Container();
   private readonly deliveryBoxes = new Map<Color, { icon: Graphics; jumpAge?: number }>();
   private readonly scoredColors = new Set<Color>();
@@ -235,10 +237,14 @@ export class Hud {
     this.title.visible = game.level.mode !== "endless";
     this.stats = new Text({ text: "", style: { ...style, fontSize: 24, fontWeight: "bold" } });
     this.stats.label = "delivery-score";
-    this.stats.cursor = "pointer";
-    this.stats.on("pointertap", () => {
-      if (this.game.level.mode === "endless") this.actions.showStatistics?.();
-    });
+    this.statsLabel = new Text({ text: "", style: { ...style, fontSize: 24, fontWeight: "bold" } });
+    this.statsGain = new Text({ text: "", style: { ...style, fontFamily: "monospace", fontSize: 24, fontWeight: "bold" } });
+    for (const text of [this.stats, this.statsLabel, this.statsGain]) {
+      text.cursor = "pointer";
+      text.on("pointertap", () => {
+        if (this.game.level.mode === "endless") this.actions.showStatistics?.();
+      });
+    }
     this.deliveryIcons.cursor = "pointer";
     this.deliveryIcons.on("pointertap", () => {
       if (this.game.level.mode === "endless") this.actions.showStatistics?.();
@@ -392,6 +398,8 @@ export class Hud {
       this.backplates,
       this.title,
       this.stats,
+      this.statsLabel,
+      this.statsGain,
       this.deliveryIcons,
       this.meta,
       this.coinIcon,
@@ -420,7 +428,7 @@ export class Hud {
       this.deathFlash,
     );
     this.listenForResources(game);
-    this.stats.eventMode = this.deliveryIcons.eventMode = game.level.mode === "endless" && actions.showStatistics ? "static" : "none";
+    this.setStatisticsInteraction();
     this.updateDeliveryIcons(0);
     this.buildToolbar();
     this.hidePopup();
@@ -429,7 +437,7 @@ export class Hud {
 
   setGame(game: Game): void {
     this.game = game;
-    this.stats.eventMode = this.deliveryIcons.eventMode = game.level.mode === "endless" && this.actions.showStatistics ? "static" : "none";
+    this.setStatisticsInteraction();
     this.menuOpen = false;
     this.updateNavigationVisibility();
     this.confirming = false;
@@ -579,7 +587,7 @@ export class Hud {
   private drawBackplates(): void {
     this.regions = [];
     this.backplates.clear();
-    for (const text of [this.title, this.stats, this.meta, this.hint]) {
+    for (const text of [this.title, this.stats, this.statsLabel, this.statsGain, this.meta, this.hint]) {
       if (!text.visible || !text.text) continue;
       const bounds = text.getBounds();
       const rect = new Rectangle(bounds.minX - 5, bounds.minY - 3, bounds.width + 10, bounds.height + 6);
@@ -617,6 +625,11 @@ export class Hud {
       this.backplates.roundRect(rect.x, rect.y, rect.width, rect.height, 7)
         .fill({ color: 0xe7e0dc, alpha: 0.85 }).stroke({ width: 1, color: THEME.muted, alpha: 0.4 });
     }
+  }
+
+  private setStatisticsInteraction(): void {
+    const mode = this.game.level.mode === "endless" && this.actions.showStatistics ? "static" : "none";
+    for (const item of [this.stats, this.statsLabel, this.statsGain, this.deliveryIcons]) item.eventMode = mode;
   }
 
   private listenForResources(game: Game): void {
@@ -657,9 +670,13 @@ export class Hud {
   }
 
   private navigationKey(): string {
-    return [this.title.visible ? this.title.width : 0, this.stats.width, this.deliveryIconWidth(), this.meta.width,
+    return [this.title.visible ? this.title.width : 0, this.statsWidth(), this.deliveryIconWidth(), this.meta.width,
       this.fullscreen?.text, this.pause.text, this.pause.visible, this.skip.text, this.skip.visible,
       this.compactNavigation(), this.menuOpen].join(":");
+  }
+
+  private statsWidth(): number {
+    return this.stats.width + this.statsLabel.width + this.statsGain.width;
   }
 
   private deliveryIconWidth(): number {
@@ -742,11 +759,16 @@ export class Hud {
     this.lives.visible = this.game.level.mode === "endless";
     this.title.position.set(16, 10);
     this.stats.position.set(16, this.title.visible ? 34 : 8);
-    this.stats.style.fontSize = 24;
+    for (const text of [this.stats, this.statsLabel, this.statsGain]) text.style.fontSize = 24;
     const iconWidth = this.deliveryIconWidth();
     const availableStatsWidth = Math.max(1, width - 32 - (iconWidth ? iconWidth + 9 : 0));
-    if (this.stats.width > availableStatsWidth) this.stats.style.fontSize = 24 * availableStatsWidth / this.stats.width;
-    this.deliveryIcons.position.set(this.stats.x + this.stats.width + 12, this.stats.y + this.stats.height / 2);
+    const statsWidth = this.statsWidth();
+    if (statsWidth > availableStatsWidth) {
+      for (const text of [this.stats, this.statsLabel, this.statsGain]) text.style.fontSize = 24 * availableStatsWidth / statsWidth;
+    }
+    this.statsLabel.position.set(this.stats.x + this.stats.width, this.stats.y);
+    this.statsGain.position.set(this.statsLabel.x + this.statsLabel.width, this.stats.y);
+    this.deliveryIcons.position.set(this.stats.x + this.statsWidth() + 12, this.stats.y + this.stats.height / 2);
     this.deliveryIcons.hitArea = new Rectangle(-7, -this.stats.height / 2 - 8, iconWidth + 4, this.stats.height + 16);
     this.meta.position.set(16, this.title.visible ? 64 : 38);
     const resourceY = height - COIN_ROW / 2 - (portrait ? 0 : 5);
@@ -762,7 +784,7 @@ export class Hud {
     const compact = this.compactNavigation();
     this.menuDismiss.clear().rect(0, 0, width, height).fill({ color: THEME.background, alpha: 0.001 });
     const controls = this.metaControls().filter((control) => control.visible);
-    const scoreRight = 16 + Math.max(this.stats.width + (iconWidth ? 9 + iconWidth : 0),
+    const scoreRight = 16 + Math.max(this.statsWidth() + (iconWidth ? 9 + iconWidth : 0),
       this.meta.width, this.title.visible ? this.title.width : 0);
     const iconLeft = width - 16 - META_ICON_SIZE * 2 - 8;
     const iconY = scoreRight + 16 <= iconLeft ? this.stats.y : this.meta.y + this.meta.height + 12;
@@ -929,12 +951,13 @@ export class Hud {
     const helpChanged = this.hint.visible !== helpVisible;
     this.hint.visible = helpVisible;
     const survivalResult = g.survivalResult;
-    const score = survivalResult ? `${survivalResult.score} DELIVERIES [${g.score - survivalResult.score}]` : `${g.score} DELIVERIES`;
     const epoch = survivalResult ? `${survivalResult.epoch} [${g.epoch - survivalResult.epoch}]` : String(g.epoch);
-    const progress = g.level.mode === "endless"
-      ? score
+    const endless = g.level.mode === "endless";
+    this.stats.style.fontFamily = endless ? "monospace" : THEME.font;
+    this.stats.text = endless ? String(survivalResult?.score ?? g.score)
       : `GOALS ${g.resolved.size}/${new Set(g.level.goals.map((goal) => goal.sinkId)).size}`;
-    this.stats.text = progress;
+    this.statsLabel.text = endless ? " DELIVERIES" : "";
+    this.statsGain.text = survivalResult ? ` [${g.score - survivalResult.score}]` : "";
     const seconds = Math.floor(g.sim.time);
     const minutes = Math.floor(seconds / 60);
     this.meta.text = `TIME ${minutes}:${String(seconds % 60).padStart(2, "0")}${g.level.mode === "endless" ? `  EPOCH ${epoch}` : ""}`;

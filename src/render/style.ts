@@ -15,6 +15,7 @@ export const THEME = {
   arc: 0x8c867c,
   placeFill: 0xffffff,
   warn: 0xd8342c,
+  buildInvalid: 0xa57955,
   heart: 0xb52b45,
   removal: 0x965342,
   enabledGlow: 0x2b2b2b,
@@ -22,5 +23,6 @@ export const THEME = {
 };
 
 export const TOKEN_RADIUS = 6;
+export const STORED_TOKEN_RADIUS = 5.2;
 export const TRANSITION_W = 22;
 export const TRANSITION_H = 64;

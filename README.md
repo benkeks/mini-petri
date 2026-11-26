@@ -6,25 +6,27 @@ A small Mini Metro-style browser and smartphone game built on colored Petri nets
 
 ## How to play
 
-Route colored tokens from sources to matching goals (sinks).
-Circles hold tokens; bars are transitions; colored lines show which tokens a connection moves.
-Empty circles beside a goal show what it still needs.
-Filled goals disappear, and your score counts matching tokens delivered.
-New sources and goals appear as epochs advance, introducing new colors and token combinations.
+Route colored deliveries from sources to matching goals (sinks).
+Circles hold box-shaped deliveries; bars are transitions; colored lines show which deliveries a connection moves.
+Empty boxes beside a goal show what it still needs.
+Filled goals disappear, and your score counts matching deliveries.
+New sources and goals appear as epochs advance, introducing new colors and delivery combinations.
 
-**Tap a dark transition to fire it**, consuming its inputs and sending tokens onward.
-Grey transitions are blocked: they need the right tokens, connected ports and room at their destinations.
-The initial relay passes tokens through unchanged; sources and sinks fire automatically.
-Place sizes indicate capacities of 1, 7 or 19 tokens.
-The starting blue source is unlimited, with a 19-token place before the relay and a 7-token destination after it.
+**Tap a dark transition to fire it**, consuming its inputs and sending deliveries onward.
+Grey transitions are blocked: they need the right deliveries, connected ports and room at their destinations.
+The initial relay passes deliveries through unchanged; sources and sinks fire automatically.
+Place sizes indicate capacities of 1, 7 or 19 deliveries.
+The starting blue source is unlimited until epoch 2000, when it gains a remaining supply of 50 and a warning.
+Its output place holds 19 deliveries and the destination after the relay holds 7.
 Finite sources show their remaining supply beside them.
 Later goals may require colors you must produce with special transitions rather than collect from a matching source.
 Late epochs add paired and four-color goals, persistent infinite sinks that can still starve, and multiple sinks per epoch.
-Overlapping colored goal circles represent the tokens needed together for one firing.
+Overlapping colored goal boxes represent the deliveries needed together for one firing.
 
 Drag empty space to pan; use the mouse wheel, trackpad or a two-finger pinch to zoom.
 Leave placement mode before dragging.
-The upper left shows score, game time and epoch.
+The upper left shows the delivery count, game time and epoch.
+Colored boxes appear as new delivery colors unlock and jump when a matching delivery scores.
 **Pause** freezes gameplay; **Restart** asks for confirmation before starting a fresh run.
 Supported smartphones also offer a fullscreen button.
 
@@ -34,26 +36,28 @@ Use the bottom toolbar; tap the selected tool again or press Escape to return to
 Hold to preview a build, drag to adjust it, and release at a valid position to commit.
 Previews show the node's colored connectors and proposed arcs, without moving the camera.
 Release outside the play area or press Escape to cancel.
+Selecting the starting node again or releasing far beyond the build range also cancels.
 Successful builds and upgrades return to the default tool; removal stays active.
 
 - **Connect:** tap a loose plug and a place in either order.
   Alternatively, drag from a plug or place to the other endpoint; drag into empty space to build a connected place or relay.
-  With a plug selected, tap empty buildable space to add a connected one-token place, or another plug to bridge both through a new place when space allows.
+  With a plug selected, tap empty buildable space to add a connected one-delivery place, or another plug to bridge both through a new place when space allows.
   Reachable targets are highlighted.
   You can tap a highlighted transition instead of its plug to choose its first available input, then output.
 - **Extend:** select a place, then tap empty space to build a connected one-to-one relay; wire its remaining plug.
-  Special-transition tools build inside the white area or convert compatible existing transitions, preserving their connections and speed upgrades.
+  Special-transition tools build inside the white area or convert compatible existing transitions to different functionality, preserving their connections and speed upgrades.
 - **Auto** (clock) automates a transition; further uses make it faster.
 - **Capacity** (plus, unlocked at epoch 10) enlarges a place and increases its building and connection ranges.
 - **Remove** (cross) removes connections or player nodes, but not sources or sinks.
   The first source's large output place is also protected.
-  Deleting a finite source's output place returns matching settled tokens to its remaining supply, up to its starting amount.
-  Cut connections leave reusable plugs; tokens already in flight finish their trips.
+  Deleting a finite source's output place returns matching settled deliveries to its remaining supply, up to its starting amount.
+  Cut connections leave reusable plugs; deliveries already in flight finish their trips.
+  Drag a plug to start wiring and leave removal mode.
   Its reddish background marks deletion mode; hold to preview a deletion and drag off the target before releasing to abort.
   Drag empty space to pan without leaving deletion mode.
 
 New transitions cannot fire until every plug is connected.
-An unconnected one-token place expires after two idle minutes; connecting or upgrading it prevents this.
+An unconnected one-delivery place expires after 30 idle seconds; connecting or upgrading it prevents this.
 
 ### Survival and rewards
 
@@ -82,7 +86,7 @@ Toolbar badges show free uses in green, limited paid uses in black and prices in
 
 The map *is* a colored Petri net, edited while it runs.
 Firing atomically consumes inputs and reserves output capacity.
-Tokens animate in continuous time and become usable only on arrival; outputs start moving only after all inputs reach the transition.
+Deliveries (Petri-net tokens) animate in continuous time and become usable only on arrival; outputs start moving only after all inputs reach the transition.
 
 See the [design notes](docs/DESIGN.md) for detailed rules, controls and presentation, the [map vocabulary](docs/DESIGN.md#reading-the-map) for Petri-net terminology, and [epoch progression](docs/DESIGN.md#epoch-progression) for spawn thresholds and reward unlocks.
 

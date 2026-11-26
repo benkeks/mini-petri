@@ -1,6 +1,6 @@
 import { Container, Graphics, Rectangle, Text } from "pixi.js";
-import { COLORS } from "../core/multiset";
-import { MAX_LIVES, type CoinEvent, type Game } from "../game/game";
+import { COLORS, type Color } from "../core/multiset";
+import { ENDLESS_RULES, MAX_LIVES, type CoinEvent, type Game } from "../game/game";
 import type { Powerup } from "../game/powerups";
 import { brushesOf, sameBrush, type Brush, type Controller } from "../input/controller";
 import { isUltraWide, type Pt } from "./geometry";
@@ -13,6 +13,9 @@ const REMOVE_EXTRA_GAP = 8;
 const COIN_ROW = 48;
 const COIN_SHAKE_TIME = 0.35;
 const TOOL_SELECT_TIME = 0.2;
+const DELIVERY_JUMP_TIME = 0.4 / 3;
+const DELIVERY_BOX_SPACING = 16;
+const DELIVERY_COLORS: readonly Color[] = ["blue", "red", "green", "yellow"];
 const META_ICON_SIZE = 40;
 const WARNING_START = 124;
 const WARNING_GAP = 24;
@@ -140,6 +143,9 @@ export class Hud {
   private regions: Rectangle[] = [];
   private readonly title: Text;
   private readonly stats: Text;
+  private readonly deliveryIcons = new Container();
+  private readonly deliveryBoxes = new Map<Color, { icon: Graphics; jumpAge?: number }>();
+  private readonly scoredColors = new Set<Color>();
   private readonly meta: Text;
   private readonly coins: Text;
   private readonly lives: Text;
@@ -207,6 +213,13 @@ export class Hud {
     this.title = new Text({ text: game.level.name.toUpperCase(), style: { ...style, fontSize: 18, fontWeight: "bold" } });
     this.title.visible = game.level.mode !== "endless";
     this.stats = new Text({ text: "", style: { ...style, fontSize: 24, fontWeight: "bold" } });
+    for (const color of DELIVERY_COLORS) {
+      const icon = new Graphics().roundRect(-5, -5, 10, 10, 1)
+        .fill(TOKEN_COLORS[color]).stroke({ width: 1.5, color: 0xffffff });
+      icon.label = `delivery-${color}`;
+      this.deliveryIcons.addChild(icon);
+      this.deliveryBoxes.set(color, { icon });
+    }
     this.meta = new Text({ text: "", style: { ...style, fontSize: 14 } });
     this.coins = new Text({ text: "", style: { ...style, fontSize: 16, fontWeight: "bold", fill: 0xffffff } });
     this.coins.anchor.set(0.5);
@@ -313,6 +326,7 @@ export class Hud {
       this.backplates,
       this.title,
       this.stats,
+      this.deliveryIcons,
       this.meta,
       this.resources,
       this.coins,
@@ -337,6 +351,7 @@ export class Hud {
       this.deathFlash,
     );
     this.listenForResources(game);
+    this.updateDeliveryIcons(0);
     this.buildToolbar();
     this.hidePopup();
     this.updateNavigationVisibility();
@@ -349,6 +364,9 @@ export class Hud {
     this.confirming = false;
     this.confirmationShade.visible = this.confirmation.visible = false;
     this.coinFlights = [];
+    this.scoredColors.clear();
+    for (const box of this.deliveryBoxes.values()) box.jumpAge = undefined;
+    this.updateDeliveryIcons(0);
     this.coinShakeAge = undefined;
     this.coinLayer.clear();
     this.heartFlights = [];
@@ -487,6 +505,12 @@ export class Hud {
       this.regions.push(rect);
       this.backplates.roundRect(rect.x, rect.y, rect.width, rect.height, 7).fill({ color: THEME.background, alpha: 0.94 });
     }
+    if (this.deliveryIcons.visible && this.deliveryIconWidth() > 0) {
+      const rect = new Rectangle(this.deliveryIcons.x - 7, this.stats.y - 8,
+        this.deliveryIconWidth() + 4, this.stats.height + 16);
+      this.regions.push(rect);
+      this.backplates.roundRect(rect.x, rect.y, rect.width, rect.height, 7).fill({ color: THEME.background, alpha: 0.94 });
+    }
     if (this.toolbar.visible) {
       for (const tool of this.tools) {
         const half = this.toolSize / 2 + 4;
@@ -515,6 +539,14 @@ export class Hud {
   }
 
   private listenForResources(game: Game): void {
+    game.onDeliveries((colors) => {
+      if (this.game !== game) return;
+      for (const color of DELIVERY_COLORS) {
+        if (!colors[color]) continue;
+        this.scoredColors.add(color);
+        this.deliveryBoxes.get(color)!.jumpAge = 0;
+      }
+    });
     game.onInsufficientCoins(() => {
       if (this.game === game) this.coinShakeAge = 0;
     });
@@ -538,9 +570,32 @@ export class Hud {
   }
 
   private navigationKey(): string {
-    return [this.title.visible ? this.title.width : 0, this.stats.width, this.meta.width,
+    return [this.title.visible ? this.title.width : 0, this.stats.width, this.deliveryIconWidth(), this.meta.width,
       this.fullscreen?.text, this.pause.text, this.pause.visible, this.skip.text, this.skip.visible,
       this.compactNavigation(), this.menuOpen].join(":");
+  }
+
+  private deliveryIconWidth(): number {
+    const count = [...this.deliveryBoxes.values()].filter((box) => box.icon.visible).length;
+    return this.deliveryIcons.visible && count ? (count - 1) * DELIVERY_BOX_SPACING + 10 : 0;
+  }
+
+  private updateDeliveryIcons(dt: number): void {
+    this.deliveryIcons.visible = this.game.level.mode === "endless";
+    const thresholds: Record<Color, number> = {
+      blue: 0, red: ENDLESS_RULES.blueOnlyEpochs + 1, green: ENDLESS_RULES.greenFrom, yellow: ENDLESS_RULES.yellowFrom,
+    };
+    let index = 0;
+    for (const color of DELIVERY_COLORS) {
+      const box = this.deliveryBoxes.get(color)!;
+      box.icon.visible = this.deliveryIcons.visible && (this.game.epoch >= thresholds[color] || this.scoredColors.has(color));
+      if (box.icon.visible) box.icon.x = index++ * DELIVERY_BOX_SPACING;
+      if (box.jumpAge !== undefined) {
+        box.jumpAge += dt;
+        if (box.jumpAge >= DELIVERY_JUMP_TIME) box.jumpAge = undefined;
+      }
+      box.icon.y = box.jumpAge === undefined ? 0 : -7 * Math.sin(Math.PI * box.jumpAge / DELIVERY_JUMP_TIME);
+    }
   }
 
   private controlBox(control: Text): Rectangle {
@@ -596,6 +651,11 @@ export class Hud {
     this.lives.visible = this.game.level.mode === "endless";
     this.title.position.set(16, 10);
     this.stats.position.set(16, this.title.visible ? 34 : 8);
+    this.stats.style.fontSize = 24;
+    const iconWidth = this.deliveryIconWidth();
+    const availableStatsWidth = Math.max(1, width - 32 - (iconWidth ? iconWidth + 9 : 0));
+    if (this.stats.width > availableStatsWidth) this.stats.style.fontSize = 24 * availableStatsWidth / this.stats.width;
+    this.deliveryIcons.position.set(this.stats.x + this.stats.width + 12, this.stats.y + this.stats.height / 2);
     this.meta.position.set(16, this.title.visible ? 64 : 38);
     const resourceY = height - COIN_ROW / 2 - (portrait ? 0 : 5);
     this.coinBaseX = portrait ? width / 2 - (this.lives.visible ? 27 : 0) : 34;
@@ -606,7 +666,8 @@ export class Hud {
     const compact = this.compactNavigation();
     this.menuDismiss.clear().rect(0, 0, width, height).fill({ color: THEME.background, alpha: 0.001 });
     const controls = this.metaControls().filter((control) => control.visible);
-    const scoreRight = 16 + Math.max(this.stats.width, this.meta.width, this.title.visible ? this.title.width : 0);
+    const scoreRight = 16 + Math.max(this.stats.width + (iconWidth ? 9 + iconWidth : 0),
+      this.meta.width, this.title.visible ? this.title.width : 0);
     const iconLeft = width - 16 - META_ICON_SIZE * 2 - 8;
     const iconY = scoreRight + 16 <= iconLeft ? this.stats.y : this.meta.y + this.meta.height + 12;
     this.menuButton.position.set(width - 16 - META_ICON_SIZE, iconY);
@@ -721,6 +782,7 @@ export class Hud {
   /** `dt` is real elapsed time; the popup keeps animating while the game is frozen. */
   update(dt: number, toScreen: (point: Pt) => Pt): boolean {
     const g = this.game;
+    this.updateDeliveryIcons(dt);
     if (this.notice) {
       this.notice.remaining -= dt;
       if (this.notice.remaining <= 0) this.notice = undefined;
@@ -769,10 +831,10 @@ export class Hud {
     const helpChanged = this.hint.visible !== helpVisible;
     this.hint.visible = helpVisible;
     const survivalResult = g.survivalResult;
-    const score = survivalResult ? `${survivalResult.score} [${g.score - survivalResult.score}]` : String(g.score);
+    const score = survivalResult ? `${survivalResult.score} DELIVERIES [${g.score - survivalResult.score}]` : `${g.score} DELIVERIES`;
     const epoch = survivalResult ? `${survivalResult.epoch} [${g.epoch - survivalResult.epoch}]` : String(g.epoch);
     const progress = g.level.mode === "endless"
-      ? `SCORE ${score}`
+      ? score
       : `GOALS ${g.resolved.size}/${new Set(g.level.goals.map((goal) => goal.sinkId)).size}`;
     this.stats.text = progress;
     const seconds = Math.floor(g.sim.time);
@@ -870,7 +932,7 @@ export class Hud {
     this.hint.visible = false;
     const failed = this.game.survivalFailed;
     this.heading.text = failed ? "SURVIVAL OVER" : "LEVEL COMPLETE!";
-    this.detail.text = failed ? `SCORE ${this.game.score}` : `ALL GOALS MET IN ${this.game.completedAt!.toFixed(0)}S`;
+    this.detail.text = failed ? `${this.game.score} DELIVERIES` : `ALL GOALS MET IN ${this.game.completedAt!.toFixed(0)}S`;
     this.endlessButton.visible = failed;
     this.againButton.position.set(failed ? -77 : 0, 52);
     this.endlessButton.position.set(77, 52);

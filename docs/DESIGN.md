@@ -10,15 +10,15 @@ The [README](../README.md) covers setup and a quick introduction.
 | circles | places |
 | bars | transitions |
 | lines with arrowheads | arcs; the line color is the token color it moves (black = any color), the number of arrowheads its weight |
-| colored dots | colored tokens; the dots in a place are its marking |
+| colored boxes | colored tokens, called deliveries in the game; the boxes in a place are its marking |
 | tapping a bar | firing an enabled transition |
 | colored bars that fill up | source transitions firing on a timer |
 | goals | sink transitions with a target number of tokens to consume |
 | room in a circle | place capacity |
-| dots behind a source | a bounded number of firings |
+| boxes behind a source | a bounded number of firings |
 | building, connecting and removing | editing the net's structure while it runs |
 
-Empty circles beside a goal show the tokens it still needs; each matching arrival removes a circle.
+Empty boxes beside a goal show the tokens it still needs; each matching arrival removes a box.
 Completed goals are checked off and disappear.
 
 ## Net model
@@ -53,7 +53,7 @@ Completed goals are checked off and disappear.
   In-flight tokens, ghost connections and outputs shared with another place are not returned; a settled token can be returned only once.
   Returning tokens can revive a still-live exhausted source and restart its idle countdown, but never pays another exhaustion reward.
   Returned tokens do not also earn deletion coins; other settled tokens keep their usual coin refund.
-- An unconnected capacity-1 place is ghosted after 120 seconds without a tap or token arrival.
+- An unconnected capacity-1 place is ghosted after 30 seconds without a tap or token arrival.
   Connecting it clears the idle timer; disconnecting it starts a fresh timer.
   Larger places never expire, and in-flight tokens on ghost arcs finish as usual.
 
@@ -82,7 +82,7 @@ Completed goals are checked off and disappear.
   Conversion requires no more live incoming or outgoing arcs than the kit has ports in that direction; missing ports become open connectors.
   Existing arc endpoints are retained, matching colors are preferred, and weights/colors are changed to the kit's rules.
   Already committed firings finish with their original concrete tokens; only subsequent firings use the new functionality.
-  Sources, sinks, incompatible connections and unavailable kits cannot be converted.
+  Sources, sinks, incompatible connections, unavailable kits and transitions already matching the kit cannot be converted.
 - When a resolved sink disappears, two distinct randomly selected powerups appear at its position for 120 seconds.
   Collecting one discards the other. The available rewards and their unlocks are listed in [Epoch progression](#epoch-progression).
   An uncollected offer awards one coin at its position when its timer expires, once rather than once per choice.
@@ -109,7 +109,7 @@ Completed goals are checked off and disappear.
   Build and upgrade brushes revert to firing after a successful action; deletion stays active after removals, and failed actions retain the selected tool for retrying.
   Buying a life also returns to firing after success.
   Special-transition brushes highlight compatible normal transitions and convert them when tapped, selecting any new open ports for wiring.
-- Denied taps shake the node, or show a red ripple on empty space.
+- Denied taps shake the node, or show a ripple on empty space; failed builds use a grayish brown rather than delivery red.
   Failed builds temporarily replace enabled tool help with the reason, such as clearance, building range, connection reach or insufficient coins.
   The reason expires after ten real seconds or any tool selection; normal epoch-based help suppression still applies.
 - Builds preview on mouse/touch down without spending coins, consuming kits or mutating the net.
@@ -120,8 +120,9 @@ Completed goals are checked off and disappear.
   Connecting existing nodes previews the actual colored, weighted arc clipped to the existing place's outline, in either selection order.
   Deletions preview the original pressed target and commit only when released on that same live removable target; dragging off aborts.
   Releasing outside the play area, Escape, pointer cancellation, lost capture, or beginning a pinch cancels an edit.
+  Selecting the wiring origin's body again cancels; releasing beyond 150% of the origin's connection range, or beyond 150% of every live node's build range for a kit, also cancels unless the target is otherwise connectible or convertible.
 - Background drags pan unless an edit is being previewed; ordinary taps require release without a drag or pinch.
-  In the default tool, dragging from an open connector or place starts wiring immediately and commits at the released endpoint.
+  In the default tool, dragging from an open connector or place starts wiring immediately and commits at the released endpoint; dragging from a connector also starts wiring in deletion mode and switches to the default tool.
   Dropping in empty space builds a connected place or relay; a press and release on the starting endpoint still selects it for two-tap wiring.
   Touch-created places retain the 250 ms or 40-screen-pixel creation guard, measured from the initial press for a drag.
   Empty-space drags still pan in deletion mode; pressing a removable target instead previews that deletion.
@@ -155,8 +156,10 @@ Completed goals are checked off and disappear.
   The level definitions and completion rules remain available for future tutorials or quizzes.
 - Each game owns its goal list and score, so spawned goals and deliveries do not leak across restarts.
   The score increases by matching goal tokens on arrival, and resolving every current goal does not end the game.
+  The HUD displays this count as deliveries with colored boxes: blue initially, red at epoch 6, green at 40 and yellow at 100.
+  Each box jumps when a delivery of its color increases the count, including simultaneous multicolor deliveries.
   The HUD shows the number of completed spawn epochs. Pausing freezes simulation time and player actions, but still allows camera navigation.
-- An unlimited blue source, a capacity-19 source place, a capacity-7 destination, a manually fired color-preserving relay and a five-token blue sink form the initial network.
+- A blue source (unlimited until epoch 2000), a capacity-19 source place, a capacity-7 destination, a manually fired color-preserving relay and a five-token blue sink form the initial network.
   Endless mode offers the relay kit initially; additional colored transition kits unlock over time.
 - Epoch progression and spawning rules are detailed below.
 - A sink's countdown starts after 180 seconds and expires 60 seconds later; yellow sinks instead have 360 seconds of grace and a 120-second countdown.
@@ -171,7 +174,7 @@ Completed goals are checked off and disappear.
   Each sink timeout costs one life, even if partially filled; source timeouts and completed sinks do not cost lives.
   Losing the last life freezes the run and shows its score with restart and endless-continuation buttons.
   Restart creates a new survival run; endless continuation preserves the map, score, time, coins, inventory, progression and in-flight tokens, but removes life limits.
-  On continuation, the HUD retains the attained survival score and epoch as the main numbers, followed by bracketed gains since switching (for example, `SCORE 100 [25]` and `EPOCH 50 [2]`).
+  On continuation, the HUD retains the attained survival delivery count and epoch as the main numbers, followed by bracketed gains since switching (for example, `100 DELIVERIES [25]` and `EPOCH 50 [2]`).
   Internal score and epoch totals continue advancing normally, including powerup and spawn unlocks; restarting clears the survival snapshot.
 - The `SKIP TO ENDLESS` button next to restart asks for confirmation before ending survival.
   Portrait screens shorten its label to `ENDLESS`.
@@ -242,6 +245,7 @@ Milestone infinite sinks take the first ordinary spawn slot of their exact epoch
 | 1250–1499 | Even epochs create 2 sinks; odd epochs create 1, replacing the rule of thirds. |
 | 1500–1749 | Every epoch creates 2 sinks. |
 | 1750 onward | Every epoch creates 3 sinks. |
+| Exactly 2000 | The starting blue source becomes finite with 50 remaining firings and shows a warning until exhausted. Its original position remains the spawn anchor after it disappears. |
 
 Before epoch 125, blue sinks with multi-token inputs require 6 tokens in total and other blue sinks require 5; from 125 these become 12 and 10 respectively.
 Each target remains divisible by its input weight.
@@ -251,7 +255,7 @@ At epoch 350 and later, the selection weights are 5% quadruples, 10% yellow-gree
 
 Each colored input of a composite sink can be wired to the same place or to a separate place.
 All required colors are consumed atomically; each delivered token scores, and a finite sink leaves after its requested number of complete firings.
-Each remaining pair or quadruple is shown as one group of mostly overlapping circles in its required colors.
+Each remaining pair or quadruple is shown as one group of mostly overlapping boxes in its required colors.
 Infinite sinks show a colored group and an infinity marker in the required color or overlapping colors, keep accepting and scoring complete firings, and never resolve into powerup offers.
 They retain normal starvation, countdown, deadline-extension and life-loss rules; a starved milestone sink is not respawned.
 Any sink containing yellow uses double grace and countdown.
@@ -299,12 +303,12 @@ When changing progression, update this overview and the boundary tests in [game.
   Standard landscape toolbar rows remain centered on the screen, aligned with their centered help text; symmetric side space keeps resource counters clear.
   These ultra-wide layouts use screen width for the zoom-in limit, allowing larger nodes on phones in landscape.
   When a connection circle cannot fit vertically at that zoom, its selected node stays centered on that axis rather than panning to an impossible fit.
-- Finite source supply dots and sink goal circles share five-per-line grouping, spacing and distance from the node, mirrored upstream/downstream and transposed in portrait.
-  Source dots remain smaller and filled; sink circles remain larger and outlined.
+- Finite source supply boxes and sink goal boxes share five-per-line grouping, spacing and distance from the node, mirrored upstream/downstream and transposed in portrait.
+  Source boxes remain smaller and filled; sink boxes remain larger and outlined.
   Open connectors and balances prefer their normal flow side but flip to the opposite side if it has fewer live attached arcs.
   Ties keep the normal side, and perpendicular arcs do not force a flip.
   Connector arrows retain input/output semantics regardless of their physical side.
-  Remaining balance circles tween to their new positions over 0.25 seconds on side changes and consumption, retaining animation state across net rebuilds.
+  Remaining balance boxes tween to their new positions over 0.25 seconds on side changes and consumption, retaining animation state across net rebuilds.
 - The warm off-white background has an extremely subtle soft rose tint.
 - Sink deaths briefly tint the entire screen in the sink's token color, in both survival and endless modes.
   A single low-opacity flash fades over 0.22 seconds, including while the failure popup is open.
@@ -317,8 +321,10 @@ When changing progression, update this overview and the boundary tests in [game.
 - Arcs are drawn in the color of the tokens they move (ink for "any"), with one chevron per token moved (up to 5, then a "×n" label).
 - Tokens from one firing on the same arc travel side by side.
   Tokens hop (lift, grow, shadow) between their slot inside a place and the arc.
-- Place size shows its capacity: one central token, a ring of six, and a second ring of twelve.
-- Sources with a `supply` show one dot per remaining firing upstream of them; exhausted sources show a check mark and fade away.
+  Finite-source emissions start at their supply box, and matching sink inputs hop onto the specific demand box they satisfy without changing simulation timing.
+- Sink outlines use their goal colors; multi-color sinks show each color around their outline.
+- Place size shows its capacity: one, seven or nineteen tokens, stacked from the bottom in outlined boxes.
+- Sources with a `supply` show one box per remaining firing upstream of them; exhausted sources show a check mark and fade away.
 - Spawned sources and sinks fade and scale in, and shrink and fade out when resolved or timed out. Reward choices similarly animate in and out without delaying collection or expiry.
 - Active expiry countdowns show a shrinking ring: black for sources, which cost no lives, and red for sinks.
   Timed-out sources and sinks show a cross before disappearing.
@@ -332,11 +338,13 @@ When changing progression, update this overview and the boundary tests in [game.
 - A ring shows the connection range around the selected plug's transition or selected place, and around a node preview while building.
   Reachable places, or transitions with loose ends and their plugs, pulse within the ring.
 - Enabled player transitions are dark and pulse; disabled ones are grey and shake when tapped.
+  Firing inputs triggers a shrinking outline, and outputs trigger an expanding outline when they begin traveling.
+  Sources show only the emission outline and sinks only the attraction outline; overlapping firings can show both.
   Timed transitions (sources) fill up with their color (from the bottom; from the left in portrait).
-- Goal sinks show one empty circle per token still wanted, to their right (below in portrait).
+- Goal sinks show one empty box per token still wanted, to their right (below in portrait).
 - The win popup dims the screen, pops in with a back-out ease and confetti, and blocks input.
   Its animation runs on real time because the simulation clock is stopped.
-- The HUD shows score, game time and epoch at the top left, and the coin balance at the bottom left, with small screen-space coin flights between the balance and the affected node.
+- The HUD shows the delivery count, game time and epoch at the top left, and the coin balance at the bottom left, with small screen-space coin flights between the balance and the affected node.
   Pause and restart controls are at the top right; an in-game restart confirmation pauses play and restores its previous pause state when cancelled.
 - UI text uses uppercase Fredoka, bundled under the SIL Open Font License.
 - Reward choices use compact toolbar icons without text on pulsing grey backgrounds and remain screen-sized when zooming, with a shrinking expiry bar; numbers show coin amounts and kit prices.

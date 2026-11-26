@@ -1,6 +1,7 @@
 import { Container, Graphics, Text } from "pixi.js";
+import { total } from "../core/multiset";
 import { arcCount, Net, type Arc, type Port, type Transition } from "../core/net";
-import { buildRange, connectionRange, placementClearance, POWERUP_LIFETIME, RESOLVED_LINGER, type NodeKind, type PowerupOffer } from "../game/game";
+import { buildRange, connectionRange, placementClearance, POWERUP_LIFETIME, RESOLVED_LINGER, STARTER_SOURCE_LIMIT_EPOCH, type GoalStatus, type NodeKind, type PowerupOffer } from "../game/game";
 import type { Game } from "../game/game";
 import type { Powerup } from "../game/powerups";
 import { placeRadius } from "../game/placeSize";
@@ -13,11 +14,11 @@ import {
   polylineLength,
   subpath,
   transitionLayout,
-  TOKEN_SLOTS,
+  tokenSlots,
   type ArcRoute,
   type Pt,
 } from "./geometry";
-import { THEME, TOKEN_COLORS, TOKEN_RADIUS } from "./style";
+import { STORED_TOKEN_RADIUS, THEME, TOKEN_COLORS, TOKEN_RADIUS } from "./style";
 import { drawToolIcon } from "./toolIcon";
 
 const FLASH_TIME = 0.35;
@@ -84,8 +85,8 @@ interface TransitionNode {
   t: Transition;
   container: Container;
   gfx: Graphics;
-  firedAt: number;
   deniedAt: number;
+  deniedColor: number;
   balance: Map<string, { position: Pt; from: Pt; target: Pt; elapsed: number }>;
 }
 
@@ -139,12 +140,14 @@ export class NetView {
   private builtVersion = -1;
   private readonly overflowTexts = new Map<string, Text>();
   private readonly transitions = new Map<string, TransitionNode>();
+  private readonly firingEffects = new Map<string, { attraction: number; emission: number }>();
+  private readonly sourceOrigins = new Map<number, Pt>();
   private readonly routes = new Map<string, ArcRoute>();
   private readonly layouts = new Map<string, ReturnType<typeof transitionLayout>>();
   private readonly previewLabels = new Container();
   private stubs: PortStub[] = [];
-  private readonly placeDeniedAt = new Map<string, number>();
-  private ripples: { x: number; y: number; at: number }[] = [];
+  private readonly placeDeniedAt = new Map<string, { at: number; color: number }>();
+  private ripples: { x: number; y: number; at: number; color: number }[] = [];
   constructor(private readonly game: Game) {
     this.ghostLayer.alpha = GHOST_ALPHA;
     this.ghostLayer.addChild(this.removalBackground, this.ghostArcLayer, this.ghostPlaceLayer);
@@ -169,14 +172,38 @@ export class NetView {
     this.previewLabels.alpha = 0.65;
     this.overlayLayer.addChild(this.buildPreview);
     game.sim.onFire((e) => {
+      if (this.root.destroyed) return;
       const n = this.transitions.get(e.transitionId);
-      if (n) n.firedAt = game.sim.time;
+      const transition = game.sim.net.transitions.get(e.transitionId)!;
+      if (transition.kind !== "source" && total(e.consumed) > 0) this.recordFiringEffect(e.transitionId, "attraction", e.time);
+      if (n) {
+        if (n.t.kind === "source" && n.t.supply !== undefined) {
+          const position = n.balance.get(String(n.t.supply))?.position;
+          if (position) this.sourceOrigins.set(e.firingId, { ...position });
+        }
+      }
     });
+    game.sim.onComplete((e) => {
+      if (this.root.destroyed) return;
+      const transition = game.sim.net.transitions.get(e.transitionId)!;
+      if (transition.kind !== "sink" && total(e.produced) > 0) this.recordFiringEffect(e.transitionId, "emission", e.time);
+    });
+  }
+
+  private recordFiringEffect(id: string, phase: "attraction" | "emission", time: number): void {
+    const effect = this.firingEffects.get(id) ?? { attraction: -Infinity, emission: -Infinity };
+    effect[phase] = time;
+    this.firingEffects.set(id, effect);
   }
 
   update(dt: number, viewport: { x: number; y: number; width: number; height: number }): void {
     const now = this.game.sim.time;
     if (this.builtVersion !== this.game.sim.net.version) this.buildStatic();
+    for (const [id, effect] of this.firingEffects) {
+      if (!this.game.sim.net.transitions.has(id) || now - Math.max(effect.attraction, effect.emission) >= FLASH_TIME) {
+        this.firingEffects.delete(id);
+      }
+    }
     this.removalBackground.clear();
     if (this.overlay.removing && !this.game.complete) {
       this.removalBackground.rect(viewport.x, viewport.y, viewport.width, viewport.height)
@@ -223,13 +250,14 @@ export class NetView {
   }
 
   /** Feedback for a tap that had no effect. */
-  deny(pick: Pick): void {
+  deny(pick: Pick, build = false): void {
     const now = this.game.sim.time;
+    const color = build ? THEME.buildInvalid : THEME.warn;
     if (pick.kind === "transition" || pick.kind === "port") {
       const n = this.transitions.get(pick.kind === "port" ? pick.tid : pick.id);
-      if (n) n.deniedAt = now;
-    } else if (pick.kind === "place") this.placeDeniedAt.set(pick.id, now);
-    else if (pick.kind === "empty") this.ripples.push({ x: pick.x, y: pick.y, at: now });
+      if (n) Object.assign(n, { deniedAt: now, deniedColor: color });
+    } else if (pick.kind === "place") this.placeDeniedAt.set(pick.id, { at: now, color });
+    else if (pick.kind === "empty") this.ripples.push({ x: pick.x, y: pick.y, at: now, color });
   }
 
   rewardCollected(offer: PowerupOffer, index: number): void {
@@ -394,7 +422,7 @@ export class NetView {
     this.buildPlaceLabels();
     for (const [id, n] of this.transitions) {
       const prev = old.get(id);
-      if (prev) Object.assign(n, { firedAt: prev.firedAt, deniedAt: prev.deniedAt, balance: prev.balance });
+      if (prev) Object.assign(n, { deniedAt: prev.deniedAt, deniedColor: prev.deniedColor, balance: prev.balance });
     }
   }
 
@@ -501,7 +529,7 @@ export class NetView {
       const gfx = new Graphics();
       container.addChild(gfx);
       if (t.ghost) container.alpha = GHOST_ALPHA;
-      const node: TransitionNode = { t, container, gfx, firedAt: -Infinity, deniedAt: -Infinity, balance: new Map() };
+      const node: TransitionNode = { t, container, gfx, deniedAt: -Infinity, deniedColor: THEME.warn, balance: new Map() };
       this.transitions.set(t.id, node);
       this.transitionLayer.addChild(container);
     }
@@ -530,18 +558,22 @@ export class NetView {
         this.ghostPlaceLayer.circle(p.x, p.y, radius).fill(THEME.placeFill).stroke({ width: 5, color: THEME.ink });
         continue;
       }
-      const shakeT = this.game.complete ? Infinity : now - (this.placeDeniedAt.get(p.id) ?? -Infinity);
+      const denied = this.placeDeniedAt.get(p.id);
+      const shakeT = this.game.complete ? Infinity : now - (denied?.at ?? -Infinity);
       const x = p.x + (shakeT < SHAKE_TIME ? Math.sin(shakeT * 60) * 5 * (1 - shakeT / SHAKE_TIME) : 0);
       g.circle(x, p.y, radius)
         .fill(THEME.placeFill)
-        .stroke({ width: 5, color: shakeT < SHAKE_TIME ? THEME.warn : THEME.ink });
+        .stroke({ width: 5, color: shakeT < SHAKE_TIME ? denied!.color : THEME.ink });
 
       const colors = p.marking;
-      colors.slice(0, TOKEN_SLOTS.length).forEach((c, i) => {
-        const s = TOKEN_SLOTS[i];
-        g.circle(x + s.x, p.y + s.y, TOKEN_RADIUS).fill(TOKEN_COLORS[c]);
+      const slots = tokenSlots(p.capacity);
+      colors.slice(0, slots.length).forEach((c, i) => {
+        const s = slots[i];
+        const r = STORED_TOKEN_RADIUS;
+        g.roundRect(x + s.x - r, p.y + s.y - r, r * 2, r * 2, 1)
+          .fill(TOKEN_COLORS[c]).stroke({ width: 2, color: 0xffffff });
       });
-      const extra = colors.length - TOKEN_SLOTS.length;
+      const extra = colors.length - slots.length;
       const label = this.overflowTexts.get(p.id);
       if (label) label.text = extra > 0 ? `+${extra}` : "";
     }
@@ -550,6 +582,7 @@ export class NetView {
   private drawTransition(n: TransitionNode, now: number, dt: number): void {
     const { t, gfx: g } = n;
     const sim = this.game.sim;
+    const goals = t.kind === "sink" ? this.game.goalsFor(t.id) : [];
     const enabled = sim.isEnabled(t.id);
     g.clear();
     const spawnedAt = this.game.spawnedAt.get(t.id);
@@ -565,14 +598,14 @@ export class NetView {
     n.container.position.set(t.x + shake, t.y);
 
     const { portrait, bar: { w, h } } = this.layouts.get(t.id)!;
-    const flashT = frozen ? Infinity : now - n.firedAt;
-    if (flashT < FLASH_TIME) {
-      const k = flashT / FLASH_TIME;
-      g.roundRect(-w / 2 - 6 - k * 14, -h / 2 - 6 - k * 14, w + 12 + k * 28, h + 12 + k * 28, 10).stroke({
-        width: 3,
-        color: THEME.ink,
-        alpha: 1 - k,
-      });
+    const effect = this.firingEffects.get(t.id);
+    for (const phase of ["attraction", "emission"] as const) {
+      const age = frozen ? Infinity : now - (effect?.[phase] ?? -Infinity);
+      if (age < 0 || age >= FLASH_TIME) continue;
+      const k = age / FLASH_TIME;
+      const margin = 6 + 14 * (phase === "attraction" ? 1 - k : k);
+      g.roundRect(-w / 2 - margin, -h / 2 - margin, w + margin * 2, h + margin * 2, 10)
+        .stroke({ width: 3, color: THEME.ink, alpha: 1 - k });
     }
 
     if (t.kind === "normal" && enabled && !t.ghost) {
@@ -586,6 +619,12 @@ export class NetView {
       const first = sim.net.outputs(t.id)[0]?.color ?? t.open?.find((port) => port.dir === "out")?.color;
       fill = t.supply === 0 ? THEME.muted : first ? TOKEN_COLORS[first] : THEME.ink;
       if (t.supply !== undefined) this.drawSupply(n, fill, dt);
+      if (this.game.epoch >= STARTER_SOURCE_LIMIT_EPOCH && t === this.game.starterSource && t.supply !== undefined && t.supply > 0) {
+        const x = portrait ? w / 2 + 16 : 0;
+        const y = portrait ? 0 : -h / 2 - 16;
+        g.moveTo(x, y - 7).lineTo(x, y + 3).stroke({ width: 3, color: THEME.buildInvalid, cap: "round" });
+        g.circle(x, y + 8, 1.8).fill(THEME.buildInvalid);
+      }
     }
     if (t.kind === "sink") fill = 0xffffff;
 
@@ -602,8 +641,8 @@ export class NetView {
       }
       g.roundRect(-w / 2, -h / 2, w, h, 6).stroke({ width: 3, color: fill });
     }
-    if (t.kind === "sink") g.roundRect(-w / 2, -h / 2, w, h, 6).stroke({ width: 4, color: THEME.ink });
-    if (shakeT < SHAKE_TIME) g.roundRect(-w / 2, -h / 2, w, h, 6).stroke({ width: 3, color: THEME.warn });
+    if (t.kind === "sink") this.drawSinkOutline(g, w, h, goals.map((goal) => TOKEN_COLORS[goal.color]));
+    if (shakeT < SHAKE_TIME) g.roundRect(-w / 2, -h / 2, w, h, 6).stroke({ width: 3, color: n.deniedColor });
 
     const upgrades = this.game.autoUpgradeLevel(t.id);
     const spacing = Math.min(7, ((portrait ? w : h) - 12) / Math.max(1, upgrades - 1));
@@ -627,10 +666,27 @@ export class NetView {
     }
     if (failedAt !== undefined) this.drawResolved(n, now, failedAt, true);
     else if (exhaustedAt !== undefined) this.drawResolved(n, now, exhaustedAt);
-    else if (t.kind === "sink") this.drawGoal(n, now, dt);
+    else if (t.kind === "sink") this.drawGoal(n, now, dt, goals);
   }
 
-  /** One dot per remaining firing, stacked upstream of a source. */
+  private drawSinkOutline(g: Graphics, w: number, h: number, colors: number[]): void {
+    if (colors.length <= 1) {
+      g.roundRect(-w / 2, -h / 2, w, h, 6).stroke({ width: 4, color: colors[0] ?? THEME.ink });
+      return;
+    }
+    const r = 6, left = -w / 2, right = w / 2, top = -h / 2, bottom = h / 2;
+    const sides = [
+      () => g.moveTo(left + r, top).lineTo(right - r, top).arc(right - r, top + r, r, -Math.PI / 2, 0),
+      () => g.moveTo(right, top + r).lineTo(right, bottom - r).arc(right - r, bottom - r, r, 0, Math.PI / 2),
+      () => g.moveTo(right - r, bottom).lineTo(left + r, bottom).arc(left + r, bottom - r, r, Math.PI / 2, Math.PI),
+      () => g.moveTo(left, bottom - r).lineTo(left, top + r).arc(left + r, top + r, r, Math.PI, Math.PI * 1.5),
+    ];
+    sides.forEach((side, index) => {
+      side().stroke({ width: 4, color: colors[Math.floor(index * colors.length / sides.length)] });
+    });
+  }
+
+  /** One box per remaining firing, stacked upstream of a source. */
   private drawSupply(n: TransitionNode, color: number, dt: number): void {
     const supply = n.t.supply!;
     this.drawBalance(n, Array.from({ length: supply }, (_, i) => ({ key: String(i), color })), -1, 3.2, true, dt);
@@ -657,7 +713,8 @@ export class NetView {
       dot.elapsed = Math.min(BALANCE_TWEEN_TIME, dot.elapsed + dt);
       const ease = 1 - (1 - dot.elapsed / BALANCE_TWEEN_TIME) ** 3;
       dot.position = lerp(dot.from, dot.target, ease);
-      n.gfx.circle(dot.position.x, dot.position.y, radius).fill(filled ? token.color : THEME.background);
+      n.gfx.roundRect(dot.position.x - radius, dot.position.y - radius, radius * 2, radius * 2, 0.8)
+        .fill(filled ? token.color : THEME.background);
       if (!filled) n.gfx.stroke({ width: 2.5, color: token.color });
     });
   }
@@ -692,7 +749,7 @@ export class NetView {
     });
     const proposed = new Net({ places, transitions, arcs });
     const newArcs: Arc[] = [];
-    const color = invalid ? THEME.warn : THEME.ink;
+    const color = invalid ? THEME.buildInvalid : THEME.ink;
     if (build.kind === "place") {
       const id = existingPlace ?? proposed.freshId("previewPlace");
       if (!existingPlace) proposed.addPlace({ id, ...position, capacity: build.capacity ?? 1, marking: [] });
@@ -715,14 +772,14 @@ export class NetView {
       const layout = transitionLayout(proposed, t, this.game.portrait);
       const { w, h } = layout.bar;
       g.roundRect(position.x - w / 2, position.y - h / 2, w, h, 6).fill(color);
-      for (const stub of layout.stubs) this.drawStub(g, stub, this.previewLabels, invalid ? THEME.warn : undefined);
+      for (const stub of layout.stubs) this.drawStub(g, stub, this.previewLabels, invalid ? THEME.buildInvalid : undefined);
     }
     for (const arc of newArcs) {
       const tid = proposed.transitions.has(arc.from) ? arc.from : arc.to;
       const route = transitionLayout(proposed, proposed.transitions.get(tid)!, this.game.portrait).routes.get(arc.id)!;
       const pts = outsidePlace(route.pts, placeRadius(proposed.places.get(route.placeId)!.capacity));
       const label = this.drawArrow(g, route.fromPlace ? pts : pts.reverse(),
-        invalid ? THEME.warn : arc.color ? TOKEN_COLORS[arc.color] : THEME.ink, arcCount(arc));
+        invalid ? THEME.buildInvalid : arc.color ? TOKEN_COLORS[arc.color] : THEME.ink, arcCount(arc));
       if (label) this.previewLabels.addChild(label);
     }
   }
@@ -831,7 +888,7 @@ export class NetView {
     this.ripples = this.ripples.filter((r) => now - r.at < SHAKE_TIME * 1.5 && now >= r.at);
     for (const r of this.ripples) {
       const k = (now - r.at) / (SHAKE_TIME * 1.5);
-      g.circle(r.x, r.y, 10 + k * 26).stroke({ width: 3, color: THEME.warn, alpha: 1 - k });
+      g.circle(r.x, r.y, 10 + k * 26).stroke({ width: 3, color: r.color, alpha: 1 - k });
     }
   }
 
@@ -845,22 +902,22 @@ export class NetView {
   }
 
   /** Grouped colored goals, an infinity marker for open-ended sinks, or a check mark once resolved. */
-  private drawGoal(n: TransitionNode, now: number, dt: number): void {
+  private drawGoal(n: TransitionNode, now: number, dt: number, goals: GoalStatus[]): void {
     const resolvedAt = this.game.resolved.get(n.t.id);
     if (resolvedAt !== undefined) {
       this.drawResolved(n, now, resolvedAt);
       return;
     }
-    const goals = this.game.goalsFor(n.t.id);
     const infinite = goals.some((goal) => !Number.isFinite(goal.count));
+    const remaining = goals.map((goal) => this.game.remainingGoalOrdinals(goal));
     const wanted: BalanceToken[] = [];
     if (goals.length > 1 || infinite) {
-      const count = infinite ? 1 : Math.max(0, ...goals.map((goal) => goal.count - goal.delivered));
+      const count = infinite ? 1 : Math.max(0, ...remaining.map((ordinals) => ordinals.length));
       for (let i = 0; i < count; i++) {
         goals.forEach((goal, index) => {
-          if (!infinite && i >= goal.count - goal.delivered) return;
+          if (!infinite && i >= remaining[index].length) return;
           wanted.push({
-            key: infinite ? `infinite:${index}` : `${index}:${goal.delivered + i}`,
+            key: infinite ? `infinite:${index}` : `${index}:${remaining[index][i]}`,
             color: TOKEN_COLORS[goal.color], group: i,
             offset: goals.length === 1 ? { x: 0, y: 0 }
               : { x: ((index % 2) - 0.5) * 5, y: goals.length > 2 ? (Math.floor(index / 2) - 0.5) * 5 : 0 },
@@ -869,7 +926,7 @@ export class NetView {
       }
     } else {
       goals.forEach((goal, index) => {
-        for (let i = goal.delivered; i < goal.count; i++) wanted.push({ key: `${index}:${i}`, color: TOKEN_COLORS[goal.color] });
+        for (const ordinal of remaining[index]) wanted.push({ key: `${index}:${ordinal}`, color: TOKEN_COLORS[goal.color] });
       });
     }
     this.drawBalance(n, wanted, 1, 7, false, dt);
@@ -908,22 +965,44 @@ export class NetView {
     const g = this.tokenLayer.clear();
     const net = this.game.sim.net;
     const gap = TOKEN_RADIUS * 2 + 3;
+    const activeFirings = new Set(this.game.sim.inFlight.map((token) => token.firingId));
+    for (const id of this.sourceOrigins.keys()) if (!activeFirings.has(id)) this.sourceOrigins.delete(id);
     for (const tok of this.game.sim.inFlight) {
       const route = this.routes.get(tok.arcId);
       if (!route) continue;
+      const arc = net.arcs.get(tok.arcId)!;
+      const transition = net.transitions.get(route.fromPlace ? arc.to : arc.from);
+      const node = transition && this.transitions.get(transition.id);
       const place = net.places.get(route.placeId)!;
       // Tokens moved along the same arc by one firing travel side by side.
       const off = (tok.slot - (tok.batch - 1) / 2) * gap * (route.fromPlace ? 1 : -1);
       const routeLen = polylineLength(route.pts);
       const lane = offsetPolyline(subpath(route.pts, Math.min(placeRadius(place.capacity) + 16, routeLen / 2)), off);
       // The token leaves from (or lands in) the slot it vacates (or will fill) inside the place.
-      const slot = TOKEN_SLOTS[place.marking.length + tok.slot] ?? { x: 0, y: 0 };
+      const slot = tokenSlots(place.capacity)[place.marking.length + tok.slot] ?? { x: 0, y: 0 };
       const home: Pt = { x: place.x + slot.x, y: place.y + slot.y };
       const hopStart = lane[0];
       const hopLen = Math.hypot(hopStart.x - home.x, hopStart.y - home.y);
       const laneLen = polylineLength(lane);
+      const laneEnd = lane[lane.length - 1];
+      let endpoint: Pt | undefined;
+      if (node && transition?.kind === "source" && tok.sourceSupplyBefore !== undefined) {
+        const local = this.sourceOrigins.get(tok.firingId)
+          ?? this.endpointCirclePosition(transition, tok.sourceSupplyBefore - 1, tok.sourceSupplyBefore, this.clearSide(transition, -1));
+        endpoint = { x: node.container.x + local.x * node.container.scale.x, y: node.container.y + local.y * node.container.scale.y };
+      } else if (node && transition?.kind === "sink" && tok.goalOrdinal !== undefined
+        && !this.game.resolved.has(transition.id) && !this.game.failed.has(transition.id)) {
+        const goals = this.game.goalsFor(transition.id);
+        const index = goals.findIndex((goal) => goal.color === tok.color);
+        if (index >= 0) {
+          const key = Number.isFinite(goals[index].count) ? `${index}:${tok.goalOrdinal}` : `infinite:${index}`;
+          const local = node.balance.get(key)?.position;
+          if (local) endpoint = { x: node.container.x + local.x * node.container.scale.x, y: node.container.y + local.y * node.container.scale.y };
+        }
+      }
+      const endpointLen = endpoint ? Math.hypot(endpoint.x - laneEnd.x, endpoint.y - laneEnd.y) : 0;
       // Distance travelled, measured from the place end.
-      const total = hopLen + laneLen;
+      const total = hopLen + laneLen + endpointLen;
       const d = (route.fromPlace ? tok.progress : 1 - tok.progress) * total;
 
       let p: Pt;
@@ -932,14 +1011,19 @@ export class NetView {
         const u = d / hopLen;
         p = lerp(home, hopStart, u);
         lift = Math.sin(Math.PI * u);
-      } else {
+      } else if (d <= hopLen + laneLen || !endpoint || endpointLen === 0) {
         p = pointAt(lane, d - hopLen);
+      } else {
+        const u = (d - hopLen - laneLen) / endpointLen;
+        p = lerp(laneEnd, endpoint, u);
+        lift = Math.sin(Math.PI * u);
       }
       const r = TOKEN_RADIUS + 1;
       if (lift > 0) g.ellipse(p.x, p.y, r * (1 - 0.3 * lift), r * 0.45 * (1 - 0.3 * lift)).fill({ color: THEME.ink, alpha: 0.18 });
       const up = lift * HOP_HEIGHT;
       // Up is towards the top of the screen in both orientations.
-      g.circle(p.x, p.y - up, r * (1 + 0.25 * lift))
+      const size = r * (1 + 0.25 * lift);
+      g.roundRect(p.x - size, p.y - up - size, size * 2, size * 2, 1.5)
         .fill(TOKEN_COLORS[tok.color])
         .stroke({ width: 2, color: 0xffffff });
     }

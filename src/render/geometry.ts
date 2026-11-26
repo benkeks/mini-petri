@@ -1,5 +1,5 @@
 import type { Net, Port, Transition } from "../core/net";
-import { placeRadius, TOKEN_SPACING } from "../game/placeSize";
+import { placeLevel, placeRadius } from "../game/placeSize";
 import { TRANSITION_H, TRANSITION_W } from "./style";
 
 const OPEN_PORT_LENGTH = 46;
@@ -220,16 +220,13 @@ export function lerp(a: Pt, b: Pt, t: number): Pt {
   return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
 }
 
-/** Slots for token dots inside a place: center, inner ring of 6, outer ring of 12. */
-export const TOKEN_SLOTS: Pt[] = (() => {
-  const slots: Pt[] = [{ x: 0, y: 0 }];
-  for (let i = 0; i < 6; i++) {
-    const a = (i / 6) * Math.PI * 2 - Math.PI / 2;
-    slots.push({ x: Math.cos(a) * TOKEN_SPACING, y: Math.sin(a) * TOKEN_SPACING });
-  }
-  for (let i = 0; i < 12; i++) {
-    const a = (i / 12) * Math.PI * 2 - Math.PI / 2;
-    slots.push({ x: Math.cos(a) * TOKEN_SPACING * 2, y: Math.sin(a) * TOKEN_SPACING * 2 });
-  }
-  return slots;
-})();
+const TOKEN_SLOT_LAYOUTS = [[1], [2, 3, 2], [3, 4, 5, 4, 3]].map((rows) =>
+  rows.flatMap((count, row) => Array.from({ length: count }, (_, column) => ({
+    x: (column - (count - 1) / 2) * 13,
+    y: ((rows.length - 1) / 2 - row) * 13,
+  }))));
+
+/** Slots fill each place from the bottom row upward. */
+export function tokenSlots(capacity?: number): readonly Pt[] {
+  return TOKEN_SLOT_LAYOUTS[placeLevel(capacity)];
+}

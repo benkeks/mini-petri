@@ -25,7 +25,7 @@ export function drawToolIcon(g: Graphics, b: Brush): void {
       bar(0, 6, 22);
       const side = (dir: "in" | "out", x: number) => {
         const dots = b.kit.ports.filter((p) => p.dir === dir).flatMap((p) => Array<number>(p.count ?? 1).fill(p.color ? TOKEN_COLORS[p.color] : ink));
-        dots.forEach((c, i) => g.circle(x, (i - (dots.length - 1) / 2) * 11, 4.5).fill(c));
+        dots.forEach((c, i) => g.roundRect(x - 4.5, (i - (dots.length - 1) / 2) * 11 - 4.5, 9, 9, 1).fill(c));
       };
       side("in", -13);
       side("out", 13);

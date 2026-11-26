@@ -118,6 +118,56 @@ describe("controller", () => {
     expect(controller.selected).toBeUndefined();
   });
 
+  it("starts wiring by dragging a connector in deletion mode without deleting the target", () => {
+    const { game, controller, press, release } = setup();
+    game.sim.net.transitions.get("sinkG")!.x = 500;
+    controller.setBrush({ kind: "remove" });
+    expect(press({ kind: "port", tid: "sinkG", index: 0 })).toBe(true);
+    release({ kind: "place", id: "pB" });
+    expect(game.sim.net.inputs("sinkG")[0].from).toBe("pB");
+    expect(game.sim.net.places.get("pB")?.ghost).toBeFalsy();
+    expect(controller.brush.kind).toBe("fire");
+  });
+
+  it("cancels wiring on the selected node body and beyond 150% of the connection range", () => {
+    const { game, controller, tap, press, release, denied } = setup();
+    const port = { kind: "port", tid: "sinkG", index: 0 } as const;
+    tap(port);
+    tap({ kind: "transition", id: "sinkG" });
+    expect(controller.selected).toBeUndefined();
+    tap({ kind: "place", id: "pB" });
+    tap({ kind: "place", id: "pB" });
+    expect(controller.selectedPlace).toBeUndefined();
+    tap(port);
+    tap({ kind: "empty", x: 1450, y: 520 });
+    expect(controller.selected).toEqual({ tid: "sinkG", index: 0 });
+    expect(denied).toHaveLength(1);
+    press({ kind: "empty", x: 1450, y: 520 });
+    release({ kind: "empty", x: 1450.01, y: 520 });
+    expect(controller.selected).toBeUndefined();
+    expect(game.sim.net.inputs("sinkG")).toHaveLength(0);
+    tap({ kind: "place", id: "pB" });
+    press({ kind: "empty", x: 730.01, y: 520 });
+    release({ kind: "empty", x: 730.01, y: 520 });
+    expect(controller.selectedPlace).toBeUndefined();
+  });
+
+  it("cancels kit placement only outside 150% of every live build range", () => {
+    const { game, controller, tap, press, release, denied } = setup();
+    const kit = game.level.tools!.kits![0];
+    controller.setBrush({ kind: "kit", kit });
+    tap({ kind: "empty", x: 1330, y: 520 });
+    expect(controller.brush.kind).toBe("kit");
+    expect(denied).toHaveLength(1);
+    press({ kind: "empty", x: 1330, y: 520 });
+    controller.move({ x: 2000, y: 520 });
+    release({ kind: "empty", x: 1330, y: 520 });
+    expect(controller.brush.kind).toBe("kit");
+    press({ kind: "empty", x: 1330, y: 520 });
+    release({ kind: "empty", x: 1330.01, y: 520 });
+    expect(controller.brush.kind).toBe("fire");
+  });
+
   it("keeps a simple press/release as endpoint selection and cancels an uncommitted wiring drag", () => {
     const { game, controller, press, release } = setup();
     const port = { kind: "port", tid: "sinkG", index: 0 } as const;
@@ -233,20 +283,21 @@ describe("controller", () => {
     const { game, controller, tap } = setup();
     const kit = game.level.tools!.kits![0];
     controller.setBrush({ kind: "kit", kit });
-    tap({ kind: "empty", x: 5000, y: 5000 });
+    game.sim.net.addPlace({ id: "hintAnchor", x: 5000, y: 5000, capacity: 1, marking: [] });
+    tap({ kind: "empty", x: 5260, y: 5000 });
     expect(controller.hint()).toContain("Outside building range");
     controller.sync(9.999);
     expect(controller.hint()).toContain("Outside building range");
     controller.sync(0.002);
     expect(controller.hint()).toContain("Tap inside the white area");
-    tap({ kind: "empty", x: 5000, y: 5000 });
+    tap({ kind: "empty", x: 5260, y: 5000 });
     controller.setBrush({ kind: "auto" });
     expect(controller.hint()).toContain("automate");
     expect(controller.hint()).not.toContain("Outside building range");
     controller.cancel();
     tap({ kind: "port", tid: "sinkG", index: 0 });
-    game.sim.net.addPlace({ id: "farAnchor", x: 1500, y: 1000, capacity: 1, marking: [] });
-    tap({ kind: "empty", x: 1500, y: 1120 });
+    game.sim.net.addPlace({ id: "farAnchor", x: 1320, y: 520, capacity: 1, marking: [] });
+    tap({ kind: "empty", x: 1320, y: 640 });
     expect(controller.hint()).toContain("Outside connection range");
   });
 
@@ -276,7 +327,7 @@ describe("controller", () => {
     const game = new Game(endless);
     const { controller, view, tap } = setup(game);
     const introduction = controller.hint();
-    expect(introduction).toContain("Move tokens from sources to sinks");
+    expect(introduction).toContain("Move deliveries from sources to sinks");
     tap({ kind: "empty", x: 0, y: 0 });
     tap({ kind: "transition", id: "starterRelay" });
     expect(controller.hint()).toBe(introduction);
@@ -303,7 +354,7 @@ describe("controller", () => {
       }
     };
     reach(1);
-    expect(controller.hint()).toContain("Move tokens");
+    expect(controller.hint()).toContain("Move deliveries");
     reach(2);
     expect(controller.hint()).toContain("Tap a dark transition");
     reach(10);
@@ -423,6 +474,7 @@ describe("controller", () => {
     tap({ kind: "transition", id: "tSplit" });
     expect(denied).toHaveLength(1);
     expect(game.sim.net.places.get("pR")!.marking).toEqual(["red"]);
+    game.sim.net.transitions.get("sinkG")!.x = 680;
     tap({ kind: "place", id: "pB" });
     controller.sync();
     expect(view.overlay.target?.({ kind: "transition", id: "sinkG" })).toBe(false);
@@ -517,7 +569,7 @@ describe("controller", () => {
     controller.sync();
     expect(view.overlay.build).toMatchObject({ kind: "transition", fromPlace: "pB" });
     expect(game.placementIssue("transition", 700, 400)).toBeUndefined();
-    for (const point of [{ x: 700, y: 400 }, { x: 280, y: 520 }, { x: 10, y: 10 }]) {
+    for (const point of [{ x: 700, y: 400 }, { x: 280, y: 520 }, { x: 280, y: 180 }]) {
       tap({ kind: "empty", ...point });
     }
     expect(denied).toHaveLength(3);
@@ -550,7 +602,7 @@ describe("controller", () => {
   it("rejects invalid placement without losing the selected port or creating a place", () => {
     const { game, controller, tap, denied } = setup();
     tap({ kind: "port", tid: "sinkG", index: 0 });
-    for (const point of [{ x: 10, y: 10 }, { x: 1000, y: 520 }, { x: 1150, y: 740 }]) {
+    for (const point of [{ x: 1000, y: 520 }, { x: 1150, y: 740 }, { x: 1000, y: 180 }]) {
       tap({ kind: "empty", ...point });
     }
     expect(denied).toHaveLength(3);
@@ -563,6 +615,7 @@ describe("controller", () => {
 
   it("only highlights and connects nearby targets in either selection order", () => {
     const { game, view, controller, tap, denied } = setup();
+    game.sim.net.places.get("pB")!.x = 600;
     const near = game.buildPlace(820, 520)!;
     tap({ kind: "port", tid: "sinkG", index: 0 });
     controller.sync();
@@ -646,6 +699,14 @@ describe("controller", () => {
     game.setPortrait(portrait);
     return game;
   }
+
+  it("does not cancel a valid connector bridge beyond 150% of the primary range", () => {
+    const { game, controller, tap } = setup(connectorGame(500));
+    tap({ kind: "port", tid: "left", index: 0 });
+    tap({ kind: "port", tid: "right", index: 0 });
+    expect(game.sim.net.arcs.size).toBe(2);
+    expect(controller.selected).toBeUndefined();
+  });
 
   it("previews the exact bridge position without mutation until release", () => {
     const { game, controller, view, tap, press, release } = setup(connectorGame());
@@ -774,10 +835,10 @@ describe("controller", () => {
     expect(view.overlay.target?.(target)).toBe(false);
     expect(controller.interactive(target)).toBe(false);
     tap(target);
-    expect(denied).toHaveLength(1);
+    expect(denied).toHaveLength(crowded ? 1 : 0);
     expect(game.sim.net.places.size).toBe(0);
     expect(game.sim.net.arcs.size).toBe(0);
-    expect(controller.selected).toEqual({ tid: "left", index: 0 });
+    expect(controller.selected).toEqual(crowded ? { tid: "left", index: 0 } : undefined);
     if (crowded) {
       for (const id of [...game.sim.net.transitions.keys()]) if (id.startsWith("block")) game.sim.net.deleteNode(id);
       expect(view.overlay.target?.(target)).toBe(true);
@@ -1056,13 +1117,13 @@ describe("building", () => {
 });
 
 describe("idle small places", () => {
-  it("removes only unconnected size-1 places after two minutes", () => {
+  it("removes only unconnected size-1 places after 30 seconds", () => {
     const game = new Game(level2);
     const idle = game.buildPlace(580, 350, 1)!;
     const upgraded = game.buildPlace(820, 350, 1)!;
     expect(game.upgradeCapacity(upgraded)).toBe(true);
     const connected = game.buildConnectedPlace("sinkG", 0, 820, 520)!;
-    game.step(119.9);
+    game.step(29.9);
     expect(game.sim.net.places.has(idle)).toBe(true);
     game.step(0.2);
     expect(game.sim.net.places.has(idle)).toBe(false);
@@ -1075,9 +1136,9 @@ describe("idle small places", () => {
     const id = game.buildPlace(580, 350, 1)!;
     const pick: Pick = { kind: "place", id };
     const controller = new Controller(game, { overlay: {}, pick: () => pick, deny: () => {} });
-    game.step(119);
+    game.step(29);
     controller.tap({ x: 580, y: 350 });
-    game.step(119);
+    game.step(29);
     expect(game.sim.net.places.has(id)).toBe(true);
     game.step(1.1);
     controller.sync();
@@ -1088,12 +1149,12 @@ describe("idle small places", () => {
   it("restarts the timer when a connected place is disconnected", () => {
     const game = new Game(level2);
     const id = game.buildPlace(820, 520, 1)!;
-    game.step(100);
+    game.step(20);
     expect(game.connect("sinkG", 0, id)).toBe(true);
     game.step(50);
     expect(game.sim.net.places.has(id)).toBe(true);
     expect(game.remove(game.sim.net.inputs("sinkG")[0].id)).toBe(true);
-    game.step(119.9);
+    game.step(29.9);
     expect(game.sim.net.places.has(id)).toBe(true);
     game.step(0.2);
     expect(game.sim.net.places.has(id)).toBe(false);
@@ -1104,7 +1165,7 @@ describe("idle small places", () => {
     const id = game.buildConnectedPlace("srcR2", 0, 800, 700)!;
     expect(game.sim.fire("srcR2")).toBe(true);
     expect(game.remove(game.sim.net.outputs("srcR2")[0].id)).toBe(true);
-    game.step(119);
+    game.step(29);
     expect(game.sim.net.places.get(id)?.marking).toEqual(["red"]);
     game.step(1);
     expect(game.sim.net.places.has(id)).toBe(true);
@@ -1120,7 +1181,9 @@ describe("idle small places", () => {
     const game = new Game(definition);
     expect(game.sim.fire("srcR2")).toBe(true);
     expect(game.remove("longArc")).toBe(true);
-    game.step(122);
+    game.step(42);
+    expect(game.sim.net.places.get("farPlace")?.ghost).toBe(true);
+    game.step(80);
     expect(game.sim.net.places.has("farPlace")).toBe(false);
   });
 });

@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { EventBoundary, FederatedPointerEvent, Graphics, Text } from "pixi.js";
 import type { Color } from "../src/core/multiset";
-import { Game, placementClearance } from "../src/game/game";
+import { ENDLESS_RULES, Game, placementClearance } from "../src/game/game";
 import { endless } from "../src/game/endless";
 import { level2 } from "../src/game/level2";
 import { POWERUPS } from "../src/game/powerups";
 import { brushesOf, Controller, type Brush } from "../src/input/controller";
+import { tokenSlots } from "../src/render/geometry";
 import { Hud, survivalPopupPosition, toolbarLayout } from "../src/render/hud";
 import { NetView } from "../src/render/netView";
 import { THEME, TOKEN_COLORS } from "../src/render/style";
@@ -26,11 +27,186 @@ function balancePositions(view: NetView, game: Game, id: string, radius: number)
   const graphics = node.children[0] as Graphics;
   return graphics.context.instructions.flatMap((instruction) =>
     instruction.action === "fill" ? instruction.data.path.instructions : [])
-    .filter((shape) => shape.action === "circle" && shape.data[2] === radius)
-    .map((shape) => shape.data.slice(0, 2));
+    .filter((shape) => shape.action === "roundRect" && shape.data[2] === radius * 2 && shape.data[3] === radius * 2)
+    .map((shape) => [shape.data[0] + radius, shape.data[1] + radius]);
 }
 
+function flightBoxes(view: NetView) {
+  return drawing(view.root.children[6] as Graphics).flatMap((item) => {
+    if (item.action !== "fill") return [];
+    const box = item.path.filter((shape) => shape.action === "roundRect").at(-1);
+    if (!box) return [];
+    const [x, y, width, height] = box.data;
+    return [{ color: item.color, x: x + width / 2, y: y + height / 2 }];
+  });
+}
+
+describe("transition firing effects", () => {
+  const viewport = { x: 0, y: 0, width: 1400, height: 1000 };
+
+  function effectWidths(view: NetView, id: string): number[] {
+    const node = view["transitions"].get(id)!;
+    const width = view["layouts"].get(id)!.bar.w;
+    return drawing(node.gfx).filter((item) => item.action === "stroke" && item.width === 3 && item.color === THEME.ink)
+      .flatMap((item) => item.path.filter((shape) => shape.action === "roundRect")
+        .map((shape) => shape.data[2]).filter((w) => w > width + 11));
+  }
+
+  it("shrinks on attraction and expands only when the relay emits, even across a rebuild", () => {
+    const definition = structuredClone(endless);
+    definition.net.transitions.forEach((transition) => { transition.autoInterval = undefined; });
+    definition.net.places.find((place) => place.id === "starterPlace")!.marking = ["blue", "blue"];
+    const game = new Game(definition);
+    const view = new NetView(game);
+    expect(game.sim.fire("starterRelay")).toBe(true);
+    view.update(0, viewport);
+    const initial = effectWidths(view, "starterRelay");
+    expect(initial).toHaveLength(1);
+    game.sim.step(0.1);
+    view.update(0, viewport);
+    expect(effectWidths(view, "starterRelay")[0]).toBeLessThan(initial[0]);
+    expect(game.sim.inFlight.every((token) => token.kind === "input")).toBe(true);
+
+    const travelTime = game.sim.net.arcLength(game.sim.net.arcs.get("starterRelayInput")!) / game.sim.tokenSpeed;
+    game.sim.step(travelTime - 0.1 + 0.01);
+    view.update(0, viewport);
+    expect(game.sim.inFlight.some((token) => token.kind === "output")).toBe(true);
+    expect(effectWidths(view, "starterRelay")).toHaveLength(1);
+    expect(effectWidths(view, "starterRelay")[0]).toBeCloseTo(view["layouts"].get("starterRelay")!.bar.w + 12 + 28 * 0.01 / 0.35);
+
+    expect(game.sim.fire("starterRelay")).toBe(true);
+    game.sim.net.addPlace({ id: "unrelated", x: 1300, y: 900, marking: [] });
+    view.update(0, viewport);
+    const overlapping = effectWidths(view, "starterRelay");
+    expect(overlapping).toHaveLength(2);
+    game.sim.step(0.1);
+    view.update(0, viewport);
+    const later = effectWidths(view, "starterRelay");
+    expect(later[0]).toBeLessThan(overlapping[0]);
+    expect(later[1]).toBeGreaterThan(overlapping[1]);
+    view.root.destroy({ children: true });
+  });
+
+  it("shows only the expanding emission effect for a source", () => {
+    const definition = structuredClone(endless);
+    definition.net.transitions.forEach((transition) => { transition.autoInterval = undefined; });
+    const game = new Game(definition);
+    const view = new NetView(game);
+    expect(game.sim.fire("starterSource")).toBe(true);
+    view.update(0, viewport);
+    const initial = effectWidths(view, "starterSource");
+    expect(initial).toHaveLength(1);
+    game.sim.step(0.1);
+    view.update(0, viewport);
+    expect(effectWidths(view, "starterSource")).toHaveLength(1);
+    expect(effectWidths(view, "starterSource")[0]).toBeGreaterThan(initial[0]);
+    view.root.destroy({ children: true });
+  });
+
+  it("shows only the shrinking attraction effect for a sink", () => {
+    const definition = structuredClone(endless);
+    definition.net.transitions.forEach((transition) => { transition.autoInterval = undefined; });
+    definition.net.places.find((place) => place.id === "starterDestination")!.marking = ["blue"];
+    const game = new Game(definition);
+    const view = new NetView(game);
+    expect(game.sim.fire("starterSink")).toBe(true);
+    view.update(0, viewport);
+    const initial = effectWidths(view, "starterSink");
+    expect(initial).toHaveLength(1);
+    game.sim.step(0.1);
+    view.update(0, viewport);
+    expect(effectWidths(view, "starterSink")[0]).toBeLessThan(initial[0]);
+    const travelTime = game.sim.net.arcLength(game.sim.net.arcs.get("starterInput")!) / game.sim.tokenSpeed;
+    game.sim.step(travelTime - 0.1 + 0.01);
+    view.update(0, viewport);
+    expect(game.score).toBe(1);
+    expect(effectWidths(view, "starterSink")).toHaveLength(0);
+    view.root.destroy({ children: true });
+  });
+});
+
 describe("endpoint token layouts", () => {
+  it("draws settled and flying deliveries as boxes while places remain circles", () => {
+    const game = new Game(endless);
+    game.sim.net.places.get("starterPlace")!.marking.push("blue");
+    expect(game.sim.fire("starterSource")).toBe(true);
+    const view = new NetView(game);
+    view.update(0, { x: 0, y: 0, width: 1200, height: 800 });
+    const places = drawing(view.root.children[4] as Graphics);
+    expect(places.some((item) => item.path[0].action === "circle")).toBe(true);
+    expect(places.filter((item) => item.color === TOKEN_COLORS.blue).flatMap((item) => item.path).map((shape) => shape.action)).toContain("roundRect");
+    expect(places.some((item) => item.action === "stroke" && item.width === 2 && item.color === 0xffffff
+      && item.path.some((shape) => shape.action === "roundRect"))).toBe(true);
+    const flying = drawing(view.root.children[6] as Graphics);
+    expect(flying.some((item) => item.color === TOKEN_COLORS.blue && item.path[0].action === "roundRect")).toBe(true);
+    view.root.destroy({ children: true });
+  });
+
+  it("lands flying deliveries in the next bottom-up slot of the place", () => {
+    const game = new Game(endless);
+    const place = game.sim.net.places.get("starterPlace")!;
+    place.marking.push("red", "blue");
+    expect(game.sim.fire("starterSource")).toBe(true);
+    game.sim.inFlight[0].progress = 1;
+    const view = new NetView(game);
+    view.update(0, { x: 0, y: 0, width: 1200, height: 800 });
+    const box = drawing(view.root.children[6] as Graphics).find((item) =>
+      item.action === "fill" && item.color === TOKEN_COLORS.blue)!.path.find((shape) => shape.action === "roundRect")!;
+    const [x, y, width, height] = box.data;
+    const slot = tokenSlots(place.capacity)[2];
+    expect(x + width / 2).toBeCloseTo(place.x + slot.x);
+    expect(y + height / 2).toBeCloseTo(place.y + slot.y);
+    view.root.destroy({ children: true });
+  });
+
+  it.each([false, true])("starts finite source emissions at the consumed supply box, portrait=%s", (portrait) => {
+    const definition = structuredClone(endless);
+    definition.net.transitions.find((t) => t.id === "starterSource")!.supply = 5;
+    const game = new Game(definition);
+    game.setPortrait(portrait);
+    const view = new NetView(game);
+    const viewport = { x: 0, y: 0, width: 1400, height: 1400 };
+    view.update(0, viewport);
+    const source = game.starterSource ?? game.sim.net.transitions.get("starterSource")!;
+    const origin = balancePositions(view, game, source.id, 3.2).at(-1)!;
+    expect(game.sim.fire(source.id)).toBe(true);
+    view.update(0, viewport);
+    const flying = flightBoxes(view)[0];
+    expect(flying.x).toBeCloseTo(source.x + origin[0]);
+    expect(flying.y).toBeCloseTo(source.y + origin[1]);
+    expect(source.supply).toBe(4);
+    const rebuilt = new NetView(game);
+    rebuilt.update(0, viewport);
+    const afterRebuild = flightBoxes(rebuilt)[0];
+    expect(afterRebuild.x).toBeCloseTo(flying.x);
+    expect(afterRebuild.y).toBeCloseTo(flying.y);
+    view.root.destroy({ children: true });
+    rebuilt.root.destroy({ children: true });
+  });
+
+  it.each([false, true])("shows the initial source depletion warning only once limited, portrait=%s", (portrait) => {
+    const game = new Game(endless);
+    game.setPortrait(portrait);
+    const source = game.starterSource!;
+    const view = new NetView(game);
+    const viewport = { x: 0, y: 0, width: 1200, height: 1200 };
+    const sourceDrawing = () => {
+      const node = view.root.children[5].children.find((child) => child.x === source.x && child.y === source.y)!;
+      return drawing(node.children[0] as Graphics);
+    };
+    view.update(0, viewport);
+    expect(sourceDrawing().some((item) => item.color === THEME.buildInvalid)).toBe(false);
+    game["endlessEpoch"] = 2000;
+    source.supply = 50;
+    view.update(0, viewport);
+    expect(sourceDrawing().some((item) => item.color === THEME.buildInvalid && item.action === "stroke")).toBe(true);
+    expect(balancePositions(view, game, source.id, 3.2)).toHaveLength(50);
+    source.supply = 0;
+    view.update(0, viewport);
+    expect(sourceDrawing().some((item) => item.color === THEME.buildInvalid)).toBe(false);
+    view.root.destroy({ children: true });
+  });
+
   it("turns a portrait transition vertically for horizontal arcs, including its connector and hit area", () => {
     const game = new Game(level2);
     game.setPortrait(true);
@@ -150,7 +326,7 @@ describe("endpoint token layouts", () => {
     },
   );
   it.each([5, 10, 15].flatMap((count) => [false, true].map((portrait) => ({ count, portrait }))))(
-    "matches source and sink circle positions for $count tokens, portrait=$portrait",
+    "matches source and sink box positions for $count tokens, portrait=$portrait",
     ({ count, portrait }) => {
       const definition = structuredClone(endless);
       const source = definition.net.transitions.find((t) => t.id === "starterSource")!;
@@ -205,6 +381,83 @@ describe("grouped and infinite sink goals", () => {
     return { game, view, viewport };
   }
 
+  it.each([["blue"] satisfies Color[], ...groups].flatMap((colors) =>
+    [5, Infinity].flatMap((count) => [false, true].map((portrait) => ({ colors, count, portrait })))))(
+    "hops each $colors delivery onto its matching demand box, count=$count, portrait=$portrait",
+    ({ colors, count, portrait }) => {
+      const { game, view, viewport } = setup(colors, count, portrait);
+      const sink = game.sim.net.transitions.get("starterSink")!;
+      game.sim.net.places.get("starterDestination")!.marking.push(...colors);
+      expect(game.sim.fire(sink.id)).toBe(true);
+      for (const token of game.sim.inFlight) token.progress = 1 - 1e-10;
+      view.update(0, viewport);
+      const node = view["transitions"].get(sink.id)!;
+      const boxes = flightBoxes(view);
+      for (const [index, color] of colors.entries()) {
+        const key = Number.isFinite(count) ? `${index}:0` : `infinite:${index}`;
+        const target = node.balance.get(key)!.position;
+        const flying = boxes.find((box) => box.color === TOKEN_COLORS[color])!;
+        expect(flying.x).toBeCloseTo(node.container.x + target.x * node.container.scale.x, 4);
+        expect(flying.y).toBeCloseTo(node.container.y + target.y * node.container.scale.y, 4);
+      }
+      view.root.destroy({ children: true });
+    },
+  );
+
+  it("removes the box actually reached when later firings arrive first", () => {
+    const { game, view, viewport } = setup(["blue"], 5, false);
+    game.sim.net.places.get("starterDestination")!.marking.push("blue", "blue");
+    expect(game.sim.fire("starterSink")).toBe(true);
+    expect(game.sim.fire("starterSink")).toBe(true);
+    const [first, second] = game.sim.inFlight;
+    expect([first.goalOrdinal, second.goalOrdinal]).toEqual([0, 1]);
+    first.progress = 0.1;
+    second.progress = 0.9;
+    game.sim.step(0.2);
+    view.update(0, viewport);
+    expect(game.remainingGoalOrdinals(game.goalsFor("starterSink")[0])).toEqual([0, 2, 3, 4]);
+    const balance = view["transitions"].get("starterSink")!.balance;
+    expect(balance.has("0:0")).toBe(true);
+    expect(balance.has("0:1")).toBe(false);
+    first.progress = 1 - 1e-10;
+    view.update(0, viewport);
+    const node = view["transitions"].get("starterSink")!;
+    const target = node.balance.get("0:0")!.position;
+    const box = flightBoxes(view)[0];
+    expect(box.x).toBeCloseTo(node.container.x + target.x * node.container.scale.x, 4);
+    expect(box.y).toBeCloseTo(node.container.y + target.y * node.container.scale.y, 4);
+    view.root.destroy({ children: true });
+  });
+
+  it("does not direct a wrong-color delivery to a sink demand box", () => {
+    const definition = structuredClone(endless);
+    definition.net.arcs.find((arc) => arc.id === "starterInput")!.color = undefined;
+    definition.net.places.find((place) => place.id === "starterDestination")!.marking = ["red"];
+    definition.net.transitions.forEach((transition) => { transition.autoInterval = undefined; });
+    const game = new Game(definition);
+    const view = new NetView(game);
+    const viewport = { x: 0, y: 0, width: 1400, height: 1400 };
+    view.update(0, viewport);
+    expect(game.sim.fire("starterSink")).toBe(true);
+    expect(game.sim.inFlight[0].goalOrdinal).toBeUndefined();
+    game.sim.inFlight[0].progress = 1 - 1e-10;
+    view.update(0, viewport);
+    const node = view["transitions"].get("starterSink")!;
+    const target = node.balance.get("0:0")!.position;
+    const box = flightBoxes(view)[0];
+    expect(Math.hypot(box.x - node.container.x - target.x, box.y - node.container.y - target.y)).toBeGreaterThan(10);
+    view.root.destroy({ children: true });
+  });
+
+  it.each([["blue"] satisfies Color[], ...groups])("shows every %j goal color on the sink outline", (...colors) => {
+    const { game, view } = setup(colors, 5, false);
+    const node = view["transitions"].get("starterSink")!;
+    const outline = drawing(node.gfx).filter((item) => item.action === "stroke" && item.width === 4);
+    for (const color of colors) expect(outline.some((item) => item.color === TOKEN_COLORS[color])).toBe(true);
+    expect(game.goalsFor("starterSink")).toHaveLength(colors.length);
+    view.root.destroy({ children: true });
+  });
+
   it.each(groups.flatMap((colors) => [5, 15].flatMap((count) => [false, true].map((portrait) => ({ colors, count, portrait })))))(
     "renders $count overlapping $colors groups, portrait=$portrait, and removes one whole group on delivery",
     ({ colors, count, portrait }) => {
@@ -212,16 +465,17 @@ describe("grouped and infinite sink goals", () => {
       const dots = balancePositions(view, game, "starterSink", 7);
       expect(dots).toHaveLength(count * colors.length);
       for (let group = 0; group < count; group++) {
-        const circles = dots.slice(group * colors.length, (group + 1) * colors.length);
-        for (const [x, y] of circles.slice(1)) {
-          expect(Math.hypot(x - circles[0][0], y - circles[0][1])).toBeLessThan(8);
-          expect(Math.hypot(x - circles[0][0], y - circles[0][1])).toBeGreaterThan(0);
+        const boxes = dots.slice(group * colors.length, (group + 1) * colors.length);
+        for (const [x, y] of boxes.slice(1)) {
+          expect(Math.hypot(x - boxes[0][0], y - boxes[0][1])).toBeLessThan(8);
+          expect(Math.hypot(x - boxes[0][0], y - boxes[0][1])).toBeGreaterThan(0);
         }
       }
       const sink = view.root.children[5].children.find((node) =>
         node.x === game.sim.net.transitions.get("starterSink")!.x && node.y === game.sim.net.transitions.get("starterSink")!.y)!;
       const colorsDrawn = drawing(sink.children[0] as Graphics).filter((instruction) =>
-        instruction.action === "stroke" && instruction.path.some((shape) => shape.action === "circle" && shape.data[2] === 7))
+        instruction.action === "stroke" && instruction.path.some((shape) =>
+          shape.action === "roundRect" && shape.data[2] === 14 && shape.data[3] === 14))
         .map((instruction) => instruction.color);
       for (const color of colors) expect(colorsDrawn.filter((drawn) => drawn === TOKEN_COLORS[color])).toHaveLength(count);
       game.sim.net.places.get("starterDestination")!.marking.push(...colors);
@@ -286,6 +540,84 @@ describe("sink warning colors", () => {
       hud.root.destroy({ children: true });
       view.root.destroy({ children: true });
     });
+});
+
+describe("delivery HUD", () => {
+  function makeHud(game: Game) {
+    const view = new NetView(game);
+    const controller = new Controller(game, view);
+    const hud = new Hud(game, controller, {
+      restart: () => {}, requestRestart: () => {}, togglePause: () => {},
+      selectBrush: () => {}, focusSink: () => {},
+    });
+    const icon = (color: Color) => hud.root.getChildByLabel(`delivery-${color}`, true) as Graphics;
+    return { hud, view, icon };
+  }
+
+  it("adds outlined boxes in unlock order at the exact epoch thresholds", () => {
+    const game = new Game(endless);
+    const { hud, view, icon } = makeHud(game);
+    const colors: Color[] = ["blue", "red", "green", "yellow"];
+    for (const [epoch, visible] of [
+      [0, ["blue"]], [ENDLESS_RULES.blueOnlyEpochs, ["blue"]],
+      [ENDLESS_RULES.blueOnlyEpochs + 1, ["blue", "red"]],
+      [ENDLESS_RULES.greenFrom - 1, ["blue", "red"]],
+      [ENDLESS_RULES.greenFrom, ["blue", "red", "green"]],
+      [ENDLESS_RULES.yellowFrom - 1, ["blue", "red", "green"]],
+      [ENDLESS_RULES.yellowFrom, colors],
+    ] as [number, Color[]][]) {
+      game["endlessEpoch"] = epoch;
+      hud["updateDeliveryIcons"](0);
+      expect(colors.filter((color) => icon(color).visible)).toEqual(visible);
+      visible.forEach((color, index) => expect(icon(color).x).toBe(index * 16));
+    }
+    for (const color of colors) {
+      expect(drawing(icon(color)).map((item) => [item.action, item.color])).toEqual([
+        ["fill", TOKEN_COLORS[color]], ["stroke", 0xffffff],
+      ]);
+    }
+    hud.root.destroy({ children: true });
+    view.root.destroy({ children: true });
+  });
+
+  it("jumps only colors that scored, settles, and resets on restart", () => {
+    const definition = structuredClone(endless);
+    definition.goals = [
+      { sinkId: "starterSink", color: "blue", count: 1 },
+      { sinkId: "starterSink", color: "red", count: 3 },
+    ];
+    definition.net.transitions.find((transition) => transition.id === "starterSink")!.autoInterval = undefined;
+    definition.net.places.find((place) => place.id === "starterDestination")!.marking = ["blue", "blue", "red", "red"];
+    definition.net.arcs.push({ id: "redInput", from: "starterDestination", to: "starterSink", color: "red" });
+    const game = new Game(definition);
+    const { hud, view, icon } = makeHud(game);
+    expect(game.sim.fire("starterSink")).toBe(true);
+    game.sim.step(1);
+    hud["updateDeliveryIcons"](0.4 / 6);
+    expect(icon("blue").y).toBeCloseTo(-7);
+    expect(icon("red").y).toBeCloseTo(-7);
+    expect(icon("green").y).toBe(0);
+    hud["updateDeliveryIcons"](0.4 / 6);
+    expect(icon("blue").y).toBe(0);
+    expect(icon("red").y).toBe(0);
+    expect(game.sim.fire("starterSink")).toBe(true);
+    game.sim.step(1);
+    hud["updateDeliveryIcons"](0.1);
+    expect(icon("blue").y).toBe(0);
+    expect(icon("red").y).toBeLessThan(0);
+    const next = new Game(endless);
+    hud.setGame(next);
+    expect(icon("red").visible).toBe(false);
+    expect(icon("red").y).toBe(0);
+    game.sim.net.places.get("starterDestination")!.marking.push("blue", "red");
+    expect(game.sim.fire("starterSink")).toBe(true);
+    game.sim.step(1);
+    hud["updateDeliveryIcons"](0.1);
+    expect(icon("red").visible).toBe(false);
+    expect(icon("red").y).toBe(0);
+    hud.root.destroy({ children: true });
+    view.root.destroy({ children: true });
+  });
 });
 
 describe("survival popup placement", () => {
@@ -507,6 +839,28 @@ describe("toolbar layout", () => {
 });
 
 describe("build area", () => {
+  it("uses the build-invalid color for an impossible preview and denial without changing normal denials", () => {
+    const game = new Game(level2);
+    const view = new NetView(game);
+    const controller = new Controller(game, view);
+    const kit = game.level.tools!.kits![0];
+    const point = { x: 1050, y: 180 };
+    const viewport = { x: 0, y: 0, width: 1400, height: 1000 };
+    controller.setBrush({ kind: "kit", kit });
+    controller.press(point);
+    controller.sync();
+    view.update(0, viewport);
+    const preview = drawing(view.root.children[8].children[0] as Graphics);
+    expect(preview.some((item) => item.color === THEME.buildInvalid)).toBe(true);
+    controller.release(point);
+    view.update(0, viewport);
+    expect(drawing(view.root.children[8] as Graphics).some((item) => item.color === THEME.buildInvalid)).toBe(true);
+    view.deny({ kind: "empty", x: 0, y: 0 });
+    view.update(0, viewport);
+    expect(drawing(view.root.children[8] as Graphics).some((item) => item.color === THEME.warn)).toBe(true);
+    view.root.destroy({ children: true });
+  });
+
   it.each([false, true].flatMap((portrait) => (["in", "out"] as const).flatMap((dir) =>
     (["port-first", "place-first", "transition-body"] as const).map((order) => ({ portrait, dir, order })))))(
     "previews the committed arc between existing nodes: $dir, $order, portrait=$portrait", ({ portrait, dir, order }) => {

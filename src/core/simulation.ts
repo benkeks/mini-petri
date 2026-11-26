@@ -19,6 +19,10 @@ export interface InFlightToken {
   /** Index of this token among the tokens moved along its arc by one firing, and their count. */
   slot: number;
   batch: number;
+  /** Source supply before this emission, when it was finite. */
+  sourceSupplyBefore?: number;
+  /** The matching sink goal's absolute delivery ordinal, assigned by the game. */
+  goalOrdinal?: number;
 }
 
 /** The concrete tokens one firing moves along each of its arcs. */
@@ -41,9 +45,11 @@ interface Firing {
   outputs: Binding["outputs"];
   consumed: Multiset;
   produced: Multiset;
+  sourceSupplyBefore?: number;
 }
 
 export interface FireEvent {
+  firingId: number;
   transitionId: string;
   consumed: Multiset;
   produced: Multiset;
@@ -110,6 +116,7 @@ export class Simulation {
   fire(tid: string): boolean {
     const b = this.bind(tid);
     if (!b) return false;
+    const t = this.net.transitions.get(tid)!;
     for (const [pid, idx] of b.taken) {
       const place = this.net.places.get(pid)!;
       place.marking = place.marking.filter((_, i) => !idx.has(i));
@@ -121,13 +128,13 @@ export class Simulation {
       outputs: b.outputs,
       consumed: toMultiset(b.inputs.flatMap((x) => x.colors)),
       produced: toMultiset(b.outputs.flatMap((x) => x.colors)),
+      sourceSupplyBefore: t.kind === "source" ? t.supply : undefined,
     };
     for (const { arc, colors } of b.inputs) firing.pendingInputs += this.launch(arc, colors, "input", firing.id);
     this.firings.set(firing.id, firing);
     this.autoTimers.set(tid, 0);
-    const t = this.net.transitions.get(tid)!;
     if (t.supply !== undefined) t.supply--;
-    const e: FireEvent = { transitionId: tid, consumed: firing.consumed, produced: firing.produced, time: this.time };
+    const e: FireEvent = { firingId: firing.id, transitionId: tid, consumed: firing.consumed, produced: firing.produced, time: this.time };
     for (const fn of this.fireListeners) fn(e);
     if (firing.pendingInputs === 0) this.complete(firing, 0);
     return true;
@@ -243,16 +250,17 @@ export class Simulation {
   /** Starts the outputs of `f`; `elapsed` is how long ago its last input arrived. */
   private complete(f: Firing, elapsed: number): void {
     this.firings.delete(f.id);
-    for (const { arc, colors } of f.outputs) this.launch(arc, colors, "output", f.id, elapsed);
-    const e: FireEvent = { transitionId: f.transitionId, consumed: f.consumed, produced: f.produced, time: this.time - elapsed };
+    for (const { arc, colors } of f.outputs) this.launch(arc, colors, "output", f.id, elapsed, f.sourceSupplyBefore);
+    const e: FireEvent = { firingId: f.id, transitionId: f.transitionId, consumed: f.consumed, produced: f.produced, time: this.time - elapsed };
     for (const fn of this.completeListeners) fn(e);
   }
 
   /** Puts `colors` in flight along `a`, `elapsed` seconds along; returns how many were launched. */
-  private launch(a: Arc, colors: Color[], kind: InFlightToken["kind"], firingId: number, elapsed = 0): number {
+  private launch(a: Arc, colors: Color[], kind: InFlightToken["kind"], firingId: number, elapsed = 0, sourceSupplyBefore?: number): number {
     const progress = (elapsed * this.tokenSpeed) / this.length(a);
     colors.forEach((color, slot) => {
-      this.inFlight.push({ id: this.nextId++, color, arcId: a.id, kind, progress, firingId, slot, batch: colors.length });
+      this.inFlight.push({ id: this.nextId++, color, arcId: a.id, kind, progress, firingId, slot, batch: colors.length,
+        ...(sourceSupplyBefore !== undefined ? { sourceSupplyBefore } : {}) });
     });
     return colors.length;
   }

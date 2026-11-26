@@ -48,7 +48,9 @@ export interface GoalStatus extends Goal {
 /** Seconds a resolved goal or exhausted source stays visible before it is removed from the map. */
 export const RESOLVED_LINGER = 1.2;
 /** Unconnected one-token places expire after this many seconds without use. */
-export const UNUSED_PLACE_LIFETIME = 120;
+export const UNUSED_PLACE_LIFETIME = 30;
+export const STARTER_SOURCE_LIMIT_EPOCH = 2000;
+export const STARTER_SOURCE_SUPPLY = 50;
 export const POWERUP_LIFETIME = 120;
 export const ENDLESS_EPOCH_PROGRESS = 60;
 export const EMISSION_PROGRESS = 10;
@@ -154,6 +156,7 @@ export class Game {
   private coinBalance = STARTING_COINS;
   private paidUpgrades = 0;
   private readonly coinListeners: ((event: CoinEvent) => void)[] = [];
+  private readonly deliveryListeners: ((colors: Multiset) => void)[] = [];
   private readonly insufficientCoinsListeners: (() => void)[] = [];
   private readonly lifeLostListeners: ((position: { x: number; y: number }) => void)[] = [];
   private readonly sinkDeathListeners: ((sink: SinkNotice) => void)[] = [];
@@ -176,6 +179,8 @@ export class Game {
   private readonly delivered = new Map<string, number>();
   /** Matching tokens consumed by each goal sink, including those still travelling into it. */
   private readonly reserved = new Map<string, number>();
+  private readonly completedGoalOrdinals = new Map<string, Set<number>>();
+  private readonly firingGoalOrdinals = new Map<number, { sinkId: string; key: string; ordinal: number }[]>();
   private goalDefinitions: Goal[];
   private nextRampAt: number;
   private readonly countdowns = new Map<string, Countdown>();
@@ -234,6 +239,25 @@ export class Game {
       }
       const goals = this.goalsOf(e.transitionId);
       if (goals.length === 0) return;
+      const allocated: Multiset = {};
+      const ordinals: { sinkId: string; key: string; ordinal: number }[] = [];
+      const flights = this.sim.inFlight;
+      let first = flights.length;
+      while (first > 0 && flights[first - 1].firingId === e.firingId) first--;
+      for (let i = first; i < flights.length; i++) {
+        const token = flights[i];
+        if (token.kind !== "input") continue;
+        const goal = goals.find((g) => g.color === token.color);
+        if (!goal) continue;
+        const key = deliveryKey(e.transitionId, token.color);
+        const ordinal = (this.reserved.get(key) ?? 0) + (allocated[token.color] ?? 0);
+        if (ordinal < goal.count) {
+          token.goalOrdinal = ordinal;
+          if (Number.isFinite(goal.count)) ordinals.push({ sinkId: e.transitionId, key, ordinal });
+        }
+        allocated[token.color] = (allocated[token.color] ?? 0) + 1;
+      }
+      if (ordinals.length) this.firingGoalOrdinals.set(e.firingId, ordinals);
       for (const c of expand(e.consumed)) bump(this.reserved, deliveryKey(e.transitionId, c));
       // Stop consuming once enough matching tokens are on their way.
       if (goals.every((g) => (this.reserved.get(deliveryKey(g.sinkId, g.color)) ?? 0) >= g.count)) {
@@ -242,6 +266,8 @@ export class Game {
     });
     // Goals progress once the consumed tokens have visibly reached the sink.
     this.sim.onComplete((e) => {
+      const ordinals = this.firingGoalOrdinals.get(e.firingId) ?? [];
+      this.firingGoalOrdinals.delete(e.firingId);
       if (this.survivalFailed) return;
       const t = this.sim.net.transitions.get(e.transitionId)!;
       if (t.kind !== "sink") return;
@@ -252,11 +278,25 @@ export class Game {
         return;
       }
       if (countdown && e.time + TIME_EPSILON >= countdown.startsAt) countdown.deadline += total(e.consumed) * DELIVERY_EXTENSION;
-      const before = this.goalsFor(t.id).reduce((sum, goal) => sum + goal.delivered, 0);
+      for (const { key, ordinal } of ordinals) {
+        const completed = this.completedGoalOrdinals.get(key) ?? new Set<number>();
+        completed.add(ordinal);
+        this.completedGoalOrdinals.set(key, completed);
+      }
+      const before = this.goalsFor(t.id);
       for (const c of expand(e.consumed)) bump(this.delivered, deliveryKey(t.id, c));
       const goals = this.goalsFor(t.id);
       if (this.level.mode === "endless") {
-        this.score += goals.reduce((sum, goal) => sum + goal.delivered, 0) - before;
+        const scored: Multiset = {};
+        goals.forEach((goal, index) => {
+          const count = goal.delivered - before[index].delivered;
+          if (count > 0) scored[goal.color] = (scored[goal.color] ?? 0) + count;
+        });
+        const count = total(scored);
+        if (count > 0) {
+          this.score += count;
+          for (const listener of this.deliveryListeners) listener(scored);
+        }
       }
       if (goals.length > 0 && goals.every((g) => g.done) && !this.resolved.has(t.id)) {
         this.resolved.set(t.id, e.time);
@@ -268,6 +308,10 @@ export class Game {
   /** Number of completed endless spawn epochs. */
   get epoch(): number {
     return this.endlessEpoch;
+  }
+
+  get starterSource(): Transition | undefined {
+    return this.endlessCenter;
   }
 
   get coins(): number {
@@ -327,6 +371,10 @@ export class Game {
 
   onCoins(fn: (event: CoinEvent) => void): void {
     this.coinListeners.push(fn);
+  }
+
+  onDeliveries(fn: (colors: Multiset) => void): void {
+    this.deliveryListeners.push(fn);
   }
 
   onInsufficientCoins(fn: () => void): void {
@@ -644,6 +692,16 @@ export class Game {
     const net = this.sim.net;
     const transition = net.transitions.get(tid);
     if (this.complete || this.paused || !transition || transition.ghost || transition.kind !== "normal") return false;
+    const portKey = (port: { dir: "in" | "out"; color?: Color; count?: number }) =>
+      `${port.dir}:${port.color ?? ""}:${arcCount(port)}`;
+    const current = [
+      ...net.inputs(tid).map((arc) => portKey({ ...arc, dir: "in" })),
+      ...net.outputs(tid).map((arc) => portKey({ ...arc, dir: "out" })),
+      ...(transition.open ?? []).map(portKey),
+    ].sort();
+    const requested = kit.ports.map(portKey).sort();
+    if (!!transition.copyInputColor === !!kit.copyInputColor && current.length === requested.length
+      && current.every((port, index) => port === requested[index])) return false;
     const ports = kit.ports.map((port) => ({ ...port, count: arcCount(port) }));
     const bindings = [];
     for (const dir of ["in", "out"] as const) {
@@ -866,6 +924,9 @@ export class Game {
     this.portrait = portrait;
     const net = this.sim.net;
     for (const n of [...net.places.values(), ...net.transitions.values()]) [n.x, n.y] = [n.y, n.x];
+    if (this.endlessCenter && !net.transitions.has(this.endlessCenter.id)) {
+      [this.endlessCenter.x, this.endlessCenter.y] = [this.endlessCenter.y, this.endlessCenter.x];
+    }
     for (const offer of this.offers.values()) [offer.x, offer.y] = [offer.y, offer.x];
     if (this.permanentBluePosition) {
       [this.permanentBluePosition.x, this.permanentBluePosition.y] = [this.permanentBluePosition.y, this.permanentBluePosition.x];
@@ -882,6 +943,12 @@ export class Game {
 
   goalsFor(sinkId: string): GoalStatus[] {
     return this.goals().filter((g) => g.sinkId === sinkId);
+  }
+
+  remainingGoalOrdinals(goal: GoalStatus): number[] {
+    if (!Number.isFinite(goal.count)) return [0];
+    const completed = this.completedGoalOrdinals.get(deliveryKey(goal.sinkId, goal.color));
+    return Array.from({ length: goal.count }, (_, i) => i).filter((ordinal) => !completed?.has(ordinal));
   }
 
   private goalsOf(sinkId: string): Goal[] {
@@ -973,6 +1040,10 @@ export class Game {
     for (const color of COLORS) {
       this.delivered.delete(deliveryKey(tid, color));
       this.reserved.delete(deliveryKey(tid, color));
+      this.completedGoalOrdinals.delete(deliveryKey(tid, color));
+    }
+    for (const [id, ordinals] of this.firingGoalOrdinals) {
+      if (ordinals.some((entry) => entry.sinkId === tid)) this.firingGoalOrdinals.delete(id);
     }
     this.goalDefinitions = this.goalDefinitions.filter((goal) => goal.sinkId !== tid);
     this.countdowns.delete(tid);
@@ -998,6 +1069,10 @@ export class Game {
       }
       this.endlessProgress = Math.max(0, this.endlessProgress - ENDLESS_EPOCH_PROGRESS);
       this.endlessEpoch++;
+      if (this.endlessEpoch === STARTER_SOURCE_LIMIT_EPOCH && this.endlessCenter) {
+        this.endlessCenter.supply = STARTER_SOURCE_SUPPLY;
+        this.endlessCenter.initialSupply = STARTER_SOURCE_SUPPLY;
+      }
       this.pendingEpoch = undefined;
     }
   }
@@ -1130,7 +1205,9 @@ export class Game {
     const nodes = net.liveNodes();
     if (nodes.length === 0) throw new Error("Endless mode needs a live node to spawn near");
     const center = this.endlessCenter;
-    if (!center || center.ghost || !net.transitions.has(center.id)) throw new Error("Endless mode needs its permanent starting source");
+    if (!center || (this.endlessEpoch < STARTER_SOURCE_LIMIT_EPOCH && (center.ghost || !net.transitions.has(center.id)))) {
+      throw new Error("Endless mode needs its starting source before epoch 2000");
+    }
     const candidateAt = (anchor: { x: number; y: number }, angle: number) => {
       const dx = Math.cos(angle);
       const dy = Math.sin(angle);

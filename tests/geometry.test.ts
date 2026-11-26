@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { octilinearRoute, outsidePlace, TOKEN_SLOTS } from "../src/render/geometry";
+import { octilinearRoute, outsidePlace, tokenSlots } from "../src/render/geometry";
 import { placeRadius } from "../src/game/placeSize";
-import { TOKEN_RADIUS } from "../src/render/style";
+import { STORED_TOKEN_RADIUS } from "../src/render/style";
 
 const angles = (pts: { x: number; y: number }[]) =>
   pts.slice(1).map((q, i) => (Math.atan2(q.y - pts[i].y, q.x - pts[i].x) * 180) / Math.PI);
@@ -22,19 +22,16 @@ describe("octilinearRoute", () => {
   });
 
   describe("place capacity layouts", () => {
-    it.each([1, 7, 19])("fits exactly %i token slots inside its place", (capacity) => {
-      expect(TOKEN_SLOTS).toHaveLength(19);
-      const radius = placeRadius(capacity);
-      const slots = TOKEN_SLOTS.slice(0, capacity);
+    it.each([1, 7, 19])("stacks %i outlined boxes inside its place from the bottom", (capacity) => {
+      const slots = tokenSlots(capacity);
+      expect(slots).toHaveLength(capacity);
+      const halfBox = STORED_TOKEN_RADIUS + 1;
       for (const [i, a] of slots.entries()) {
-        expect(Math.hypot(a.x, a.y) + TOKEN_RADIUS).toBeLessThan(radius);
+        expect(Math.hypot(Math.abs(a.x) + halfBox, Math.abs(a.y) + halfBox)).toBeLessThan(placeRadius(capacity) - 2.5);
+        if (i > 0) expect(a.y).toBeLessThanOrEqual(slots[i - 1].y);
         for (const b of slots.slice(i + 1)) {
-          expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(TOKEN_RADIUS * 2 - 1e-9);
+          expect(Math.abs(a.x - b.x) >= 2 * halfBox || Math.abs(a.y - b.y) >= 2 * halfBox).toBe(true);
         }
-      }
-      if (capacity < 19) {
-        const next = TOKEN_SLOTS[capacity];
-        expect(Math.hypot(next.x, next.y) + TOKEN_RADIUS).toBeGreaterThan(radius);
       }
     });
 

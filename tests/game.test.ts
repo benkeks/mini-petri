@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Color } from "../src/core/multiset";
 import design from "../docs/DESIGN.md?raw";
-import { BUILD_RANGE, CLEARANCE, EMISSION_PROGRESS, ENDLESS_EPOCH_PROGRESS, ENDLESS_RULES, Game, PLACE_FOOTPRINT, RESOLVED_LINGER, TRANSITION_FOOTPRINT, withinConnectionRange } from "../src/game/game";
+import { BUILD_RANGE, CLEARANCE, EMISSION_PROGRESS, ENDLESS_EPOCH_PROGRESS, ENDLESS_RULES, Game, PLACE_FOOTPRINT, RESOLVED_LINGER, STARTER_SOURCE_LIMIT_EPOCH, STARTER_SOURCE_SUPPLY, TRANSITION_FOOTPRINT, withinConnectionRange } from "../src/game/game";
 import { endless } from "../src/game/endless";
 import type { Level } from "../src/game/level";
 
@@ -160,6 +160,51 @@ describe("late endless progression", () => {
       }
     }
     expect(seen).toEqual([...milestones.keys()]);
+  }, 30000);
+
+  it("limits the initial source at epoch 2000 and keeps spawning after its exhaustion", () => {
+    const { game, reach, advance } = setup();
+    const source = game.starterSource!;
+    reach(1999);
+    expect(source.supply).toBeUndefined();
+    source.autoInterval = 3;
+    advance();
+    expect(game.epoch).toBe(2000);
+    expect(source).toMatchObject({ supply: 50, initialSupply: 50, autoInterval: 3 });
+    source.autoInterval = undefined;
+    advance();
+    expect(game.epoch).toBe(2001);
+    expect(source.supply).toBe(44);
+
+    expect(game.remove("starterOutput")).toBe(true);
+    game.sim.step(1);
+    game.sim.net.addPlace({ id: "refundPlace", x: source.x - 100, y: source.y, capacity: 1, marking: ["blue"] });
+    game.sim.net.connect(source.id, 0, "refundPlace");
+    expect(game.remove("refundPlace")).toBe(true);
+    expect(source.supply).toBe(45);
+    game.sim.step(1);
+    game.sim.net.connect(source.id, 0, "starterPlace");
+    for (let remaining = 45; remaining > 0; remaining--) {
+      if (remaining % 10 === 5) {
+        game.sim.step(1);
+        game.sim.net.places.get("starterPlace")!.marking = [];
+      }
+      expect(game.sim.fire(source.id)).toBe(true);
+    }
+    expect(source.supply).toBe(0);
+    expect(game.sim.fire(source.id)).toBe(false);
+    game.step(2);
+    expect(game.sim.net.transitions.has(source.id)).toBe(false);
+    const center = { x: source.x, y: source.y };
+    game.setPortrait(true);
+    expect(source).toMatchObject({ x: center.y, y: center.x });
+    const epoch = game.epoch;
+    game.sim.net.addTransition({ id: "replacementSource", x: source.x - 100, y: source.y, kind: "source" });
+    game.sim.net.addArc({ id: "replacementOutput", from: "replacementSource", to: "starterPlace", color: "blue" });
+    game.sim.net.places.get("starterPlace")!.marking = [];
+    for (let i = 0; i < 6; i++) expect(game.sim.fire("replacementSource")).toBe(true);
+    game.step(0);
+    expect(game.epoch).toBeGreaterThan(epoch);
   }, 30000);
 
   it.each([["blue", "red"], ["yellow", "green"], ["blue", "red", "green", "yellow"]] satisfies Color[][])(
@@ -480,6 +525,7 @@ describe("epoch overview", () => {
       "| 1250–1499 | Even epochs create 2 sinks; odd epochs create 1, replacing the rule of thirds. |",
       "| 1500–1749 | Every epoch creates 2 sinks. |",
       "| 1750 onward | Every epoch creates 3 sinks. |",
+      `| Exactly ${STARTER_SOURCE_LIMIT_EPOCH} | The starting blue source becomes finite with ${STARTER_SOURCE_SUPPLY} remaining firings and shows a warning until exhausted. Its original position remains the spawn anchor after it disappears. |`,
     ]);
   });
 });
@@ -502,24 +548,56 @@ describe("goal sinks", () => {
       definition.mode = "endless";
       definition.net.transitions[0].autoInterval = undefined;
       const game = new Game(definition);
+      const deliveries = vi.fn();
+      game.onDeliveries(deliveries);
 
       expect(game.sim.fire("sink")).toBe(true);
       expect(game.score).toBe(0);
+      expect(deliveries).not.toHaveBeenCalled();
       run(game, 0.5);
       expect(game.score).toBe(1);
+      expect(deliveries).toHaveBeenLastCalledWith({ red: 1 });
       expect(game.sim.fire("sink")).toBe(true);
       run(game, 0.5);
       expect(game.score).toBe(1);
+      expect(deliveries).toHaveBeenCalledTimes(1);
       expect(game.sim.fire("sink")).toBe(true);
       expect(game.score).toBe(1);
       run(game, 0.5);
       expect(game.score).toBe(2);
+      expect(deliveries).toHaveBeenCalledTimes(2);
       expect(game.complete).toBe(false);
       run(game, RESOLVED_LINGER + 0.1);
       expect(game.sim.net.transitions.has("sink")).toBe(false);
       expect(game.goals()).toEqual([]);
       expect(game.score).toBe(2);
       expect(game.complete).toBe(false);
+    });
+
+    it("notifies only the scored colors and amounts in simultaneous and excess deliveries", () => {
+      const game = new Game({
+        ...level(), mode: "endless",
+        goals: [{ sinkId: "sink", color: "blue", count: 1 }, { sinkId: "sink", color: "red", count: 3 }],
+        net: {
+          places: [{ id: "p", x: 0, y: 0, marking: ["blue", "blue", "blue", "blue", "red", "red"] }],
+          transitions: [{ id: "sink", x: 100, y: 0, kind: "sink" }],
+          arcs: [
+            { id: "blue", from: "p", to: "sink", color: "blue", count: 2 },
+            { id: "red", from: "p", to: "sink", color: "red" },
+          ],
+        },
+      });
+      const deliveries = vi.fn();
+      game.onDeliveries(deliveries);
+      expect(game.sim.fire("sink")).toBe(true);
+      run(game, 0.5);
+      expect(game.score).toBe(2);
+      expect(deliveries).toHaveBeenLastCalledWith({ blue: 1, red: 1 });
+      expect(game.sim.fire("sink")).toBe(true);
+      run(game, 0.5);
+      expect(game.score).toBe(3);
+      expect(deliveries).toHaveBeenLastCalledWith({ red: 1 });
+      expect(deliveries).toHaveBeenCalledTimes(2);
     });
 
     function pausedGame(random = () => 0): Game {

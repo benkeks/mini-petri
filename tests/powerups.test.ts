@@ -451,6 +451,37 @@ describe("sink rewards", () => {
     expect(game.sim.net.places.get("starterDestination")!.marking).toEqual(["red", "blue", "red"]);
   });
 
+  it("does not spend a kit on a transition with equivalent live and open ports", () => {
+    const { game, finish, reachEpoch, setRandom } = setup();
+    reachEpoch(15);
+    setRandom(0.999);
+    const offer = finish(0);
+    const powerup = offer.choices[0];
+    if (powerup.kind !== "kit") throw new Error("Expected multiplier kit");
+    expect(game.collectOffer(offer.id, 0)).toBe(true);
+    const input = game.sim.net.arcs.get("starterRelayInput")!;
+    const output = game.sim.net.arcs.get("starterRelayOutput")!;
+    input.color = "blue";
+    input.count = 2;
+    output.color = "blue";
+    output.count = 3;
+    const transition = game.sim.net.transitions.get("starterRelay")!;
+    const version = game.sim.net.version;
+    const coins = game.coins;
+    expect(game.convertTransition(transition.id, powerup.kit, false)).toBe(false);
+    expect(game.convertTransition(transition.id, powerup.kit)).toBe(false);
+    expect(game.sim.net.version).toBe(version);
+    expect(game.coins).toBe(coins);
+    expect(game.powerupStock(powerup.id)).toBe(1);
+    expect(game.remove(output.id)).toBe(true);
+    const open = transition.open;
+    expect(game.convertTransition(transition.id, powerup.kit)).toBe(false);
+    expect(transition.open).toBe(open);
+    expect(game.powerupStock(powerup.id)).toBe(1);
+    input.count = 1;
+    expect(game.convertTransition(transition.id, powerup.kit)).toBe(true);
+  });
+
   it("rejects source, sink, incompatible and unaffordable conversions without spending", () => {
     const { game, finish, reachEpoch, setRandom } = setup();
     reachEpoch(15);

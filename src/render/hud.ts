@@ -27,6 +27,7 @@ const HINT_SPACE = 34;
 export interface HudActions {
   toggleFullscreen?(): void;
   showStatistics?(): void;
+  showAbout?(): void;
   restart(): void;
   requestRestart(): void;
   togglePause(): void;
@@ -157,6 +158,8 @@ export class Hud {
   private readonly deliveryBoxes = new Map<Color, { icon: Graphics; jumpAge?: number }>();
   private readonly scoredColors = new Set<Color>();
   private readonly meta: Text;
+  private readonly epoch: Text;
+  private timeSlot?: number;
   private readonly coins: Text;
   private readonly lives: Text;
   private readonly coinIcon = new Graphics();
@@ -166,6 +169,7 @@ export class Hud {
   private readonly pause: Text;
   private readonly restart: Text;
   private readonly skip: Text;
+  private readonly about: Text;
   private readonly fullscreen?: Text;
   private readonly menuButton = new Graphics();
   private readonly fullscreenIcon = new Graphics();
@@ -257,6 +261,10 @@ export class Hud {
       this.deliveryBoxes.set(color, { icon });
     }
     this.meta = new Text({ text: "", style: { ...style, fontSize: 14 } });
+    this.meta.label = "meta-time";
+    this.epoch = new Text({ text: "", style: { ...style, fontSize: 14 } });
+    this.epoch.label = "meta-epoch";
+    this.epoch.visible = game.level.mode === "endless";
     this.coins = new Text({ text: "", style: { ...style, fontSize: 16, fontWeight: "bold", fill: 0xffffff } });
     this.coins.anchor.set(0.5);
     this.lives = new Text({ text: "", style: { ...style, fontSize: 16, fontWeight: "bold", fill: 0xffffff } });
@@ -269,6 +277,8 @@ export class Hud {
     this.pause.label = "meta-pause";
     this.skip = new Text({ text: "SKIP TO ENDLESS", style: { ...style, fontSize: 15, fontWeight: "bold" } });
     this.skip.label = "meta-endless";
+    this.about = new Text({ text: "ABOUT", style: { ...style, fontSize: 15, fontWeight: "bold" } });
+    this.about.label = "meta-about";
     const toggleFullscreen = actions.toggleFullscreen;
     if (toggleFullscreen) {
       this.fullscreen = new Text({ text: "FULLSCREEN", style: { ...style, fontSize: 15, fontWeight: "bold" } });
@@ -307,6 +317,7 @@ export class Hud {
     this.restart.on("pointertap", () => { this.closeMenu(); onRestart(); });
     this.pause.on("pointertap", () => { this.closeMenu(); actions.togglePause(); });
     this.skip.on("pointertap", () => this.showEndlessConfirmation());
+    this.about.on("pointertap", () => { this.closeMenu(); actions.showAbout?.(); });
     this.hint = new Text({
       text: "",
       style: { ...style, fontSize: 13, fill: 0x6e685e, wordWrap: true, wordWrapWidth: 600, align: "center" },
@@ -402,6 +413,7 @@ export class Hud {
       this.statsGain,
       this.deliveryIcons,
       this.meta,
+      this.epoch,
       this.coinIcon,
       this.lifeIcon,
       this.coins,
@@ -419,6 +431,7 @@ export class Hud {
       this.pause,
       this.restart,
       this.skip,
+      this.about,
       this.fullscreenIcon,
       this.menuButton,
       this.pauseShade,
@@ -437,6 +450,7 @@ export class Hud {
 
   setGame(game: Game): void {
     this.game = game;
+    this.epoch.visible = game.level.mode === "endless";
     this.setStatisticsInteraction();
     this.menuOpen = false;
     this.updateNavigationVisibility();
@@ -492,6 +506,7 @@ export class Hud {
     this.pause.visible = (!compact || this.menuOpen) && !this.game.complete;
     this.skip.visible = (!compact || this.menuOpen) && this.game.survival && !this.game.complete;
     this.restart.visible = !compact || this.menuOpen;
+    this.about.visible = !!this.actions.showAbout && (!compact || this.menuOpen);
   }
 
   private drawNavigationIcons(): void {
@@ -522,7 +537,7 @@ export class Hud {
   }
 
   private metaControls(): Text[] {
-    return [...(this.fullscreen ? [this.fullscreen] : []), this.pause, this.skip, this.restart];
+    return [...(this.fullscreen ? [this.fullscreen] : []), this.pause, this.skip, this.restart, this.about];
   }
 
   showRestartConfirmation(): void {
@@ -587,7 +602,7 @@ export class Hud {
   private drawBackplates(): void {
     this.regions = [];
     this.backplates.clear();
-    for (const text of [this.title, this.stats, this.statsLabel, this.statsGain, this.meta, this.hint]) {
+    for (const text of [this.title, this.stats, this.statsLabel, this.statsGain, this.meta, this.epoch, this.hint]) {
       if (!text.visible || !text.text) continue;
       const bounds = text.getBounds();
       const rect = new Rectangle(bounds.minX - 5, bounds.minY - 3, bounds.width + 10, bounds.height + 6);
@@ -670,9 +685,25 @@ export class Hud {
   }
 
   private navigationKey(): string {
-    return [this.title.visible ? this.title.width : 0, this.statsWidth(), this.deliveryIconWidth(), this.meta.width,
+    return [this.title.visible ? this.title.width : 0, this.statsWidth(), this.deliveryIconWidth(), this.metaWidth(),
       this.fullscreen?.text, this.pause.text, this.pause.visible, this.skip.text, this.skip.visible,
       this.compactNavigation(), this.menuOpen].join(":");
+  }
+
+  private timeSlotWidth(): number {
+    if (this.timeSlot === undefined) {
+      const ruler = new Text({ text: "", style: this.meta.style.clone() });
+      this.timeSlot = Math.max(...Array.from({ length: 10 }, (_, digit) => {
+        ruler.text = `TIME ${digit}${digit}${digit}:${digit}${digit}`;
+        return ruler.width;
+      }));
+      ruler.destroy();
+    }
+    return Math.max(this.timeSlot, this.meta.width);
+  }
+
+  private metaWidth(): number {
+    return this.epoch.visible ? this.timeSlotWidth() + 12 + this.epoch.width : this.meta.width;
   }
 
   private statsWidth(): number {
@@ -771,6 +802,7 @@ export class Hud {
     this.deliveryIcons.position.set(this.stats.x + this.statsWidth() + 12, this.stats.y + this.stats.height / 2);
     this.deliveryIcons.hitArea = new Rectangle(-7, -this.stats.height / 2 - 8, iconWidth + 4, this.stats.height + 16);
     this.meta.position.set(16, this.title.visible ? 64 : 38);
+    if (this.epoch.visible) this.epoch.position.set(this.meta.x + this.timeSlotWidth() + 12, this.meta.y);
     const resourceY = height - COIN_ROW / 2 - (portrait ? 0 : 5);
     this.resourceBaseY = resourceY;
     this.coinBaseX = portrait ? width / 2 - (this.lives.visible ? 27 : 0) : 34;
@@ -785,7 +817,7 @@ export class Hud {
     this.menuDismiss.clear().rect(0, 0, width, height).fill({ color: THEME.background, alpha: 0.001 });
     const controls = this.metaControls().filter((control) => control.visible);
     const scoreRight = 16 + Math.max(this.statsWidth() + (iconWidth ? 9 + iconWidth : 0),
-      this.meta.width, this.title.visible ? this.title.width : 0);
+      this.metaWidth(), this.title.visible ? this.title.width : 0);
     const iconLeft = width - 16 - META_ICON_SIZE * 2 - 8;
     const iconY = scoreRight + 16 <= iconLeft ? this.stats.y : this.meta.y + this.meta.height + 12;
     this.menuButton.position.set(width - 16 - META_ICON_SIZE, iconY);
@@ -960,7 +992,8 @@ export class Hud {
     this.statsGain.text = survivalResult ? ` [${g.score - survivalResult.score}]` : "";
     const seconds = Math.floor(g.sim.time);
     const minutes = Math.floor(seconds / 60);
-    this.meta.text = `TIME ${minutes}:${String(seconds % 60).padStart(2, "0")}${g.level.mode === "endless" ? `  EPOCH ${epoch}` : ""}`;
+    this.meta.text = `TIME ${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+    this.epoch.text = g.level.mode === "endless" ? `EPOCH ${epoch}` : "";
     this.coins.text = String(g.coins);
     this.lives.text = g.survival ? String(g.lives) : "\u221e";
     this.lives.visible = g.level.mode === "endless";

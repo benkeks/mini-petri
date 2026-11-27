@@ -41,6 +41,11 @@
 }
 .statistics button[aria-pressed="true"] { background: #242221; color: white; }
 .statistics button:focus-visible, .statistics-scroll:focus-visible { outline: 3px solid #3a81d2; outline-offset: 2px; }
+.about-panel { width: min(520px, 100%); }
+.about-content p { margin: 14px 0 0; overflow-wrap: anywhere; }
+.about-content ul { margin: 4px 0 0; padding-left: 24px; }
+.about-content a { color: #2f7de1; }
+.about-content a:focus-visible { outline: 3px solid #3a81d2; outline-offset: 2px; }
 .statistics-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 16px; }
 .statistics-plot { display: flex; align-items: flex-start; margin-top: 20px; }
 .statistics-axis { position: relative; flex: 0 0 45px; font-size: 12px; text-align: right; }

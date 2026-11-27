@@ -562,6 +562,32 @@ describe("delivery HUD", () => {
     return { hud, view, icon };
   }
 
+  it("keeps the epoch label fixed as the time changes up to 999 minutes", () => {
+    const width = vi.spyOn(Text.prototype, "width", "get").mockImplementation(function (this: Text) {
+      return [...this.text].reduce((sum, character) => sum + (character === "1" ? 5 : 10), 0);
+    });
+    const height = vi.spyOn(Text.prototype, "height", "get").mockReturnValue(14);
+    const game = new Game(endless, Math.random, { survival: true });
+    const { hud, view } = makeHud(game);
+    hud["drawBackplates"] = vi.fn();
+    hud.layout(1200, 800);
+    const positions = [0, 9, 59, 60, 599, 600, 5999, 6000, 999 * 60 + 59].map((time) => {
+      game.sim.time = time;
+      hud.update(0, (point) => point);
+      expect(hud["epoch"].x).toBeGreaterThan(hud["meta"].x + hud["meta"].width);
+      return hud["epoch"].x;
+    });
+    expect(new Set(positions).size).toBe(1);
+    expect(hud["meta"].text).toBe("TIME 999:59");
+    expect(hud["epoch"].text).toBe("EPOCH 0");
+    hud.setGame(new Game(level2));
+    expect(hud["epoch"].visible).toBe(false);
+    hud.root.destroy({ children: true });
+    view.root.destroy({ children: true });
+    width.mockRestore();
+    height.mockRestore();
+  });
+
   it("keeps the delivery label and icons stationary until a digit is added", () => {
     const width = vi.spyOn(Text.prototype, "width", "get").mockImplementation(function (this: Text) {
       return this.text.length * Number(this.style.fontSize) / 2;
@@ -927,8 +953,10 @@ describe("toolbar layout", () => {
       const controller = new Controller(game, view);
       let pauses = 0;
       let fullscreenToggles = 0;
+      const showAbout = vi.fn();
       const hud = new Hud(game, controller, {
         toggleFullscreen: () => { fullscreenToggles++; },
+        showAbout,
         restart: () => {},
         requestRestart: () => {},
         togglePause: () => { pauses++; },
@@ -947,10 +975,12 @@ describe("toolbar layout", () => {
       expect(control("meta-fullscreen").visible).toBe(false);
       expect(control("meta-pause").visible).toBe(false);
       expect(control("meta-restart").visible).toBe(false);
+      expect(control("meta-about").visible).toBe(false);
       control("meta-menu").emit("pointertap", event);
       expect(control("meta-pause").visible).toBe(true);
       expect(control("meta-endless").visible).toBe(true);
       expect(control("meta-restart").visible).toBe(true);
+      expect(control("meta-about").visible).toBe(true);
       expect(game.paused).toBe(false);
       expect(hud.blocks({ x: 200, y: 200 })).toBe(true);
       control("meta-pause").emit("pointertap", event);
@@ -959,6 +989,10 @@ describe("toolbar layout", () => {
       control("meta-menu").emit("pointertap", event);
       control("meta-menu-dismiss").emit("pointertap", event);
       expect(control("meta-restart").visible).toBe(false);
+      control("meta-menu").emit("pointertap", event);
+      control("meta-about").emit("pointertap", event);
+      expect(showAbout).toHaveBeenCalledOnce();
+      expect(control("meta-about").visible).toBe(false);
       control("meta-fullscreen-icon").emit("pointertap", event);
       expect(fullscreenToggles).toBe(1);
       control("meta-menu").emit("pointertap", event);
@@ -973,13 +1007,18 @@ describe("toolbar layout", () => {
       game.setPortrait(true);
       const view = new NetView(game);
       const controller = new Controller(game, view);
+      const showAbout = vi.fn();
       const hud = new Hud(game, controller, {
         restart: () => {}, requestRestart: () => {}, togglePause: () => {},
-        selectBrush: () => {}, focusSink: () => {},
+        selectBrush: () => {}, focusSink: () => {}, showAbout,
       });
       expect(hud.root.children.find((child) => child.label === "meta-menu")?.visible).toBe(false);
       expect(hud.root.children.find((child) => child.label === "meta-pause")?.visible).toBe(true);
       expect(hud.root.children.find((child) => child.label === "meta-restart")?.visible).toBe(true);
+      const about = hud.root.getChildByLabel("meta-about", true)!;
+      expect(about.visible).toBe(true);
+      about.emit("pointertap", new FederatedPointerEvent(new EventBoundary(hud.root)));
+      expect(showAbout).toHaveBeenCalledOnce();
       hud.root.destroy({ children: true });
       view.root.destroy({ children: true });
     });

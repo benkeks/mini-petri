@@ -188,17 +188,18 @@ Completed goals are checked off and disappear.
   Internal score and epoch totals continue advancing normally, including powerup and spawn unlocks; restarting clears the survival snapshot.
 - The `SKIP TO ENDLESS` button next to restart asks for confirmation before ending survival.
   Portrait screens shorten its label to `ENDLESS`.
-  Pause, endless and restart form a horizontal row in landscape and a vertical stack in portrait, always against the right screen edge.
+  Pause, endless, restart and About form a horizontal row in landscape and a vertical stack in portrait, always against the right screen edge.
   The group is top-aligned with the score when space permits, or sits below the score metadata to avoid overlap.
   Subtle rounded boxes share the controls' clickable bounds.
   Likely smartphones (mobile user agent, or a small coarse-pointer touch screen) also show a fullscreen toggle before pause.
-  In mobile portrait mode, pause, endless and restart collapse into a hamburger menu at the upper right.
+  In mobile portrait mode, pause, endless, restart and About collapse into a hamburger menu at the upper right.
   A separate rectangle-corner fullscreen icon sits immediately to its left and reflects enter/exit fullscreen state.
   The menu closes after an action, an outside tap or Escape, and when leaving portrait mode; opening it does not pause gameplay.
   Outside taps dismiss it without acting on the network behind it.
   Its label follows native fullscreen state; unavailable or denied fullscreen requests show a temporary HUD notice.
-  Both confirmations pause the game while open, and cancellation restores its prior pause state.
-  The confirmations and statistics screen animate in and out with a fading backdrop.
+  Both confirmations and the About dialog pause the game while open, and closing or cancellation restores its prior pause state.
+  About shows the current package version, author, source link, contact information and tester acknowledgments.
+  The confirmations, About dialog and statistics screen animate in and out with a fading backdrop.
   Tapping outside a dismissible dialog closes it without activating the underlying game; the survival result itself remains open.
 - Coins appear inside an orange coin circle next to the survival heart and life count.
   Each counter hops on gains and tilts briefly on losses.
@@ -358,6 +359,7 @@ When changing progression, update this overview and the boundary tests in [game.
 - The win popup dims the screen, pops in with a back-out ease and confetti, and blocks input.
   Its animation runs on real time because the simulation clock is stopped.
 - The HUD shows the delivery count, game time and epoch at the top left, and the coin balance at the bottom left, with small screen-space coin flights between the balance and the affected node.
+  Time and epoch have separate backplates, with space reserved for a three-digit minute count so the epoch does not move as time changes.
   Pause and restart controls are at the top right; an in-game restart confirmation pauses play and restores its previous pause state when cancelled.
 - UI text uses uppercase Fredoka, bundled under the SIL Open Font License.
 - Reward choices use compact toolbar icons without text on pulsing grey backgrounds and remain screen-sized when zooming, with a shrinking expiry bar; numbers show coin amounts and kit prices.

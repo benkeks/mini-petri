@@ -4,6 +4,7 @@ import { Simulation } from "../src/core/simulation";
 import { Game, STARTING_COINS, UPGRADE_COST } from "../src/game/game";
 import { endless } from "../src/game/endless";
 import { level2 } from "../src/game/level2";
+import { POWERUPS } from "../src/game/powerups";
 import { brushesOf, Controller } from "../src/input/controller";
 import type { Overlay, Pick } from "../src/render/netView";
 
@@ -69,9 +70,9 @@ describe("controller", () => {
       deny: (p) => denied.push(p),
     };
     const controller = new Controller(game, view);
-    const tap = (next: Pick, touch?: Parameters<Controller["tap"]>[1]) => {
+    const tap = (next: Pick, touch?: Parameters<Controller["tap"]>[1], chain = false) => {
       pick = next;
-      controller.tap({ x: 0, y: 0 }, touch);
+      controller.tap(chain && next.kind === "empty" ? { x: next.x, y: next.y } : { x: 0, y: 0 }, touch, chain);
     };
     const press = (next: Pick) => {
       pick = next;
@@ -83,6 +84,70 @@ describe("controller", () => {
     };
     return { game, view, controller, tap, press, release, denied };
   }
+
+  it("chains a selected kit through places and keeps selections after invalid clicks", () => {
+    const game = new Game({ ...level2, goals: [], net: {
+      places: [{ id: "anchor", x: 0, y: 0, marking: [] }], transitions: [], arcs: [],
+    } });
+    const { controller, tap, denied } = setup(game);
+    const kit = game.level.tools!.kits![0];
+    const chain = (pick: Pick) => tap(pick, undefined, true);
+    controller.setBrush({ kind: "kit", kit });
+    chain({ kind: "empty", x: 150, y: 0 });
+    const first = controller.selected!.tid;
+    expect(controller.brush).toEqual({ kind: "kit", kit });
+    chain({ kind: "empty", x: 5000, y: 0 });
+    expect(controller.selected?.tid).toBe(first);
+    chain({ kind: "place", id: "anchor" });
+    chain({ kind: "empty", x: 300, y: 0 });
+    const place = controller.selectedPlace!;
+    expect(game.sim.net.outputs(first)[0].to).toBe(place);
+    chain({ kind: "place", id: place });
+    expect(controller.selectedPlace).toBe(place);
+    chain({ kind: "empty", x: 5000, y: 0 });
+    expect(controller.selectedPlace).toBe(place);
+    chain({ kind: "empty", x: 450, y: 0 });
+    const second = controller.selected!.tid;
+    expect(game.sim.net.inputs(second)[0].from).toBe(place);
+    expect(game.sim.net.transitions.get(second)?.open).toEqual([{ dir: "out", color: "yellow", count: 2 }]);
+    expect(controller.brush).toEqual({ kind: "kit", kit });
+    expect(denied).toHaveLength(3);
+    tap({ kind: "empty", x: 600, y: 0 });
+    expect(controller.brush.kind).toBe("fire");
+    expect(controller.selectedPlace).toBeUndefined();
+  });
+
+  it("keeps upgrades selected with Shift, but stops when free charges run out", () => {
+    const { game, controller, tap } = setup();
+    controller.setBrush({ kind: "capacity" });
+    tap({ kind: "place", id: "pB" }, undefined, true);
+    expect(controller.brush.kind).toBe("capacity");
+    tap({ kind: "place", id: "pR" }, undefined, true);
+    expect(controller.brush.kind).toBe("capacity");
+    controller.cancel();
+    const auto = POWERUPS.find((item) => item.id === "auto")!;
+    game.offers.set("free", { id: "free", x: 0, y: 0, expiresAt: 120, choices: [auto, auto] });
+    expect(game.collectOffer("free", 0)).toBe(true);
+    controller.setBrush({ kind: "auto" });
+    tap({ kind: "transition", id: "tSplit" }, undefined, true);
+    expect(game.powerupStock("auto")).toBe(0);
+    expect(controller.brush.kind).toBe("fire");
+  });
+
+  it("does not keep a charged kit selected after its last use", () => {
+    const game = new Game(endless);
+    const { controller, tap } = setup(game);
+    const powerup = POWERUPS.find((item) => item.id === "blueMultiply")!;
+    if (powerup.kind !== "kit") throw new Error("expected kit");
+    game.offers.set("kit", { id: "kit", x: 0, y: 0, expiresAt: 120, choices: [powerup, powerup] });
+    expect(game.collectOffer("kit", 0)).toBe(true);
+    controller.setBrush({ kind: "kit", kit: powerup.kit });
+    const anchor = game.sim.net.places.get("starterPlace")!;
+    tap({ kind: "empty", x: anchor.x, y: anchor.y + 150 }, undefined, true);
+    expect(game.powerupStock(powerup.id)).toBe(0);
+    expect(controller.brush.kind).toBe("fire");
+    expect(controller.selected).toBeDefined();
+  });
 
   it.each(["port-first", "place-first", "transition-body"] as const)("drags between existing endpoints: %s", (order) => {
     const { game, controller, press, release, view } = setup();

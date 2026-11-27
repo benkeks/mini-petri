@@ -18,6 +18,7 @@ export const THEME = {
   buildInvalid: 0xa57955,
   heart: 0xb52b45,
   removal: 0x965342,
+  removalGlow: 0xc07746,
   enabledGlow: 0x2b2b2b,
   font: "Fredoka, sans-serif",
 };

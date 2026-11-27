@@ -92,8 +92,7 @@ export function arcRoute(net: Net, bar: BarSize, portrait: boolean, from: string
 }
 
 /** Shared by live nodes and proposed builds so bars, ports and arcs agree before and after release. */
-export function transitionLayout(net: Net, t: Transition, defaultPortrait: boolean) {
-  const arcs = net.arcsOf(t.id);
+export function transitionLayout(net: Net, t: Transition, defaultPortrait: boolean, arcs = net.arcsOf(t.id)) {
   const live = arcs.filter((arc) => !arc.ghost);
   const placeOf = (arc: (typeof arcs)[number]) => net.pos(arc.from === t.id ? arc.to : arc.from);
   const directions = live.map((arc) => {

@@ -4,6 +4,8 @@ A small Mini Metro-style browser and smartphone game built on colored Petri nets
 
 [![Play Mini Petri](docs/animatedscreenshot.gif)](https://benkeks.github.io/mini-petri/)
 
+Play current development version: <https://benkeks.github.io/mini-petri/>
+
 ## How to play
 
 Route colored deliveries from sources to matching goals (sinks).

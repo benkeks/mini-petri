@@ -256,8 +256,9 @@ async function main(): Promise<void> {
     const tap = navigation.up(event.pointerId, p);
     if (tap && inViewport(tap)) {
       const touch = event.pointerType === "touch" ? { screen: tap, time: event.timeStamp } : undefined;
-      if (editing) controller.release(camera.toWorld(tap), touch);
-      else controller.tap(camera.toWorld(tap), touch);
+      const chain = event.pointerType === "mouse" && event.shiftKey;
+      if (editing) controller.release(camera.toWorld(tap), touch, chain);
+      else controller.tap(camera.toWorld(tap), touch, chain);
       updateBounds();
       updatePointer(tap);
     } else {

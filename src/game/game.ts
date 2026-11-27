@@ -1,10 +1,11 @@
 import { COLORS, expand, total, type Color, type Multiset } from "../core/multiset";
-import { arcCount, Net, type Place, type Transition } from "../core/net";
+import { arcCount, Net, type Arc, type Place, type Transition } from "../core/net";
 import { Simulation } from "../core/simulation";
 import type { Goal, Kit, Level } from "./level";
 import { PLACE_CAPACITIES, placeLevel, placeRadius } from "./placeSize";
 import { POWERUPS, type Powerup } from "./powerups";
 import { Statistics } from "./statistics";
+import { distanceToPolyline, outsidePlace, transitionLayout, type Pt } from "../render/geometry";
 
 /** Base build distance for transitions and the smallest places. */
 export const BUILD_RANGE = 220;
@@ -88,6 +89,7 @@ const DELIVERY_EXTENSION = 10;
 const INFINITE_SINK_IDLE = 150;
 const ENDLESS_STEP = 1 / 60;
 const TIME_EPSILON = 1e-8;
+const SPAWN_ARC_CLEARANCE = 45;
 
 interface Countdown {
   startsAt: number;
@@ -105,6 +107,14 @@ interface EndlessDemand {
 interface EndlessPositions {
   sink: { x: number; y: number };
   source?: { x: number; y: number };
+}
+
+interface SpawnRoute {
+  points: Pt[];
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
 }
 
 const PERMANENT_SINKS: readonly EndlessDemand[] = [
@@ -666,17 +676,16 @@ export class Game {
       && kit.ports.some((port) => port.dir === "out"));
   }
 
-  /** Whether a new relay can be built and connected from a place at this point. */
-  canBuildConnectedTransition(pid: string, x: number, y: number): boolean {
+  /** Whether a transition can be built and connected from a place at this point. */
+  canBuildConnectedTransition(pid: string, x: number, y: number, kit = this.relayKit()): boolean {
     const place = this.sim.net.places.get(pid);
-    return !!place && !place.ghost && !this.complete && !!this.relayKit()
-      && withinConnectionRange(place, { x, y }) && !this.placementIssue("transition", x, y);
+    return !!place && !place.ghost && !!kit && kit.ports.some((port) => port.dir === "in")
+      && withinConnectionRange(place, { x, y }) && this.canBuildTransition(kit, x, y);
   }
 
-  /** Builds a relay with its input connected to the selected place. */
-  buildConnectedTransition(pid: string, x: number, y: number): string | undefined {
-    const kit = this.relayKit();
-    if (!kit || !this.canBuildConnectedTransition(pid, x, y)) return undefined;
+  /** Builds a transition with its input connected to the selected place. */
+  buildConnectedTransition(pid: string, x: number, y: number, kit = this.relayKit()): string | undefined {
+    if (!kit || !this.canBuildConnectedTransition(pid, x, y, kit)) return undefined;
     const id = this.buildTransition(kit, x, y);
     if (id === undefined) throw new Error("Could not build a validated connected transition");
     const input = kit.ports.findIndex((port) => port.dir === "in");
@@ -1210,6 +1219,7 @@ export class Game {
   }
 
   private permanentPosition(fraction: number, avoidBlue: boolean): EndlessPositions | undefined {
+    const routes = this.spawnArcRoutes();
     const bounds = this.sim.net.liveNodes().reduce((bounds, node) => ({
       left: Math.min(bounds.left, node.x), right: Math.max(bounds.right, node.x),
       top: Math.min(bounds.top, node.y), bottom: Math.max(bounds.bottom, node.y),
@@ -1225,10 +1235,16 @@ export class Game {
         && Math.hypot(sink.x - this.permanentBluePosition.x, sink.y - this.permanentBluePosition.y) < CONNECTION_RANGE) return undefined;
       return { sink };
     };
+    let best: EndlessPositions | undefined;
+    let bestPenalty = Infinity;
     for (let i = 0; i < 64; i++) {
       const candidate = candidateAt(this.random(), this.random());
-      if (candidate) return candidate;
+      if (!candidate) continue;
+      const penalty = this.spawnArcPenalty(candidate.sink, routes);
+      if (penalty === 0) return candidate;
+      if (penalty < bestPenalty) [best, bestPenalty] = [candidate, penalty];
     }
+    if (best) return best;
     for (let y = 0; y <= 32; y++) {
       for (let x = 0; x <= 32; x++) {
         const candidate = candidateAt(x / 32, y / 32);
@@ -1253,6 +1269,7 @@ export class Game {
   private endlessPositions(withSource: boolean, red: boolean): EndlessPositions | undefined {
     const net = this.sim.net;
     const nodes = net.liveNodes();
+    const routes = this.spawnArcRoutes();
     if (nodes.length === 0) throw new Error("Endless mode needs a live node to spawn near");
     const center = this.endlessCenter;
     if (!center || (this.endlessEpoch < STARTER_SOURCE_LIMIT_EPOCH && (center.ghost || !net.transitions.has(center.id)))) {
@@ -1293,7 +1310,10 @@ export class Game {
       while (index < nodes.length - 1 && choice >= weights[index]) choice -= weights[index++];
       const candidate = candidateAt(nodes[index], this.random() * Math.PI * 2);
       if (!candidate) continue;
-      const weight = candidate.source ? (gravity(candidate.sink) + gravity(candidate.source)) / 2 : gravity(candidate.sink);
+      const penalty = this.spawnArcPenalty(candidate.sink, routes)
+        + (candidate.source ? this.spawnArcPenalty(candidate.source, routes) : 0);
+      const weight = (candidate.source ? (gravity(candidate.sink) + gravity(candidate.source)) / 2 : gravity(candidate.sink))
+        / (1 + 8 * penalty);
       candidateWeight += weight;
       if (this.random() * candidateWeight < weight) selected = candidate;
     }
@@ -1301,6 +1321,8 @@ export class Game {
 
     // An outer-edge fallback keeps spawns possible when the center is crowded.
     const startAngle = this.random() * Math.PI * 2;
+    let bestFallback: ReturnType<typeof candidateAt>;
+    let bestPenalty = Infinity;
     for (let i = 0; i < 32; i++) {
       const angle = startAngle + i * Math.PI * 2 / 32;
       const dx = Math.cos(angle);
@@ -1308,9 +1330,51 @@ export class Game {
       const anchor = nodes.reduce((best, node) =>
         node.x * dx + node.y * dy > best.x * dx + best.y * dy ? node : best);
       const candidate = candidateAt(anchor, angle);
-      if (candidate) return candidate;
+      if (!candidate) continue;
+      const penalty = this.spawnArcPenalty(candidate.sink, routes)
+        + (candidate.source ? this.spawnArcPenalty(candidate.source, routes) : 0);
+      if (penalty === 0) return candidate;
+      if (penalty < bestPenalty) [bestFallback, bestPenalty] = [candidate, penalty];
     }
-    return undefined;
+    return bestFallback;
+  }
+
+  private spawnArcRoutes(): SpawnRoute[] {
+    const net = this.sim.net;
+    const routes: SpawnRoute[] = [];
+    const arcsByTransition = new Map<string, Arc[]>();
+    for (const arc of net.arcs.values()) {
+      const tid = net.transitions.has(arc.from) ? arc.from : arc.to;
+      const arcs = arcsByTransition.get(tid) ?? [];
+      arcs.push(arc);
+      arcsByTransition.set(tid, arcs);
+    }
+    for (const [tid, arcs] of arcsByTransition) {
+      const transition = net.transitions.get(tid);
+      if (!transition || transition.ghost) continue;
+      for (const [id, route] of transitionLayout(net, transition, this.portrait, arcs).routes) {
+        const place = net.places.get(route.placeId);
+        if (!net.arcs.get(id)?.ghost && place && !place.ghost) {
+          const points = outsidePlace(route.pts, placeRadius(place.capacity));
+          routes.push({
+            points,
+            left: Math.min(...points.map((point) => point.x)) - SPAWN_ARC_CLEARANCE,
+            right: Math.max(...points.map((point) => point.x)) + SPAWN_ARC_CLEARANCE,
+            top: Math.min(...points.map((point) => point.y)) - SPAWN_ARC_CLEARANCE,
+            bottom: Math.max(...points.map((point) => point.y)) + SPAWN_ARC_CLEARANCE,
+          });
+        }
+      }
+    }
+    return routes;
+  }
+
+  private spawnArcPenalty(point: Pt, routes: SpawnRoute[]): number {
+    return routes.reduce((sum, route) => {
+      if (point.x < route.left || point.x > route.right || point.y < route.top || point.y > route.bottom) return sum;
+      const distance = distanceToPolyline(point, route.points);
+      return sum + Math.max(0, 1 - distance / SPAWN_ARC_CLEARANCE) ** 2;
+    }, 0);
   }
 
   private rampSources(): void {

@@ -30,6 +30,34 @@ function run(game: Game, seconds: number): void {
   for (let t = 0; t < seconds; t += 1 / 60) game.step(1 / 60);
 }
 
+describe("endless spawn placement near arcs", () => {
+  const definition: Level = {
+    ...endless, width: 1000, height: 1000, goals: [], net: {
+      places: [{ id: "p", x: 900, y: 500, marking: [] }],
+      transitions: [{ id: "source", x: 100, y: 500, kind: "source" }],
+      arcs: [{ id: "arc", from: "source", to: "p", color: "blue" }],
+    },
+  };
+
+  it.each([false, true])("prefers clear ordinary spawn candidates, paired=%s", (paired) => {
+    const rolls = [0.99, 0, 0, 0.99, 0.25, 0.75];
+    let index = 0;
+    const game = new Game(definition, () => rolls[index++] ?? [0.99, 0, 0.99][(index - 7) % 3]);
+    const position = game["endlessPositions"](paired, false)!;
+    expect(position.sink.x).toBeCloseTo(100);
+    expect(position.sink.y).toBeCloseTo(719);
+    if (paired) expect(position.source?.y).toBeCloseTo(938);
+  });
+
+  it("tries another milestone position before accepting an arc overlap, with a fallback", () => {
+    const rolls = [0.5, 0.5, 0.5, 0.7];
+    const game = new Game(definition, () => rolls.shift() ?? 0.5);
+    expect(game["permanentPosition"](1, false)?.sink).toEqual({ x: 500, y: 700 });
+    const crowded = new Game(definition, () => 0.5);
+    expect(crowded["permanentPosition"](1, false)?.sink).toEqual({ x: 500, y: 500 });
+  });
+});
+
 describe("late endless progression", () => {
   function setup() {
     let rolls: number[] = [];

@@ -107,6 +107,8 @@ Completed goals are checked off and disappear.
   This ordinary relay has no redundant toolbar button; other transition kits retain theirs.
   After building a transition its first plug is selected, and after each connection the next one, so wiring is a sequence of taps on places.
   Build and upgrade brushes revert to firing after a successful action; deletion stays active after removals, and failed actions retain the selected tool for retrying.
+  Holding Shift on desktop keeps a used build or upgrade brush selected until its free charges run out, and completing a transition with a place selects that place for the next connected transition.
+  Shift also preserves the build selection on invalid clicks; releasing Shift restores the usual one-shot behavior.
   Buying a life also returns to firing after success.
   Special-transition brushes highlight compatible normal transitions and convert them when tapped, selecting any new open ports for wiring.
 - Denied taps shake the node, or show a ripple on empty space; failed builds use a grayish brown rather than delivery red.
@@ -117,10 +119,13 @@ Completed goals are checked off and disappear.
   Connector bridges preview the same exact place position used on release.
   Node previews include each colored, weighted connector and the octilinear arcs to the proposed place or relay.
   Preview and committed nodes share bar orientation, connector spacing and arc-routing logic.
+  Blocked preview arcs and connectors blink between the warning color and their intended color.
   Connecting existing nodes previews the actual colored, weighted arc clipped to the existing place's outline, in either selection order.
   Deletions preview the original pressed target and commit only when released on that same live removable target; dragging off aborts.
   Releasing outside the play area, Escape, pointer cancellation, lost capture, or beginning a pinch cancels an edit.
   Selecting the wiring origin's body again cancels; releasing beyond 150% of the origin's connection range, or beyond 150% of every live node's build range for a kit, also cancels unless the target is otherwise connectible or convertible.
+  Open connectors have an enlarged screen-space hit area without covering node bodies.
+  Removal targets use orange outlines against a darker deletion-mode background.
 - Background drags pan unless an edit is being previewed; ordinary taps require release without a drag or pinch.
   In the default tool, dragging from an open connector or place starts wiring immediately and commits at the released endpoint; dragging from a connector also starts wiring in deletion mode and switches to the default tool.
   Dropping in empty space builds a connected place or relay; a press and release on the starting endpoint still selects it for two-tap wiring.
@@ -276,6 +281,7 @@ Any sink containing yellow uses double grace and countdown.
 
 For milestone placement, map extent is the bounding rectangle of live nodes together with the initial level rectangle, in the current orientation.
 The specified central fraction is applied independently to width and height; clearance still applies, but placement need not lie within an existing node's build radius.
+Spawn placement prefers positions away from existing rendered arcs, but can accept overlap when clear positions are unavailable.
 The blue milestone's original position is remembered across orientation changes and after its death for the red milestone's exclusion distance.
 
 ### Powerup unlocks

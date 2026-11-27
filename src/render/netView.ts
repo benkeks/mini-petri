@@ -28,6 +28,7 @@ const HOP_HEIGHT = 18;
 const PLUG_RADIUS = 5;
 /** Extra pick tolerance around targets, in screen pixels. */
 const PICK_SLOP = 12;
+const PORT_PICK_SLOP = 20;
 const GHOST_ALPHA = 0.3;
 const BUILD_FADE_TIME = 0.25;
 const REWARD_WIDTH = 48;
@@ -63,7 +64,7 @@ export interface Overlay {
   target?: (pick: Pick) => boolean;
   /** Nodes and ports reachable from a node preview at the given world position. */
   previewTarget?: (pick: Pick, point: Pt) => boolean;
-  /** The active brush removes things: the target under the pointer is tinted red. */
+  /** The active brush removes things. */
   removing?: boolean;
   /** Edit target held under the pointer; no mutation happens until release. */
   pressed?: Pick;
@@ -225,7 +226,7 @@ export class NetView {
     this.removalBackground.clear();
     if (this.overlay.removing && !this.game.complete) {
       this.removalBackground.rect(viewport.x, viewport.y, viewport.width, viewport.height)
-        .fill({ color: THEME.removal, alpha: 0.18 });
+        .fill({ color: THEME.removal, alpha: 0.28 });
     }
     this.updateBuildArea(dt, viewport);
     this.drawPlaces();
@@ -313,11 +314,21 @@ export class NetView {
       }
       return best;
     };
-    const stub = closest(this.stubs, (s) => Math.hypot(s.plug.x - p.x, s.plug.y - p.y), 8 + slop);
-    if (stub) return { kind: "port", tid: stub.tid, index: stub.index };
     const live = <T extends { ghost?: boolean }>(m: Map<string, T>) => [...m.values()].filter((x) => !x.ghost);
+    const transitions = live(net.transitions);
+    const places = live(net.places);
+    const insideNode = transitions.some((t) => {
+      const { w, h } = this.layouts.get(t.id)!.bar;
+      return Math.abs(p.x - t.x) <= w / 2 && Math.abs(p.y - t.y) <= h / 2;
+    }) || places.some((place) => Math.hypot(p.x - place.x, p.y - place.y) <= placeRadius(place.capacity));
+    const stub = insideNode ? undefined : closest(this.stubs, (s) => {
+      const radius = 8 + PORT_PICK_SLOP / scale;
+      const distance = Math.hypot(s.plug.x - p.x, s.plug.y - p.y);
+      return distance < radius ? distance : Infinity;
+    }, Infinity);
+    if (stub) return { kind: "port", tid: stub.tid, index: stub.index };
     const t = closest(
-      live(net.transitions),
+      transitions,
       (t) => {
         const { w, h } = this.layouts.get(t.id)!.bar;
         return Math.abs(t.x - p.x) <= w / 2 + slop && Math.abs(t.y - p.y) <= h / 2 + slop ? Math.hypot(t.x - p.x, t.y - p.y) : Infinity;
@@ -325,7 +336,7 @@ export class NetView {
       Infinity,
     );
     if (t) return { kind: "transition", id: t.id };
-    const place = closest(live(net.places), (q) => Math.hypot(q.x - p.x, q.y - p.y) - placeRadius(q.capacity), slop / 2);
+    const place = closest(places, (q) => Math.hypot(q.x - p.x, q.y - p.y) - placeRadius(q.capacity), slop / 2);
     if (place) return { kind: "place", id: place.id };
     const arc = closest(live(net.arcs), (a) => distanceToPolyline(p, this.visibleRoute(a)), 5 + slop);
     if (arc) return { kind: "arc", id: arc.id };
@@ -823,6 +834,7 @@ export class NetView {
     const proposed = new Net({ places, transitions, arcs });
     const newArcs: Arc[] = [];
     const color = invalid ? THEME.buildInvalid : THEME.ink;
+    const blinkInvalid = invalid && Math.floor(this.game.sim.time * 3) % 2 === 0;
     if (build.kind === "place") {
       const id = existingPlace ?? proposed.freshId("previewPlace");
       if (!existingPlace) proposed.addPlace({ id, ...position, capacity: build.capacity ?? 1, marking: [] });
@@ -845,14 +857,14 @@ export class NetView {
       const layout = transitionLayout(proposed, t, this.game.portrait);
       const { w, h } = layout.bar;
       g.roundRect(position.x - w / 2, position.y - h / 2, w, h, 6).fill(color);
-      for (const stub of layout.stubs) this.drawStub(g, stub, this.previewLabels, invalid ? THEME.buildInvalid : undefined);
+      for (const stub of layout.stubs) this.drawStub(g, stub, this.previewLabels, blinkInvalid ? THEME.buildInvalid : undefined);
     }
     for (const arc of newArcs) {
       const tid = proposed.transitions.has(arc.from) ? arc.from : arc.to;
       const route = transitionLayout(proposed, proposed.transitions.get(tid)!, this.game.portrait).routes.get(arc.id)!;
       const pts = outsidePlace(route.pts, placeRadius(proposed.places.get(route.placeId)!.capacity));
       const label = this.drawArrow(g, route.fromPlace ? pts : pts.reverse(),
-        invalid ? THEME.buildInvalid : arc.color ? TOKEN_COLORS[arc.color] : THEME.ink, arcCount(arc));
+        blinkInvalid ? THEME.buildInvalid : arc.color ? TOKEN_COLORS[arc.color] : THEME.ink, arcCount(arc));
       if (label) this.previewLabels.addChild(label);
     }
   }
@@ -890,8 +902,7 @@ export class NetView {
         const connection = o.build.connection;
         const invalid = this.game.placementIssue(o.build.kind, x, y)
           || (o.build.canPlace && !o.build.canPlace(x, y))
-          || (connection && !this.game.canConnectAt(connection.tid, connection.index, x, y))
-          || (o.build.fromPlace && !this.game.canBuildConnectedTransition(o.build.fromPlace, x, y));
+          || (connection && !this.game.canConnectAt(connection.tid, connection.index, x, y));
         this.drawBuildPreview(o.build, { x, y }, !!invalid);
       }
     }
@@ -922,15 +933,15 @@ export class NetView {
       ];
       for (const c of candidates) {
         if (o.target?.(c) || (o.previewTarget && o.pointer && hover?.kind === "empty" && o.previewTarget(c, o.pointer))) {
-          ring(c, THEME.enabledGlow, 0.2 + 0.35 * pulse, 3 + pulse);
+          ring(c, o.removing ? THEME.removalGlow : THEME.enabledGlow, 0.2 + 0.35 * pulse, 3 + pulse);
         }
       }
     }
-    if (hover && hover.kind !== "empty" && (o.hoverAction?.(hover) ?? false)) {
-      ring(hover, o.removing ? THEME.removal : THEME.ink, 0.5 + 0.35 * pulse, 4 + pulse);
+    if (hover && hover.kind !== "empty" && (o.removing ? o.target?.(hover) : o.hoverAction?.(hover))) {
+      ring(hover, o.removing ? THEME.removalGlow : THEME.ink, 0.5 + 0.35 * pulse, 4 + pulse);
     }
     if (o.removing && o.pressed && o.target?.(o.pressed)) {
-      ring(o.pressed, THEME.removal, 0.9, 8);
+      ring(o.pressed, THEME.removalGlow, 0.9, 8);
     }
 
     if (selectedPlace && !selectedPlace.ghost) {

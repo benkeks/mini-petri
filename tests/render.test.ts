@@ -1153,6 +1153,24 @@ describe("build area", () => {
     view.root.destroy({ children: true });
   });
 
+  it("blinks a blocked connection between its warning color and its intended arc color", () => {
+    const game = new Game({ ...level2, goals: [], net: {
+      places: [{ id: "p", x: 1000, y: 1000, marking: [] }],
+      transitions: [{ id: "t", x: 1400, y: 1000, kind: "normal", open: [{ dir: "in", color: "blue" }] }],
+      arcs: [],
+    } });
+    const view = new NetView(game);
+    view.overlay.connection = { tid: "t", index: 0, pid: "p" };
+    const viewport = { x: 0, y: 0, width: 2000, height: 2000 };
+    view.update(0, viewport);
+    const preview = view.root.children[8].children[0] as Graphics;
+    expect(drawing(preview).find((item) => item.action === "stroke" && item.width === 4)?.color).toBe(THEME.buildInvalid);
+    game.sim.time = 0.4;
+    view.update(0, viewport);
+    expect(drawing(preview).find((item) => item.action === "stroke" && item.width === 4)?.color).toBe(TOKEN_COLORS.blue);
+    view.root.destroy({ children: true });
+  });
+
   it.each([false, true].flatMap((portrait) => (["in", "out"] as const).flatMap((dir) =>
     (["port-first", "place-first", "transition-body"] as const).map((order) => ({ portrait, dir, order })))))(
     "previews the committed arc between existing nodes: $dir, $order, portrait=$portrait", ({ portrait, dir, order }) => {
@@ -1288,6 +1306,12 @@ describe("build area", () => {
     expect(arcs).toHaveLength(4);
     expect(arcs.every((shape) => shape.data[2] === 5)).toBe(true);
     expect(view.pick({ x: 1576, y: 1000 })).toEqual({ kind: "port", tid: "plug", index: 0 });
+    expect(view.pick({ x: 1583, y: 1000 })).toEqual({ kind: "port", tid: "plug", index: 0 });
+    view.root.scale.set(0.25);
+    expect(view.pick({ x: 1500, y: 1000 })).toEqual({ kind: "transition", id: "plug" });
+    expect(view.pick({ x: 1617, y: 1000 })).toEqual({ kind: "port", tid: "plug", index: 0 });
+    game.sim.net.addPlace({ id: "nearPlug", x: 1630, y: 1000, capacity: 1, marking: [] });
+    expect(view.pick({ x: 1630, y: 1000 })).toEqual({ kind: "place", id: "nearPlug" });
     view.root.destroy({ children: true });
   });
 
@@ -1301,12 +1325,17 @@ describe("build area", () => {
     view.update(0, { x: -300, y: -300, width: 1800, height: 1400 });
     const tint = view.root.children[1].children[0] as Graphics;
     expect(tint.context.instructions.some((instruction) =>
-      instruction.action === "fill" && instruction.data.style.color === THEME.removal)).toBe(true);
+      instruction.action === "fill" && instruction.data.style.color === THEME.removal && instruction.data.style.alpha === 0.28)).toBe(true);
     const overlay = view.root.children[8] as Graphics;
     expect(overlay.context.instructions.some((instruction) =>
-      instruction.action === "stroke" && instruction.data.style.color === THEME.removal
+      instruction.action === "stroke" && instruction.data.style.color === THEME.removalGlow
       && instruction.data.style.width === 8)).toBe(true);
     expect(game.sim.net.places.get("pB")!.ghost).toBeFalsy();
+    controller.cancelPress();
+    controller.move({ x: 100, y: 180 });
+    controller.sync();
+    view.update(0, { x: -300, y: -300, width: 1800, height: 1400 });
+    expect(drawing(overlay).some((item) => item.color === THEME.removalGlow && item.width === 4.5)).toBe(false);
     controller.cancel();
     controller.sync();
     view.update(0, { x: -300, y: -300, width: 1800, height: 1400 });

@@ -1,6 +1,7 @@
-import { Application } from "pixi.js";
+import { Application, Rectangle } from "pixi.js";
 import { endless } from "./game/endless";
 import { buildRange, Game } from "./game/game";
+import { olderVersion, Saves } from "./game/saves";
 import { Camera } from "./input/camera";
 import { Controller } from "./input/controller";
 import { Navigation } from "./input/navigation";
@@ -9,6 +10,7 @@ import { isUltraWide, type Pt } from "./render/geometry";
 import { Hud } from "./render/hud";
 import { NetView } from "./render/netView";
 import { StatisticsScreen } from "./render/statistics";
+import { SessionPicker } from "./render/sessions";
 import { THEME } from "./render/style";
 import "./render/statistics.css";
 
@@ -27,6 +29,8 @@ async function main(): Promise<void> {
   document.getElementById("app")!.appendChild(app.canvas);
 
   let game = new Game(endless, Math.random, { survival: true });
+  let saves: Saves | undefined;
+  let sessionId: string | undefined;
   const camera = new Camera();
   const navigation = new Navigation(camera);
   let boundsVersion = -1;
@@ -48,7 +52,7 @@ async function main(): Promise<void> {
     showStatistics: () => showStatistics(),
     showAbout: () => showAbout(),
     toggleFullscreen: smartphone ? () => { void toggleFullscreen(); } : undefined,
-    restart: () => load(),
+    restart: (save) => restart(save),
     requestRestart: () => requestRestart(),
     togglePause: () => {
       if (game.complete) return;
@@ -106,16 +110,140 @@ async function main(): Promise<void> {
     controller.attach(game, view);
   }
 
-  function load(): void {
+  function installGame(next: Game): void {
     statistics.close();
     about.close();
-    game = new Game(endless, Math.random, { survival: true });
+    game = next;
     listenForGameOver();
     rebuildView();
     hud.setGame(game);
     boundsVersion = -1;
     boundsOfferVersion = -1;
     layout(true);
+  }
+
+  function storageError(message: string, error: unknown): void {
+    console.error(message, error);
+    hud.showNotice(message);
+  }
+
+  function restart(save = false): boolean {
+    if (save && (!saves || !sessionId)) {
+      storageError("Could not save: browser storage is unavailable.", new Error("Storage unavailable"));
+      return false;
+    }
+    let nextId: string | undefined;
+    try {
+      nextId = saves?.newId();
+      if (saves && sessionId) {
+        if (save) saves.save(sessionId, game, captureThumbnail());
+        else saves.remove(sessionId);
+      }
+    } catch (error) {
+      storageError("Could not save or restart the session.", error);
+      return false;
+    }
+    sessionId = nextId;
+    installGame(new Game(endless, Math.random, { survival: true }));
+    return true;
+  }
+
+  function loadSession(id: string): boolean {
+    const previous = game;
+    try {
+      if (!saves) throw new Error("Storage unavailable");
+      const restored = saves.load(id);
+      installGame(restored);
+      sessionId = id;
+      return true;
+    } catch (error) {
+      if (game !== previous) installGame(previous);
+      storageError("Could not load saved session.", error);
+      return false;
+    }
+  }
+
+  const sessions = new SessionPicker(
+    (id) => loadSession(id),
+    (id) => {
+      try {
+        if (!saves) throw new Error("Storage unavailable");
+        saves.remove(id);
+        return saves.list();
+      } catch (error) {
+        storageError("Could not delete saved session.", error);
+        return undefined;
+      }
+    },
+    () => {
+      try {
+        sessionId = saves?.newId();
+      } catch (error) {
+        storageError("Could not create a saved session.", error);
+      }
+      game.paused = false;
+    },
+  );
+
+  function saveSession(): void {
+    if (!saves || !sessionId || sessions.open) return;
+    try {
+      saves.save(sessionId, game, captureThumbnail());
+    } catch (error) {
+      storageError("Could not save the session.", error);
+    }
+  }
+
+  function captureThumbnail(): string {
+    const viewport = camera.viewport;
+    const world = camera.toWorld(viewport);
+    const hudVisible = hud.root.visible;
+    try {
+      hud.root.visible = false;
+      return view.capture({
+        ...world, width: viewport.width / camera.scale, height: viewport.height / camera.scale,
+      }, () => {
+        const image = app.renderer.extract.canvas({
+          target: app.stage,
+          frame: new Rectangle(viewport.x, viewport.y, viewport.width, viewport.height),
+          resolution: 128 / Math.max(viewport.width, viewport.height),
+          clearColor: THEME.background,
+          antialias: true,
+        });
+        if (!(image instanceof HTMLCanvasElement)
+          && !(typeof OffscreenCanvas !== "undefined" && image instanceof OffscreenCanvas)) {
+          throw new Error("Unsupported save thumbnail canvas");
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = 128;
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("Could not create save thumbnail canvas");
+        context.fillStyle = `#${THEME.background.toString(16).padStart(6, "0")}`;
+        context.fillRect(0, 0, 128, 128);
+        context.drawImage(image, (128 - image.width) / 2, (128 - image.height) / 2);
+        return canvas.toDataURL("image/png");
+      });
+    } finally {
+      hud.root.visible = hudVisible;
+    }
+  }
+
+  function initializeSessions(): void {
+    try {
+      saves = new Saves(window.localStorage);
+      const saved = saves.list();
+      if (saved.length === 0) sessionId = saves.newId();
+      else if (saved.length === 1 && !saved[0].damaged && saved[0].version && !olderVersion(saved[0].version)
+        && loadSession(saved[0].id)) return;
+      else {
+        game.paused = true;
+        sessions.show(saved, saved.length === 1 && !saved[0].damaged && !olderVersion(saved[0].version ?? "")
+          ? "Could not load this session. It may be incompatible or damaged." : "");
+      }
+    } catch (error) {
+      saves = undefined;
+      storageError("Browser storage is unavailable; this game will not be saved.", error);
+    }
   }
 
   function showStatistics(): void {
@@ -187,6 +315,10 @@ async function main(): Promise<void> {
 
   app.renderer.on("resize", () => layout());
   layout(true);
+  initializeSessions();
+  window.setInterval(saveSession, 60_000);
+  window.addEventListener("pagehide", saveSession);
+  document.addEventListener("visibilitychange", () => { if (document.hidden) saveSession(); });
 
   const screenPoint = (event: MouseEvent): Pt => {
     const rect = app.canvas.getBoundingClientRect();
@@ -329,6 +461,7 @@ async function main(): Promise<void> {
   });
 
   window.addEventListener("keydown", (e) => {
+    if (sessions.open) return;
     if (about.open) {
       if (e.key === "Escape") about.close();
       return;

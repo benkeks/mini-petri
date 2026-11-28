@@ -11,6 +11,16 @@ interface Counts {
   built: Multiset;
 }
 
+export interface StatisticsSnapshot {
+  events: [number, Counts][];
+  minutes: [number, Multiset][];
+  alive: [number, Multiset][];
+  sinkDeaths: SinkDeath[];
+  sinkCreations: SinkCreation[];
+  endlessAt?: number;
+  nextSampleTime: number;
+}
+
 export interface StatisticsPoint extends Counts {
   time: number;
   alive: Multiset;
@@ -47,6 +57,31 @@ export class Statistics {
 
   constructor(initialAlive: Multiset) {
     this.alive.set(0, { ...initialAlive });
+  }
+
+  snapshot(): StatisticsSnapshot {
+    return {
+      events: [...this.events], minutes: [...this.minutes], alive: [...this.alive],
+      sinkDeaths: this.sinkDeaths, sinkCreations: this.sinkCreations,
+      endlessAt: this.endlessAt, nextSampleTime: this.nextSampleTime,
+    };
+  }
+
+  restore(state: StatisticsSnapshot): void {
+    if (!Array.isArray(state.events) || !Array.isArray(state.minutes) || !Array.isArray(state.alive)
+      || !Array.isArray(state.sinkDeaths) || !Array.isArray(state.sinkCreations)
+      || !Number.isFinite(state.nextSampleTime) || state.nextSampleTime <= 0) throw new Error("Invalid statistics");
+    this.events.clear();
+    this.minutes.clear();
+    this.alive.clear();
+    for (const [key, value] of state.events) this.events.set(key, value);
+    for (const [key, value] of state.minutes) this.minutes.set(key, value);
+    for (const [key, value] of state.alive) this.alive.set(key, value);
+    this.sinkDeaths.push(...state.sinkDeaths);
+    this.sinkCreations.length = 0;
+    this.sinkCreations.push(...state.sinkCreations);
+    this.endlessAt = state.endlessAt;
+    this.nextSampleTime = state.nextSampleTime;
   }
 
   recordSinkDeath(time: number, colors: readonly Color[]): void {

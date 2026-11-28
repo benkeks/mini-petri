@@ -88,11 +88,11 @@ export class Net {
   /** Incremented whenever the structure of the net changes, so views can rebuild. */
   version = 0;
 
-  constructor(spec: NetSpec) {
+  constructor(spec: NetSpec, validate = true) {
     for (const p of spec.places) this.addPlace(p);
     for (const t of spec.transitions) this.addTransition(t);
     for (const a of spec.arcs) this.addArc(a);
-    for (const t of this.transitions.values()) this.validateTransition(t.id);
+    if (validate) for (const t of this.transitions.values()) this.validateTransition(t.id);
   }
 
   addPlace(p: Place): void {

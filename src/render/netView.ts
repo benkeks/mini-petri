@@ -236,6 +236,22 @@ export class NetView {
     this.drawRewards();
   }
 
+  capture<T>(viewport: { x: number; y: number; width: number; height: number }, render: () => T): T {
+    const overlay = this.overlay;
+    const layers = [this.rangeLayer, this.removalBackground, this.overlayLayer, this.previewLabels, this.rewardLayer];
+    const visibility = layers.map((layer) => layer.visible);
+    try {
+      this.overlay = {};
+      this.update(0, viewport);
+      for (const layer of layers) layer.visible = false;
+      return render();
+    } finally {
+      this.overlay = overlay;
+      this.update(0, viewport);
+      layers.forEach((layer, index) => { layer.visible = visibility[index]; });
+    }
+  }
+
   private updateBuildArea(dt: number, viewport: { x: number; y: number; width: number; height: number }): void {
     const active = !!this.overlay.build && !this.game.complete;
     this.rangeFade = Math.max(0, Math.min(1, this.rangeFade + (active ? dt : -dt) / BUILD_FADE_TIME));

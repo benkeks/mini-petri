@@ -213,10 +213,11 @@ export class Game {
   private nextSpawnRetryAt = 0;
   private nextEndlessId = 1;
 
-  constructor(readonly level: Level, private readonly random: () => number = Math.random, options: { survival?: boolean } = {}) {
+  constructor(readonly level: Level, private readonly random: () => number = Math.random, options: { survival?: boolean; snapshot?: GameSnapshot } = {}) {
     this.survivalActive = level.mode === "endless" && !!options.survival;
     for (const p of level.net.places) placeRadius(p.capacity);
-    this.sim = new Simulation(new Net(level.net));
+    if (options.snapshot) validateSavedNet(options.snapshot);
+    this.sim = new Simulation(new Net(options.snapshot?.net ?? level.net, !options.snapshot));
     this.statistics = new Statistics(this.sim.liveTokens());
     for (const transition of this.sim.net.transitions.values()) {
       if (transition.kind !== "sink") continue;
@@ -230,7 +231,10 @@ export class Game {
     this.goalDefinitions = level.goals.map((goal) => ({ ...goal }));
     this.nextRampAt = level.ramp.every;
     if (level.mode === "endless") {
-      this.endlessCenter = [...this.sim.net.transitions.values()].find((t) => t.kind === "source" && t.supply === undefined);
+      const savedCenter = options.snapshot?.endlessCenter;
+      this.endlessCenter = savedCenter
+        ? this.sim.net.transitions.get(savedCenter.id) ?? { ...savedCenter }
+        : [...this.sim.net.transitions.values()].find((t) => t.kind === "source" && t.supply === undefined);
       for (const sinkId of new Set(this.goalDefinitions.map((goal) => goal.sinkId))) {
         const factor = this.goalsOf(sinkId).some((goal) => goal.color === "yellow") ? 2 : 1;
         this.startCountdown(sinkId, SINK_GRACE * factor, this.sim.time, COUNTDOWN * factor);
@@ -343,6 +347,119 @@ export class Game {
         this.countdowns.delete(t.id);
       }
     });
+    if (options.snapshot) this.restoreSnapshot(options.snapshot);
+  }
+
+  snapshot() {
+    const net = this.sim.net;
+    return {
+      net: { places: [...net.places.values()], transitions: [...net.transitions.values()], arcs: [...net.arcs.values()] },
+      simulation: this.sim.snapshot(),
+      statistics: this.statistics.snapshot(),
+      portrait: this.portrait, complete: this.complete, completedAt: this.completedAt, score: this.score,
+      survivalActive: this.survivalActive, survivalBaseline: this.survivalBaseline, survivalFailed: this.survivalFailed,
+      lifeBalance: this.lifeBalance, lostLife: this.lostLife, purchasedLives: this.purchasedLives,
+      coinBalance: this.coinBalance, paidUpgrades: this.paidUpgrades,
+      upgradeSpending: [...this.upgradeSpending], autoUpgradeLevels: [...this.autoUpgradeLevels],
+      builtTransitions: [...this.builtTransitions], inventory: [...this.inventory],
+      offers: [...this.offers.values()].map((offer) => ({ ...offer, choices: offer.choices.map((choice) => choice.id) })),
+      nextOfferId: this.nextOfferId,
+      resolved: [...this.resolved], exhausted: [...this.exhausted], rewardedSources: [...this.rewardedSources],
+      failed: [...this.failed], delivered: [...this.delivered], reserved: [...this.reserved],
+      completedGoalOrdinals: [...this.completedGoalOrdinals].map(([key, value]) => [key, [...value]] as [string, number[]]),
+      firingGoalOrdinals: [...this.firingGoalOrdinals],
+      goalDefinitions: this.goalDefinitions.map((goal) => ({ ...goal, count: Number.isFinite(goal.count) ? goal.count : null })),
+      nextRampAt: Number.isFinite(this.nextRampAt) ? this.nextRampAt : null,
+      countdowns: [...this.countdowns], unusedPlaces: [...this.unusedPlaces],
+      endlessCenter: this.endlessCenter, endlessProgress: this.endlessProgress, endlessEpoch: this.endlessEpoch,
+      redSurplus: this.redSurplus, pendingEpoch: this.pendingEpoch, permanentBluePosition: this.permanentBluePosition,
+      nextRedHasSource: this.nextRedHasSource, nextSpawnRetryAt: this.nextSpawnRetryAt, nextEndlessId: this.nextEndlessId,
+    };
+  }
+
+  private restoreSnapshot(state: GameSnapshot): void {
+    const arrays = [state.upgradeSpending, state.autoUpgradeLevels, state.builtTransitions, state.inventory, state.offers,
+      state.resolved, state.exhausted, state.rewardedSources, state.failed, state.delivered, state.reserved,
+      state.completedGoalOrdinals, state.firingGoalOrdinals, state.goalDefinitions, state.countdowns, state.unusedPlaces];
+    if (arrays.some((value) => !Array.isArray(value))
+      || ![state.score, state.lifeBalance, state.coinBalance, state.paidUpgrades, state.purchasedLives,
+        state.nextOfferId, state.endlessProgress, state.endlessEpoch, state.redSurplus,
+        state.nextSpawnRetryAt, state.nextEndlessId].every(Number.isFinite)
+      || typeof state.portrait !== "boolean" || typeof state.complete !== "boolean"
+      || typeof state.survivalActive !== "boolean" || typeof state.survivalFailed !== "boolean"
+      || typeof state.lostLife !== "boolean" || typeof state.nextRedHasSource !== "boolean"
+      || (this.level.mode === "endless" && !this.endlessCenter)) throw new Error("Invalid game state");
+    const numberMaps = [state.upgradeSpending, state.autoUpgradeLevels, state.inventory, state.resolved, state.exhausted,
+      state.failed, state.delivered, state.reserved, state.unusedPlaces];
+    if (numberMaps.some((entries) => entries.some((entry) => !Array.isArray(entry) || typeof entry[0] !== "string"
+      || !Number.isFinite(entry[1]) || entry[1] < 0))
+      || state.lifeBalance < 0 || state.lifeBalance > MAX_LIVES || state.coinBalance < 0 || state.score < 0
+      || state.endlessEpoch < 0 || state.endlessProgress < 0
+      || (state.nextRampAt !== null && !Number.isFinite(state.nextRampAt))) throw new Error("Invalid game counters");
+    for (const [id, countdown] of state.countdowns) {
+      if (typeof id !== "string" || !this.sim.net.transitions.has(id) || !countdown
+        || !Number.isFinite(countdown.startsAt) || !Number.isFinite(countdown.deadline)
+        || !Number.isFinite(countdown.duration) || countdown.duration <= 0) throw new Error("Invalid countdown");
+    }
+    this.sim.restore(state.simulation);
+    this.statistics.restore(state.statistics);
+    this.portrait = state.portrait;
+    this.complete = state.complete;
+    this.completedAt = state.completedAt;
+    this.score = state.score;
+    this.survivalActive = state.survivalActive;
+    this.survivalBaseline = state.survivalBaseline;
+    this.survivalFailed = state.survivalFailed;
+    this.lifeBalance = state.lifeBalance;
+    this.lostLife = state.lostLife;
+    this.purchasedLives = state.purchasedLives;
+    this.coinBalance = state.coinBalance;
+    this.paidUpgrades = state.paidUpgrades;
+    const replace = <K, V>(target: Map<K, V>, entries: [K, V][]) => {
+      target.clear();
+      for (const [key, value] of entries) target.set(key, value);
+    };
+    replace(this.upgradeSpending, state.upgradeSpending);
+    replace(this.autoUpgradeLevels, state.autoUpgradeLevels);
+    replace(this.inventory, state.inventory);
+    this.builtTransitions.clear();
+    for (const id of state.builtTransitions) this.builtTransitions.add(id);
+    this.offers.clear();
+    for (const offer of state.offers) {
+      const choices = offer.choices.map((id) => POWERUPS.find((item) => item.id === id));
+      if (choices.length !== 2 || !choices[0] || !choices[1]) throw new Error("Unknown saved reward");
+      this.offers.set(offer.id, { ...offer, choices: [choices[0], choices[1]] });
+    }
+    this.offerVersion++;
+    this.nextOfferId = state.nextOfferId;
+    replace(this.resolved, state.resolved);
+    replace(this.exhausted, state.exhausted);
+    this.rewardedSources.clear();
+    for (const id of state.rewardedSources) this.rewardedSources.add(id);
+    replace(this.failed, state.failed);
+    replace(this.delivered, state.delivered);
+    replace(this.reserved, state.reserved);
+    this.completedGoalOrdinals.clear();
+    for (const [key, values] of state.completedGoalOrdinals) this.completedGoalOrdinals.set(key, new Set(values));
+    replace(this.firingGoalOrdinals, state.firingGoalOrdinals);
+    this.goalDefinitions = state.goalDefinitions.map((goal) => {
+      if (!COLORS.includes(goal.color) || (goal.count !== null && (!Number.isFinite(goal.count) || goal.count < 0))) {
+        throw new Error("Invalid saved goal");
+      }
+      return { ...goal, count: goal.count ?? Infinity };
+    });
+    this.nextRampAt = state.nextRampAt ?? Infinity;
+    replace(this.countdowns, state.countdowns);
+    replace(this.unusedPlaces, state.unusedPlaces);
+    this.unusedPlacesVersion = -1;
+    this.endlessProgress = state.endlessProgress;
+    this.endlessEpoch = state.endlessEpoch;
+    this.redSurplus = state.redSurplus;
+    this.pendingEpoch = state.pendingEpoch;
+    this.permanentBluePosition = state.permanentBluePosition;
+    this.nextRedHasSource = state.nextRedHasSource;
+    this.nextSpawnRetryAt = state.nextSpawnRetryAt;
+    this.nextEndlessId = state.nextEndlessId;
   }
 
   /** Number of completed endless spawn epochs. */
@@ -1385,6 +1502,39 @@ export class Game {
         if (t.kind === "source" && t.autoInterval) t.autoInterval = Math.max(min, t.autoInterval * factor);
       }
     }
+  }
+}
+
+export type GameSnapshot = ReturnType<Game["snapshot"]>;
+
+function validateSavedNet(state: GameSnapshot): void {
+  const net = state.net;
+  if (!net || !Array.isArray(net.places) || !Array.isArray(net.transitions) || !Array.isArray(net.arcs)) {
+    throw new Error("Invalid saved net");
+  }
+  const position = (node: { id: string; x: number; y: number }) =>
+    !!node && typeof node.id === "string" && node.id.length > 0 && Number.isFinite(node.x) && Number.isFinite(node.y);
+  const color = (value: Color | undefined) => value === undefined || COLORS.includes(value);
+  for (const place of net.places) {
+    if (!position(place) || !Array.isArray(place.marking) || place.marking.some((token) => !color(token))) throw new Error("Invalid saved place");
+    placeRadius(place.capacity);
+  }
+  for (const transition of net.transitions) {
+    if (!position(transition) || !["normal", "source", "sink"].includes(transition.kind)
+      || (transition.autoInterval !== undefined && (!Number.isFinite(transition.autoInterval) || transition.autoInterval <= 0))
+      || (transition.supply !== undefined && (!Number.isInteger(transition.supply) || transition.supply < 0))
+      || (transition.open !== undefined && (!Array.isArray(transition.open) || transition.open.some((port) =>
+        !port || (port.dir !== "in" && port.dir !== "out") || !color(port.color)
+        || (port.count !== undefined && (!Number.isInteger(port.count) || port.count < 1)))))) throw new Error("Invalid saved transition");
+  }
+  for (const arc of net.arcs) {
+    if (!arc || typeof arc.id !== "string" || !arc.id || typeof arc.from !== "string" || typeof arc.to !== "string"
+      || !color(arc.color) || (arc.count !== undefined && (!Number.isInteger(arc.count) || arc.count < 1))) {
+      throw new Error("Invalid saved arc");
+    }
+  }
+  if (state.endlessCenter && (!position(state.endlessCenter) || state.endlessCenter.kind !== "source")) {
+    throw new Error("Invalid saved spawn center");
   }
 }
 

@@ -1,7 +1,7 @@
 # Design notes
 
 Detailed gameplay rules and implementation decisions behind Mini Petri.
-The [README](../README.md) covers setup and a quick introduction.
+The [README](../README.md) gives a quick introduction; the [development notes](DEVELOPMENT.md) cover setup and technical details.
 
 ## Reading the map
 

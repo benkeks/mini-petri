@@ -28,7 +28,7 @@ export interface HudActions {
   toggleFullscreen?(): void;
   showStatistics?(): void;
   showAbout?(): void;
-  restart(): void;
+  restart(save?: boolean): boolean | void;
   requestRestart(): void;
   togglePause(): void;
   selectBrush(b: Brush): void;
@@ -215,6 +215,9 @@ export class Hud {
   private readonly confirmTitle: Text;
   private readonly confirmDetail: Text;
   private readonly confirmLabel: Text;
+  private readonly saveToggle = new Container();
+  private readonly saveCheck = new Graphics();
+  private saveBeforeRestart = true;
   confirming = false;
   private confetti: Confetto[] = [];
   /** Real seconds since the popup appeared, or undefined while it is hidden. */
@@ -397,11 +400,25 @@ export class Hud {
     confirmDetail.position.set(0, -12);
     const cancelButton = new Container();
     const confirmButton = new Container();
+    const saveBackground = new Graphics().roundRect(-132, -13, 264, 26, 8)
+      .fill(0xe7e0dc).stroke({ width: 1, color: THEME.muted });
+    const saveLabel = new Text({ text: "SAVE CURRENT GAME", style: { ...style, fontSize: 14, fontWeight: "bold" } });
+    saveLabel.anchor.set(0.5);
+    saveLabel.position.set(12, 0);
+    this.saveToggle.addChild(saveBackground, this.saveCheck, saveLabel);
+    this.saveToggle.position.set(0, 15);
+    this.saveToggle.eventMode = "static";
+    this.saveToggle.cursor = "pointer";
+    this.saveToggle.hitArea = new Rectangle(-132, -13, 264, 26);
+    this.saveToggle.on("pointertap", () => {
+      this.saveBeforeRestart = !this.saveBeforeRestart;
+      this.updateSaveCheck();
+    });
     button(cancelButton, "CANCEL", () => this.cancelRestart());
     this.confirmLabel = button(confirmButton, "RESTART", () => this.confirmRestart(), THEME.warn);
     cancelButton.position.set(-77, 50);
     confirmButton.position.set(77, 50);
-    this.confirmation.addChild(confirmCard, confirmTitle, confirmDetail, cancelButton, confirmButton);
+    this.confirmation.addChild(confirmCard, confirmTitle, confirmDetail, this.saveToggle, cancelButton, confirmButton);
     this.confirmationShade.visible = this.confirmation.visible = false;
     this.deathFlash.eventMode = "none";
 
@@ -554,8 +571,11 @@ export class Hud {
     this.closeMenu();
     this.confirmationKind = kind;
     this.confirmTitle.text = kind === "restart" ? "RESTART GAME?" : "EXIT SURVIVAL MODE?";
-    this.confirmDetail.text = kind === "restart" ? "ALL PROGRESS WILL BE LOST." : "CONTINUE PLAYING WITHOUT PRESSURE.";
+    this.confirmDetail.text = kind === "restart" ? "START A NEW GAME." : "CONTINUE PLAYING WITHOUT PRESSURE.";
     this.confirmLabel.text = kind === "restart" ? "RESTART" : "ENDLESS";
+    this.saveBeforeRestart = true;
+    this.saveToggle.visible = kind === "restart";
+    this.updateSaveCheck();
     this.wasPaused = this.game.paused;
     this.game.paused = true;
     this.confirming = true;
@@ -569,9 +589,22 @@ export class Hud {
 
   confirmRestart(): void {
     if (!this.confirming) return;
-    this.confirming = false;
-    if (this.confirmationKind === "endless") this.continueEndless();
-    else this.actions.restart();
+    if (this.confirmationKind === "endless") {
+      this.confirming = false;
+      this.continueEndless();
+    } else if (this.actions.restart(this.saveBeforeRestart) !== false) this.confirming = false;
+    else this.confirmDetail.text = "COULD NOT SAVE OR RESTART.";
+  }
+
+  private updateSaveCheck(): void {
+    const g = this.saveCheck.clear();
+    g.roundRect(-108, -9, 18, 18, 4)
+      .fill(this.saveBeforeRestart ? THEME.ink : THEME.placeFill)
+      .stroke({ width: 1.5, color: THEME.ink });
+    if (this.saveBeforeRestart) {
+      g.moveTo(-104, 0).lineTo(-100, 4).lineTo(-94, -4)
+        .stroke({ width: 2, color: THEME.placeFill, cap: "round", join: "round" });
+    }
   }
 
   continueEndless(): void {

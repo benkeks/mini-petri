@@ -1,4 +1,4 @@
-import { addInto, total, type Color, type Multiset } from "./multiset";
+import { addInto, COLORS, total, type Color, type Multiset } from "./multiset";
 import { arcCount, type Arc, type Net } from "./net";
 
 /**
@@ -48,6 +48,14 @@ interface Firing {
   sourceSupplyBefore?: number;
 }
 
+export interface SimulationSnapshot {
+  time: number;
+  nextId: number;
+  inFlight: InFlightToken[];
+  autoTimers: [string, number][];
+  firings: (Omit<Firing, "outputs"> & { outputs: { arcId: string; colors: Color[] }[] })[];
+}
+
 export interface FireEvent {
   firingId: number;
   transitionId: string;
@@ -84,6 +92,68 @@ export class Simulation {
   ) {
     this.tokenSpeed = opts.tokenSpeed ?? 230;
     this.random = opts.random ?? Math.random;
+  }
+
+  snapshot(): SimulationSnapshot {
+    return {
+      time: this.time, nextId: this.nextId,
+      inFlight: this.inFlight.map((token) => ({ ...token })),
+      autoTimers: [...this.autoTimers],
+      firings: [...this.firings.values()].map((firing) => ({
+        ...firing, outputs: firing.outputs.map(({ arc, colors }) => ({ arcId: arc.id, colors: [...colors] })),
+      })),
+    };
+  }
+
+  restore(state: SimulationSnapshot): void {
+    if (!Number.isFinite(state.time) || state.time < 0 || !Number.isInteger(state.nextId) || state.nextId < 1
+      || !Array.isArray(state.inFlight) || !Array.isArray(state.firings) || !Array.isArray(state.autoTimers)) {
+      throw new Error("Invalid simulation state");
+    }
+    this.time = state.time;
+    this.nextId = state.nextId;
+    for (const [tid, time] of state.autoTimers) {
+      if (!this.net.transitions.has(tid) || !Number.isFinite(time) || time < 0) throw new Error("Invalid automatic timer");
+      this.autoTimers.set(tid, time);
+    }
+    for (const firing of state.firings) {
+      if (!this.net.transitions.has(firing.transitionId) || !Array.isArray(firing.outputs)
+        || !Number.isInteger(firing.id) || firing.id < 1 || firing.id >= state.nextId || this.firings.has(firing.id)
+        || !Number.isInteger(firing.pendingInputs) || firing.pendingInputs < 1) {
+        throw new Error("Invalid firing");
+      }
+      const outputs = firing.outputs.map(({ arcId, colors }) => {
+        const arc = this.net.arcs.get(arcId);
+        if (!arc || arc.from !== firing.transitionId || !Array.isArray(colors) || colors.some((color) => !COLORS.includes(color))) {
+          throw new Error("Invalid firing output");
+        }
+        return { arc, colors: [...colors] };
+      });
+      this.firings.set(firing.id, { ...firing, outputs });
+    }
+    const tokenIds = new Set<number>();
+    const pending = new Map<number, number>();
+    for (const token of state.inFlight) {
+      if (!this.net.arcs.has(token.arcId) || !Number.isFinite(token.progress) || token.progress < 0
+        || !Number.isInteger(token.id) || token.id < 1 || token.id >= state.nextId || tokenIds.has(token.id)
+        || !Number.isInteger(token.firingId) || token.firingId < 1 || token.firingId >= state.nextId
+        || !Number.isInteger(token.slot) || !Number.isInteger(token.batch) || token.slot < 0 || token.slot >= token.batch
+        || !COLORS.includes(token.color)
+        || (token.kind !== "input" && token.kind !== "output")
+        || (token.kind === "input" && !this.firings.has(token.firingId))) throw new Error("Invalid travelling token");
+      tokenIds.add(token.id);
+      if (token.kind === "input") {
+        const firing = this.firings.get(token.firingId)!;
+        if (this.net.arcs.get(token.arcId)!.to !== firing.transitionId) throw new Error("Invalid firing input");
+        pending.set(token.firingId, (pending.get(token.firingId) ?? 0) + 1);
+      } else if (!this.net.places.has(this.net.arcs.get(token.arcId)!.to)) throw new Error("Invalid output token");
+      this.inFlight.push({ ...token });
+    }
+    for (const firing of this.firings.values()) {
+      if (pending.get(firing.id) !== firing.pendingInputs) {
+        throw new Error("Firing input count does not match travelling tokens");
+      }
+    }
   }
 
   /** Called when a transition fires (inputs consumed, outputs committed). */

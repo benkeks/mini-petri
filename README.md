@@ -22,6 +22,9 @@ Drag empty space to pan; use the mouse wheel, trackpad or a two-finger pinch to 
 Tap the delivery count for color-stacked statistics; the survival result also offers this screen.
 **Pause** freezes gameplay, **Restart** begins a fresh run after confirmation, and supported smartphones offer fullscreen.
 
+Games save automatically in this browser; when several sessions exist, choose one at startup.
+Restart keeps your current session unless you choose to discard it; saves stay on this device and can be cleared by the browser.
+
 ### Building and upgrades
 
 Use the bottom toolbar; tap the selected tool again or press Escape to return to firing.
@@ -50,26 +53,12 @@ After your first lost life, the heart tool offers replacement lives.
 ## Petri nets behind the game
 
 The map *is* a colored Petri net, edited while it runs.
-Firing atomically consumes inputs and reserves output capacity.
-Deliveries (Petri-net tokens) animate in continuous time and become usable only on arrival; outputs start moving only after all inputs reach the transition.
 
 See the [design notes](docs/DESIGN.md) for detailed rules, controls, Petri-net terminology and epoch progression.
 
-## Building the code
+## Development
 
-```sh
-npm install
-npm run dev     # play at http://localhost:5173
-npm test        # unit tests (Vitest)
-npm run build   # type-check + production build
-```
-
-### Code layout
-
-- `src/core` — Petri-net simulation.
-- `src/game` — levels and game rules.
-- `src/input` — controls and navigation.
-- `src/render` — Pixi views and styling.
+Build instructions, code layout, saving and PWA details are in the [development notes](docs/DEVELOPMENT.md).
 
 ### License
 

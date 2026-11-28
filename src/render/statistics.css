@@ -41,11 +41,24 @@
 }
 .statistics button[aria-pressed="true"] { background: #242221; color: white; }
 .statistics button:focus-visible, .statistics-scroll:focus-visible { outline: 3px solid #3a81d2; outline-offset: 2px; }
+.statistics button:disabled { opacity: 0.5; cursor: default; }
 .about-panel { width: min(520px, 100%); }
 .about-content p { margin: 14px 0 0; overflow-wrap: anywhere; }
 .about-content ul { margin: 4px 0 0; padding-left: 24px; }
 .about-content a { color: #2f7de1; }
 .about-content a:focus-visible { outline: 3px solid #3a81d2; outline-offset: 2px; }
+.sessions-panel { width: min(720px, 100%); }
+.sessions-list { display: grid; gap: 6px; margin: 12px 0; }
+.sessions-row { display: grid; grid-template-columns: 80px minmax(0, 1fr) auto; align-items: center; gap: 6px 10px; padding: 8px; border: 1px solid #a8a09b; border-radius: 8px; }
+.sessions-preview { width: 80px; height: 80px; display: grid; place-items: center; background: #e7e0dc; border-radius: 6px; overflow: hidden; font-size: 12px; text-align: center; color: #746a64; }
+.sessions-preview img { display: block; width: 100%; height: 100%; }
+.sessions-details { overflow-wrap: anywhere; font-size: 14px; line-height: 1.3; }
+.sessions-actions { display: flex; gap: 6px; }
+.sessions-confirm { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.sessions-confirm[hidden] { display: none; }
+.statistics .sessions-confirm-delete { background: #a44c30; color: white; }
+.sessions-warning, .sessions-error { color: #a44c30; }
+.sessions-error:empty { display: none; }
 .statistics-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 16px; }
 .statistics-plot { display: flex; align-items: flex-start; margin-top: 20px; }
 .statistics-axis { position: relative; flex: 0 0 45px; font-size: 12px; text-align: right; }
@@ -63,6 +76,10 @@
 }
 @media (max-width: 480px) {
   .statistics-panel { padding: 14px 10px; }
+  .sessions-row { grid-template-columns: 64px minmax(0, 1fr); gap: 4px 8px; }
+  .sessions-preview { grid-row: span 2; width: 64px; height: 64px; }
+  .sessions-actions { grid-column: 2; }
+  .sessions-actions button, .sessions-confirm button { min-height: 40px; }
   .statistics-tabs { margin-top: 10px; }
   .statistics button { padding: 7px 9px; font-size: 13px; }
 }

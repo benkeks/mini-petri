@@ -45,6 +45,28 @@ function flightBoxes(view: NetView) {
   });
 }
 
+describe("save viewport capture", () => {
+  it("hides build and reward UI and restores it even if rendering fails", () => {
+    const game = new Game(endless);
+    const view = new NetView(game);
+    const viewport = { x: 0, y: 0, width: 1400, height: 1000 };
+    view.overlay = { build: { kind: "place" }, removing: true, pointer: { x: 400, y: 300 } };
+    view.update(0.3, viewport);
+    const overlay = view.overlay;
+    const layers = [view["rangeLayer"], view["removalBackground"], view["overlayLayer"], view["previewLabels"], view["rewardLayer"]];
+    const visibility = layers.map((layer) => layer.visible);
+    expect(() => view.capture(viewport, () => {
+      expect(view.overlay).toEqual({});
+      expect(layers.every((layer) => !layer.visible)).toBe(true);
+      throw new Error("Extraction failed");
+    })).toThrow("Extraction failed");
+    expect(view.overlay).toBe(overlay);
+    expect(layers.map((layer) => layer.visible)).toEqual(visibility);
+    expect(view.capture(viewport, () => "thumbnail")).toBe("thumbnail");
+    view.root.destroy({ children: true });
+  });
+});
+
 describe("transition firing effects", () => {
   const viewport = { x: 0, y: 0, width: 1400, height: 1000 };
 
@@ -1114,6 +1136,32 @@ describe("toolbar layout", () => {
       expect(restarts).toBe(1);
       hud.confirmRestart();
       expect(restarts).toBe(1);
+      hud.root.destroy({ children: true });
+      view.root.destroy({ children: true });
+    });
+
+    it("offers saving on restart and keeps the dialog open when saving fails", () => {
+      const game = new Game(endless);
+      const view = new NetView(game);
+      const controller = new Controller(game, view);
+      const restart = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
+      const hud = new Hud(game, controller, {
+        restart, requestRestart: () => {}, togglePause: () => {}, selectBrush: () => {}, focusSink: () => {},
+      });
+      hud.showRestartConfirmation();
+      hud.confirmRestart();
+      expect(restart).toHaveBeenLastCalledWith(true);
+      expect(hud.confirming).toBe(true);
+      expect(game.paused).toBe(true);
+      hud.confirmRestart();
+      expect(hud.confirming).toBe(false);
+      hud.showRestartConfirmation();
+      hud["saveToggle"].emit("pointertap", new FederatedPointerEvent(new EventBoundary(hud.root)));
+      hud.confirmRestart();
+      expect(restart).toHaveBeenLastCalledWith(false);
+      hud.showRestartConfirmation();
+      hud.confirmRestart();
+      expect(restart).toHaveBeenLastCalledWith(true);
       hud.root.destroy({ children: true });
       view.root.destroy({ children: true });
     });

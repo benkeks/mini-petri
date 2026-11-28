@@ -85,6 +85,7 @@ export class Net {
   readonly arcs = new Map<string, Arc>();
   private readonly inArcs = new Map<string, Arc[]>();
   private readonly outArcs = new Map<string, Arc[]>();
+  private readonly nodeArcs = new Map<string, Set<Arc>>();
   /** Incremented whenever the structure of the net changes, so views can rebuild. */
   version = 0;
 
@@ -98,6 +99,7 @@ export class Net {
   addPlace(p: Place): void {
     this.assertFreeId(p.id);
     this.places.set(p.id, { ...p, capacity: p.capacity ?? DEFAULT_CAPACITY, marking: [...p.marking] });
+    this.nodeArcs.set(p.id, new Set());
     this.version++;
   }
 
@@ -110,6 +112,7 @@ export class Net {
     });
     this.inArcs.set(t.id, []);
     this.outArcs.set(t.id, []);
+    this.nodeArcs.set(t.id, new Set());
     this.version++;
   }
 
@@ -125,6 +128,8 @@ export class Net {
       throw new Error(`Arc ${a.id} must connect a place and a transition`);
     }
     this.arcs.set(a.id, a);
+    this.nodeArcs.get(a.from)!.add(a);
+    this.nodeArcs.get(a.to)!.add(a);
     this.version++;
   }
 
@@ -189,9 +194,12 @@ export class Net {
     const a = this.arcs.get(aid);
     if (!a) return;
     this.arcs.delete(aid);
-    for (const lists of [this.inArcs, this.outArcs]) {
-      for (const [tid, list] of lists) lists.set(tid, list.filter((x) => x !== a));
-    }
+    const input = this.transitions.has(a.to);
+    const tid = input ? a.to : a.from;
+    const lists = input ? this.inArcs : this.outArcs;
+    lists.set(tid, lists.get(tid)!.filter((x) => x !== a));
+    this.nodeArcs.get(a.from)!.delete(a);
+    this.nodeArcs.get(a.to)!.delete(a);
     this.version++;
   }
 
@@ -201,6 +209,7 @@ export class Net {
     this.transitions.delete(id);
     this.inArcs.delete(id);
     this.outArcs.delete(id);
+    this.nodeArcs.delete(id);
     this.version++;
   }
 
@@ -213,7 +222,7 @@ export class Net {
 
   /** All arcs touching node `id`, ghosts included. */
   arcsOf(id: string): Arc[] {
-    return [...this.arcs.values()].filter((a) => a.from === id || a.to === id);
+    return [...(this.nodeArcs.get(id) ?? [])];
   }
 
   /** Live arcs from places into transition `tid`. */

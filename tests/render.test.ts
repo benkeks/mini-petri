@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { EventBoundary, FederatedPointerEvent, Graphics, Text } from "pixi.js";
+import { Bounds, EventBoundary, FederatedPointerEvent, Graphics, Text } from "pixi.js";
 import type { Color } from "../src/core/multiset";
 import { ENDLESS_RULES, Game, placementClearance } from "../src/game/game";
 import { endless } from "../src/game/endless";
@@ -46,6 +46,29 @@ function flightBoxes(view: NetView, layer = view.root.children[6] as Graphics) {
   });
 }
 
+describe("Pixi layer hierarchy", () => {
+  it("groups graphics in containers without nesting children under graphics or text", () => {
+    const game = new Game(endless);
+    const view = new NetView(game);
+    const hud = new Hud(game, new Controller(game, view), {
+      restart: () => {}, requestRestart: () => {}, togglePause: () => {},
+      selectBrush: () => {}, focusSink: () => {},
+    });
+    view.overlay = { build: { kind: "place" }, pointer: { x: 400, y: 300 } };
+    view.update(0.3, { x: 0, y: 0, width: 1400, height: 1000 });
+    expect(view["arcContainer"].children).toEqual([view["arcLayer"], view["focusArcLayer"]]);
+    expect(view["overlayContainer"].children).toEqual([view["overlayLayer"], view["buildPreview"], view["portGlowLayer"]]);
+    const nodes = [view.root, hud.root];
+    while (nodes.length) {
+      const node = nodes.pop()!;
+      if (node instanceof Graphics || node instanceof Text) expect(node.children).toEqual([]);
+      nodes.push(...node.children);
+    }
+    hud.root.destroy({ children: true });
+    view.root.destroy({ children: true });
+  });
+});
+
 describe("save viewport capture", () => {
   it("hides build and reward UI and restores it even if rendering fails", () => {
     const game = new Game(endless);
@@ -54,7 +77,7 @@ describe("save viewport capture", () => {
     view.overlay = { build: { kind: "place" }, removing: true, pointer: { x: 400, y: 300 } };
     view.update(0.3, viewport);
     const overlay = view.overlay;
-    const layers = [view["rangeLayer"], view["removalBackground"], view["overlayLayer"], view["previewLabels"], view["rewardLayer"]];
+    const layers = [view["rangeLayer"], view["removalBackground"], view["overlayContainer"], view["previewLabels"], view["rewardLayer"]];
     const visibility = layers.map((layer) => layer.visible);
     expect(() => view.capture(viewport, () => {
       expect(view.overlay).toEqual({});
@@ -87,6 +110,77 @@ describe("dense net readability", () => {
       ],
     } });
   }
+
+  it("releases view listeners across repeated rebuilds on the same simulation", () => {
+    const game = network();
+    const fire = game.sim["fireListeners"].size, complete = game.sim["completeListeners"].size;
+    for (let i = 0; i < 10; i++) {
+      const view = new NetView(game);
+      expect(game.sim["fireListeners"].size).toBe(fire + 1);
+      expect(game.sim["completeListeners"].size).toBe(complete + 1);
+      view.root.destroy({ children: true });
+      expect(game.sim["fireListeners"].size).toBe(fire);
+      expect(game.sim["completeListeners"].size).toBe(complete);
+    }
+  });
+
+  it("shares one hover pick between the overlay and all rewards", () => {
+    const game = network();
+    for (let i = 0; i < 3; i++) game.offers.set(`offer${i}`, {
+      id: `offer${i}`, x: i * 300, y: 900, expiresAt: 120, choices: [POWERUPS[0], POWERUPS[2]],
+    });
+    game.offerVersion++;
+    const view = new NetView(game);
+    view.overlay = { pointer: { x: 280, y: 200 } };
+    const pick = vi.spyOn(view, "pick");
+    view.update(0, viewport);
+    expect(pick).toHaveBeenCalledExactlyOnceWith(view.overlay.pointer);
+    view.root.destroy({ children: true });
+  });
+
+  it("retains unchanged place graphics but redraws mutations and newly visible places", () => {
+    const game = network();
+    const view = new NetView(game);
+    const small = { x: 0, y: 0, width: 200, height: 300 };
+    view.update(0, small);
+    const clear = vi.spyOn(view["placeLayer"], "clear");
+    view.update(1 / 60, small);
+    expect(clear).not.toHaveBeenCalled();
+    game.sim.net.places.get("from")!.marking.push("blue");
+    view.update(1 / 60, small);
+    expect(clear).toHaveBeenCalledOnce();
+    expect(drawing(view["placeLayer"]).some((item) => item.color === TOKEN_COLORS.blue)).toBe(true);
+    game.sim.net.places.get("to")!.marking.push("red");
+    view.update(1 / 60, small);
+    expect(clear).toHaveBeenCalledOnce();
+    view.update(1 / 60, { ...small, x: 500 });
+    expect(drawing(view["placeLayer"]).some((item) => item.color === TOKEN_COLORS.red)).toBe(true);
+    expect(drawing(view["placeLayer"]).some((item) => item.color === TOKEN_COLORS.blue)).toBe(false);
+    view.root.destroy({ children: true });
+  });
+
+  it("refreshes weighted flight lanes and picking after capacity and orientation changes", () => {
+    const game = network();
+    game.sim.net.arcs.get("input")!.count = 3;
+    game.sim.net.places.get("from")!.marking.push("blue", "blue", "blue");
+    const view = new NetView(game);
+    expect(game.sim.fire("relay")).toBe(true);
+    game.sim.step(0.3);
+    view.update(0, viewport);
+    const before = flightBoxes(view);
+    game.sim.net.places.get("from")!.capacity = 19;
+    game.sim.net.version++;
+    game.setPortrait(true);
+    view.update(0, viewport);
+    const fresh = new NetView(game);
+    fresh.update(0, viewport);
+    expect(flightBoxes(view)).toEqual(flightBoxes(fresh));
+    expect(flightBoxes(view)).not.toEqual(before);
+    const place = game.sim.net.places.get("from")!;
+    expect(view.pick(place)).toEqual({ kind: "place", id: place.id });
+    view.root.destroy({ children: true });
+    fresh.root.destroy({ children: true });
+  });
 
   it.each(["place", "transition"] as const)("shows only the hidden portion above an unrelated %s at half opacity", (kind) => {
     const game = network();
@@ -831,6 +925,48 @@ describe("delivery HUD", () => {
     return { hud, view, icon };
   }
 
+  it("retains stable HUD graphics while updating hover, stock and changed text", () => {
+    const width = vi.spyOn(Text.prototype, "width", "get").mockImplementation(function (this: Text) {
+      return this.text.length * 7;
+    });
+    const height = vi.spyOn(Text.prototype, "height", "get").mockReturnValue(14);
+    const bounds = vi.spyOn(Text.prototype, "getBounds").mockImplementation(function (this: Text) {
+      const bounds = new Bounds();
+      bounds.addFrame(this.x, this.y, this.x + this.width, this.y + this.height);
+      return bounds;
+    });
+    const game = new Game(endless);
+    const { hud, view } = makeHud(game);
+    try {
+      hud.layout(1200, 800);
+      hud.update(0, (point) => point);
+      const auto = hud["tools"].find((tool) => tool.brush.kind === "auto")!;
+      const background = vi.spyOn(auto.bg, "clear"), badges = vi.spyOn(auto.badges, "clear");
+      const plates = vi.spyOn(hud["backplates"], "clear");
+      hud.update(0, (point) => point);
+      expect(background).not.toHaveBeenCalled();
+      expect(badges).not.toHaveBeenCalled();
+      expect(plates).not.toHaveBeenCalled();
+      auto.hovered = true;
+      hud.update(0, (point) => point);
+      expect(background).toHaveBeenCalledOnce();
+      game["inventory"].set("auto", 1);
+      hud.update(0, (point) => point);
+      expect(badges).toHaveBeenCalledOnce();
+      expect(auto.count.text).toBe("1");
+      expect(auto.price.text).toBe("");
+      game.sim.time = 1;
+      hud.update(0, (point) => point);
+      expect(plates).toHaveBeenCalledOnce();
+    } finally {
+      hud.root.destroy({ children: true });
+      view.root.destroy({ children: true });
+      width.mockRestore();
+      height.mockRestore();
+      bounds.mockRestore();
+    }
+  });
+
   it("keeps the epoch label fixed as the time changes up to 999 minutes", () => {
     const width = vi.spyOn(Text.prototype, "width", "get").mockImplementation(function (this: Text) {
       return [...this.text].reduce((sum, character) => sum + (character === "1" ? 5 : 10), 0);
@@ -1437,14 +1573,14 @@ describe("build area", () => {
     controller.press(point);
     controller.sync();
     view.update(0, viewport);
-    const preview = drawing(view.root.children[8].children[0] as Graphics);
+    const preview = drawing(view["buildPreview"]);
     expect(preview.some((item) => item.color === THEME.buildInvalid)).toBe(true);
     controller.release(point);
     view.update(0, viewport);
-    expect(drawing(view.root.children[8] as Graphics).some((item) => item.color === THEME.buildInvalid)).toBe(true);
+    expect(drawing(view["overlayLayer"]).some((item) => item.color === THEME.buildInvalid)).toBe(true);
     view.deny({ kind: "empty", x: 0, y: 0 });
     view.update(0, viewport);
-    expect(drawing(view.root.children[8] as Graphics).some((item) => item.color === THEME.warn)).toBe(true);
+    expect(drawing(view["overlayLayer"]).some((item) => item.color === THEME.warn)).toBe(true);
     view.root.destroy({ children: true });
   });
 
@@ -1458,7 +1594,7 @@ describe("build area", () => {
     view.overlay.connection = { tid: "t", index: 0, pid: "p" };
     const viewport = { x: 0, y: 0, width: 2000, height: 2000 };
     view.update(0, viewport);
-    const preview = view.root.children[8].children[0] as Graphics;
+    const preview = view["buildPreview"];
     expect(drawing(preview).find((item) => item.action === "stroke" && item.width === 4)?.color).toBe(THEME.buildInvalid);
     game.sim.time = 0.4;
     view.update(0, viewport);
@@ -1489,14 +1625,14 @@ describe("build area", () => {
       expect(controller.press(target)).toBe(true);
       controller.sync();
       view.update(0, viewport);
-      const proposed = drawing(view.root.children[8].children[0] as Graphics);
+      const proposed = drawing(view["buildPreview"]);
       expect(proposed.filter((item) => item.action === "stroke" && item.width === 4)).toHaveLength(1);
       expect(proposed[0].color).toBe(TOKEN_COLORS.yellow);
       expect(game.sim.net.version).toBe(version);
       controller.release(target);
       controller.sync();
       view.update(0, viewport);
-      expect(drawing(view.root.children[2] as Graphics)).toEqual(proposed);
+      expect(drawing(view["arcLayer"])).toEqual(proposed);
       expect(game.sim.net.places.size).toBe(1);
       expect(game.sim.net.transitions.size).toBe(1);
       view.root.destroy({ children: true });
@@ -1522,7 +1658,7 @@ describe("build area", () => {
       controller.press(target);
       controller.sync();
       view.update(0, viewport);
-      const preview = view.root.children[8].children[0] as Graphics;
+      const preview = view["buildPreview"];
       const proposed = drawing(preview);
       expect(proposed[0].path[0].action).toBe("circle");
       const arcs = proposed.slice(2);
@@ -1534,7 +1670,7 @@ describe("build area", () => {
       controller.release(target);
       controller.sync();
       view.update(0, viewport);
-      expect(drawing(view.root.children[2] as Graphics)).toEqual(arcs);
+      expect(drawing(view["arcLayer"])).toEqual(arcs);
       const place = [...game.sim.net.places.values()][0];
       expect(proposed[0].path[0].data.slice(0, 2)).toEqual([place.x, place.y]);
       expect(drawing(view.root.children[4] as Graphics)[0].path).toEqual(proposed[0].path);
@@ -1555,7 +1691,7 @@ describe("build area", () => {
       controller.press(point);
       controller.sync();
       view.update(0, { x: 0, y: 0, width: 2400, height: 2400 });
-      const preview = drawing(view.root.children[8].children[0] as Graphics);
+      const preview = drawing(view["buildPreview"]);
       expect(preview[0].path[0].action).toBe("roundRect");
       expect(game.sim.net.transitions.size).toBe(0);
       controller.release(point);
@@ -1578,14 +1714,14 @@ describe("build area", () => {
     controller.sync();
     const viewport = { x: 0, y: 0, width: 2400, height: 2400 };
     view.update(0, viewport);
-    const preview = drawing(view.root.children[8].children[0] as Graphics);
+    const preview = drawing(view["buildPreview"]);
     expect(preview[0].path[0].data.slice(2, 4)).toEqual(portrait ? [22, 64] : [64, 22]);
     const arcs = preview.filter((item) => item.action === "stroke" && item.width === 4);
     expect(arcs).toHaveLength(1);
     controller.release(point);
     controller.sync();
     view.update(0, viewport);
-    const actual = drawing(view.root.children[2] as Graphics).filter((item) => item.action === "stroke" && item.width === 4);
+    const actual = drawing(view["arcLayer"]).filter((item) => item.action === "stroke" && item.width === 4);
     expect(actual).toEqual(arcs);
     view.root.destroy({ children: true });
   });
@@ -1621,7 +1757,7 @@ describe("build area", () => {
     const tint = view.root.children[1].children[0] as Graphics;
     expect(tint.context.instructions.some((instruction) =>
       instruction.action === "fill" && instruction.data.style.color === THEME.removal && instruction.data.style.alpha === 0.28)).toBe(true);
-    const overlay = view.root.children[8] as Graphics;
+    const overlay = view["overlayLayer"];
     expect(overlay.context.instructions.some((instruction) =>
       instruction.action === "stroke" && instruction.data.style.color === THEME.removalGlow
       && instruction.data.style.width === 8)).toBe(true);
@@ -1649,7 +1785,7 @@ describe("build area", () => {
     game.sim.net.addTransition({ id: "target", x: 1940, y: 1000, kind: "normal", open: [{ dir: "in", color: "blue" }] });
     const view = new NetView(game);
     const controller = new Controller(game, view);
-    const overlay = view.root.children[8] as Graphics;
+    const overlay = view["overlayLayer"];
     const circles = () => overlay.context.instructions.flatMap((instruction) =>
       instruction.action === "stroke" ? instruction.data.path.instructions : [])
       .filter((instruction) => instruction.action === "circle")

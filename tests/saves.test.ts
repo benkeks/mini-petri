@@ -16,6 +16,21 @@ class MemoryStorage implements Storage {
 }
 
 describe("saved sessions", () => {
+  it("updates an existing save without reading other session snapshots", () => {
+    const storage = new MemoryStorage();
+    const saves = new Saves(storage);
+    const game = new Game(endless);
+    saves.save("one", game);
+    saves.save("two", game);
+    const reads = vi.spyOn(storage, "getItem");
+    const keys = vi.spyOn(storage, "key");
+    game.score = 8;
+    saves.save("one", game);
+    expect(reads).toHaveBeenCalledExactlyOnceWith("mini-petri:session:one");
+    expect(keys).not.toHaveBeenCalled();
+    expect(saves.load("one").score).toBe(8);
+    expect(saves.load("two").score).toBe(0);
+  });
   it("formats save dates in local time without ISO T/Z separators and handles invalid dates", () => {
     expect(formatSaveDate(new Date(2025, 0, 2, 3, 4, 5).getTime())).toBe("2025-01-02 03:04:05");
     expect(formatSaveDate(Number.MAX_SAFE_INTEGER)).toBe("Invalid save date.");

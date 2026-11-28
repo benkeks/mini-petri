@@ -1,4 +1,4 @@
-import { addInto, COLORS, total, type Color, type Multiset } from "./multiset";
+import { addInto, COLORS, type Color, type Multiset } from "./multiset";
 import { arcCount, type Arc, type Net } from "./net";
 
 /**
@@ -80,8 +80,9 @@ export class Simulation {
   private readonly firings = new Map<number, Firing>();
   /** Seconds accumulated towards the next auto-fire, per transition. */
   private readonly autoTimers = new Map<string, number>();
-  private readonly fireListeners: ((e: FireEvent) => void)[] = [];
-  private readonly completeListeners: ((e: FireEvent) => void)[] = [];
+  private readonly fireListeners = new Set<(e: FireEvent) => void>();
+  private readonly completeListeners = new Set<(e: FireEvent) => void>();
+  private readonly committed = new Map<string, { colors: Multiset; count: number }>();
   private readonly arriveListeners: ((t: InFlightToken, placeId: string, time: number) => void)[] = [];
   private readonly inputArriveListeners: ((t: InFlightToken, transitionId: string, time: number) => void)[] = [];
   private readonly beforeAutoListeners: (() => boolean | void)[] = [];
@@ -153,17 +154,25 @@ export class Simulation {
       if (pending.get(firing.id) !== firing.pendingInputs) {
         throw new Error("Firing input count does not match travelling tokens");
       }
+      for (const { arc, colors } of firing.outputs) this.reserve(arc.to, colors);
+    }
+    for (const token of this.inFlight) {
+      if (token.kind === "output") this.reserve(this.net.arcs.get(token.arcId)!.to, [token.color]);
     }
   }
 
   /** Called when a transition fires (inputs consumed, outputs committed). */
-  onFire(fn: (e: FireEvent) => void): void {
-    this.fireListeners.push(fn);
+  onFire(fn: (e: FireEvent) => void): () => void {
+    const listener = (event: FireEvent) => fn(event);
+    this.fireListeners.add(listener);
+    return () => { this.fireListeners.delete(listener); };
   }
 
   /** Called when all inputs of a firing have reached the transition and its outputs start to travel. */
-  onComplete(fn: (e: FireEvent) => void): void {
-    this.completeListeners.push(fn);
+  onComplete(fn: (e: FireEvent) => void): () => void {
+    const listener = (event: FireEvent) => fn(event);
+    this.completeListeners.add(listener);
+    return () => { this.completeListeners.delete(listener); };
   }
 
   onArrive(fn: (t: InFlightToken, placeId: string, time: number) => void): void {
@@ -207,6 +216,7 @@ export class Simulation {
       sourceSupplyBefore: t.kind === "source" ? t.supply : undefined,
     };
     for (const { arc, colors } of b.inputs) firing.pendingInputs += this.launch(arc, colors, "input", firing.id);
+    for (const { arc, colors } of b.outputs) this.reserve(arc.to, colors);
     this.firings.set(firing.id, firing);
     this.autoTimers.set(tid, 0);
     if (t.supply !== undefined) t.supply--;
@@ -225,14 +235,7 @@ export class Simulation {
 
   /** Tokens committed to place `pid` but not yet arrived: in flight towards it or waiting in a firing. */
   incoming(pid: string): Multiset {
-    const m: Multiset = {};
-    for (const tok of this.inFlight) {
-      if (tok.kind === "output" && this.net.arcs.get(tok.arcId)!.to === pid) addInto(m, { [tok.color]: 1 });
-    }
-    for (const f of this.firings.values()) {
-      for (const { arc, colors } of f.outputs) if (arc.to === pid) addInto(m, toMultiset(colors));
-    }
-    return m;
+    return { ...this.committed.get(pid)?.colors };
   }
 
   /** Settled and travelling tokens, including inputs waiting for the rest of their firing. */
@@ -246,7 +249,20 @@ export class Simulation {
 
   /** Settled plus incoming tokens of place `pid`; this is what its capacity limits. */
   occupancy(pid: string): number {
-    return this.net.places.get(pid)!.marking.length + total(this.incoming(pid));
+    return this.net.places.get(pid)!.marking.length + (this.committed.get(pid)?.count ?? 0);
+  }
+
+  private reserve(pid: string, colors: Color[], direction = 1): void {
+    const entry = this.committed.get(pid) ?? { colors: {}, count: 0 };
+    for (const color of colors) {
+      const count = (entry.colors[color] ?? 0) + direction;
+      if (count < 0) throw new Error(`Missing committed ${color} token for ${pid}`);
+      if (count === 0) delete entry.colors[color];
+      else entry.colors[color] = count;
+    }
+    entry.count += colors.length * direction;
+    if (entry.count === 0) this.committed.delete(pid);
+    else this.committed.set(pid, entry);
   }
 
   /**
@@ -254,7 +270,16 @@ export class Simulation {
    * of `tid` are dropped.
    */
   removeTransition(tid: string): void {
-    const arcIds = new Set(this.net.removeTransition(tid).map((a) => a.id));
+    const arcIds = new Set(this.net.arcsOf(tid).map((a) => a.id));
+    for (const token of this.inFlight) {
+      if (token.kind === "output" && arcIds.has(token.arcId)) this.reserve(this.net.arcs.get(token.arcId)!.to, [token.color], -1);
+    }
+    for (const firing of this.firings.values()) {
+      if (firing.transitionId === tid) {
+        for (const { arc, colors } of firing.outputs) this.reserve(arc.to, colors, -1);
+      }
+    }
+    this.net.removeTransition(tid);
     const kept = this.inFlight.filter((tok) => !arcIds.has(tok.arcId));
     this.inFlight.length = 0;
     this.inFlight.push(...kept);
@@ -378,6 +403,7 @@ export class Simulation {
     const arc = this.net.arcs.get(tok.arcId)!;
     if (tok.kind === "output") {
       const place = this.net.places.get(arc.to)!;
+      this.reserve(arc.to, [tok.color], -1);
       // Removed places swallow their arrivals.
       if (!place.ghost) place.marking.push(tok.color);
       for (const fn of this.arriveListeners) fn(tok, arc.to, this.time - overshoot);

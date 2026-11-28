@@ -47,6 +47,9 @@ interface ToolButton {
   hovered: boolean;
   selected: boolean;
   selectionAge: number;
+  appearance?: string;
+  stock?: number;
+  cost?: number;
 }
 
 interface SinkWarning {
@@ -149,6 +152,7 @@ export function toolbarLayout(width: number, brushes: readonly Brush[]): {
 export class Hud {
   readonly root = new Container();
   private readonly backplates = new Graphics();
+  private backplateState = "";
   private regions: Rectangle[] = [];
   private readonly title: Text;
   private readonly stats: Text;
@@ -633,6 +637,19 @@ export class Hud {
   }
 
   private drawBackplates(): void {
+    const state = [
+      this.navigationState, this.width, this.height, this.toolSize,
+      ...[this.title, this.stats, this.statsLabel, this.statsGain, this.meta, this.epoch, this.hint].flatMap((text) =>
+        [text.text, text.visible, text.x, text.y, text.scale.x, text.scale.y, text.style.fontFamily, text.style.fontSize]),
+      this.deliveryIcons.visible, this.deliveryIcons.x, this.deliveryIconWidth(), this.stats.height,
+      this.toolbar.visible, ...this.tools.flatMap((tool) => [tool.root.x, tool.root.y]),
+      ...[...this.warnings.values()].flatMap((warning) => [warning.text.x, warning.text.y]),
+      this.coins.x, this.coins.y, this.lives.visible,
+      ...this.metaControls().flatMap((control) => [control.text, control.visible, control.x, control.y]),
+      ...[this.menuButton, this.fullscreenIcon].flatMap((icon) => [icon.visible, icon.x, icon.y]),
+    ].join("|");
+    if (this.backplateState === state) return;
+    this.backplateState = state;
     this.regions = [];
     this.backplates.clear();
     for (const text of [this.title, this.stats, this.statsLabel, this.statsGain, this.meta, this.epoch, this.hint]) {
@@ -992,22 +1009,30 @@ export class Hud {
       b.selected = active;
       b.icon.y = active && b.selectionAge < TOOL_SELECT_TIME
         ? -3 * Math.sin(Math.PI * b.selectionAge / TOOL_SELECT_TIME) : 0;
-      const h = TOOL_SIZE / 2;
-      b.bg.clear().roundRect(-h, -h, 2 * h, 2 * h, 12).fill(active || b.hovered ? 0xffffff : THEME.background).stroke({
-        width: active ? 3.5 : b.hovered ? 3 : 2,
-        color: active || b.hovered ? THEME.ink : THEME.muted,
-      });
+      const appearance = `${active}:${b.hovered}`;
+      if (b.appearance !== appearance) {
+        b.appearance = appearance;
+        const h = TOOL_SIZE / 2;
+        b.bg.clear().roundRect(-h, -h, 2 * h, 2 * h, 12).fill(active || b.hovered ? 0xffffff : THEME.background).stroke({
+          width: active ? 3.5 : b.hovered ? 3 : 2,
+          color: active || b.hovered ? THEME.ink : THEME.muted,
+        });
+      }
       b.root.y = b.baseY;
       const powerup = b.brush.kind === "kit" ? g.kitPowerup(b.brush.kit) : undefined;
       const free = b.brush.kind === "auto" || b.brush.kind === "capacity" ? g.powerupStock(b.brush.kind) : 0;
       const stock = powerup ? g.powerupStock(powerup.id) : free;
       const price = b.brush.kind === "life" ? g.lifePrice
         : powerup?.price ?? ((b.brush.kind === "auto" || b.brush.kind === "capacity") && !free ? g.upgradePrice : 0);
-      b.badges.clear();
-      if (stock) b.badges.circle(19, -19, 10).fill(powerup ? 0x222222 : 0x32944c);
-      if (price) b.badges.circle(19, 19, 10).fill(0xdd8a25);
-      b.count.text = stock ? String(stock) : "";
-      b.price.text = price ? String(price) : "";
+      if (b.stock !== stock || b.cost !== price) {
+        b.stock = stock;
+        b.cost = price;
+        b.badges.clear();
+        if (stock) b.badges.circle(19, -19, 10).fill(powerup ? 0x222222 : 0x32944c);
+        if (price) b.badges.circle(19, 19, 10).fill(0xdd8a25);
+        b.count.text = stock ? String(stock) : "";
+        b.price.text = price ? String(price) : "";
+      }
     }
     const hint = this.notice?.text ?? (g.paused ? "PAUSED — TAP RESUME TO CONTINUE." : this.controller.hint().toUpperCase());
     const hintChanged = this.hint.text !== hint;

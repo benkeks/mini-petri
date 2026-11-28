@@ -34,8 +34,7 @@ export function localDay(timestamp: number): string {
   return `${String(date.getFullYear()).padStart(4, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-function parseMetadata(raw: string): Omit<SaveFile, "format" | "state"> {
-  const data: unknown = JSON.parse(raw);
+function parseMetadata(data: unknown): Omit<SaveFile, "format" | "state"> {
   if (!data || typeof data !== "object" || !("version" in data) || typeof data.version !== "string"
     || !("updatedAt" in data) || typeof data.updatedAt !== "number" || !Number.isFinite(data.updatedAt)
     || !("epoch" in data) || typeof data.epoch !== "number" || !Number.isFinite(data.epoch)
@@ -57,8 +56,8 @@ function parseMetadata(raw: string): Omit<SaveFile, "format" | "state"> {
 }
 
 function parseSave(raw: string): SaveFile {
-  const metadata = parseMetadata(raw);
   const data: unknown = JSON.parse(raw);
+  const metadata = parseMetadata(data);
   if (!data || typeof data !== "object" || !("format" in data) || data.format !== FORMAT
     || !("state" in data) || !data.state || typeof data.state !== "object") throw new Error("Unsupported save format");
   return { ...metadata, format: FORMAT, state: data.state as GameSnapshot };
@@ -100,7 +99,7 @@ export class Saves {
       const raw = this.storage.getItem(key);
       if (raw === null) continue;
       try {
-        const save = parseMetadata(raw);
+        const save = parseMetadata(JSON.parse(raw));
         sessions.push({ id, ...save, damaged: false });
       } catch (error) {
         console.error("Could not read saved session", error);
@@ -125,7 +124,17 @@ export class Saves {
   }
 
   save(id: string, game: Game, thumbnail?: string): void {
-    const previous = this.list().find((session) => session.id === id);
+    const raw = this.storage.getItem(PREFIX + id);
+    let previous: SavedSession | undefined;
+    if (raw !== null) {
+      try {
+        previous = { id, ...parseMetadata(JSON.parse(raw)), damaged: false };
+      } catch (error) {
+        console.error("Could not read saved session", error);
+        previous = { id, damaged: true };
+      }
+      if (!previous.name && !previous.damaged) previous = this.list().find((session) => session.id === id);
+    }
     const now = Date.now();
     const startedAt = previous?.startedAt ?? this.pending.get(id) ?? previous?.updatedAt ?? now;
     const file: SaveFile = {

@@ -37,6 +37,61 @@ function anySpec(marking: NetSpec["places"][0]["marking"], count = 1): NetSpec {
 }
 
 describe("Simulation", () => {
+  it.each([0, 1.1])("restores committed capacity and releases it on removal at %s seconds", (time) => {
+    const definition = spec();
+    definition.places[1].capacity = 2;
+    const sim = new Simulation(new Net(definition), { tokenSpeed: 100 });
+    expect(sim.fire("t")).toBe(true);
+    sim.step(time);
+    const restored = new Simulation(new Net({
+      places: [...sim.net.places.values()], transitions: [...sim.net.transitions.values()], arcs: [...sim.net.arcs.values()],
+    }), { tokenSpeed: 100 });
+    restored.restore(sim.snapshot());
+    expect(restored.incoming("p2")).toEqual({ blue: 2 });
+    const incoming = restored.incoming("p2");
+    incoming.blue = 99;
+    expect(restored.occupancy("p2")).toBe(2);
+    expect(restored.incoming("p2")).toEqual({ blue: 2 });
+    restored.net.places.get("p1")!.marking.push("red");
+    expect(restored.isEnabled("t")).toBe(false);
+    restored.removeTransition("t");
+    expect(restored.incoming("p2")).toEqual({});
+    expect(restored.occupancy("p2")).toBe(0);
+    restored.step(3);
+    expect(restored.occupancy("p2")).toBe(0);
+  });
+
+  it.each(["fire", "complete"] as const)("independently unsubscribes duplicate %s listeners", (phase) => {
+    const sim = new Simulation(new Net(spec()), { tokenSpeed: 100 });
+    let calls = 0;
+    const listener = () => { calls++; };
+    const subscribe = phase === "fire" ? sim.onFire.bind(sim) : sim.onComplete.bind(sim);
+    const stopFirst = subscribe(listener), stopSecond = subscribe(listener);
+    for (let firing = 0; firing < 3; firing++) {
+      if (firing > 0) sim.net.places.get("p1")!.marking.push("red");
+      expect(sim.fire("t")).toBe(true);
+      sim.step(2.1);
+      expect(calls).toBe(firing === 0 ? 2 : 3);
+      if (firing === 0) { stopFirst(); stopFirst(); }
+      if (firing === 1) stopSecond();
+    }
+  });
+
+  it("preserves incident arc order through ghosting, deletion and reconnection", () => {
+    const net = new Net(spec());
+    net.addArc({ id: "extra", from: "t", to: "p1", color: "green" });
+    expect(net.arcsOf("t").map((arc) => arc.id)).toEqual(["a1", "a2", "extra"]);
+    net.ghostArc("a1");
+    expect(net.arcsOf("t").map((arc) => arc.id)).toEqual(["a1", "a2", "extra"]);
+    net.deleteArc("a1");
+    const connected = net.connect("t", 0, "p1");
+    expect(net.arcsOf("t").map((arc) => arc.id)).toEqual(["a2", "extra", connected.id]);
+    expect(net.arcsOf("p1").map((arc) => arc.id)).toEqual(["extra", connected.id]);
+    net.deleteNode("t");
+    expect(net.arcsOf("p1")).toEqual([]);
+    expect(net.arcsOf("p2").map((arc) => arc.id)).toEqual(["a3"]);
+  });
+
   it("consumes inputs immediately and emits outputs only after the inputs reach the transition", () => {
     const sim = new Simulation(new Net(spec()), { tokenSpeed: 100 });
     expect(sim.fire("t")).toBe(true);

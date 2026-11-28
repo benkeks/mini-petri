@@ -1354,6 +1354,51 @@ describe("toolbar layout", () => {
     expect(positions[0].x + positions[4].x).toBe(390);
   });
 
+  it.each([[1200, 500], [800, 350]])("keeps wide toolbar positions fixed across help changes at %ix%i", (width, height) => {
+    const textWidth = vi.spyOn(Text.prototype, "width", "get").mockImplementation(function (this: Text) {
+      return this.text.length * 7;
+    });
+    const textHeight = vi.spyOn(Text.prototype, "height", "get").mockReturnValue(14);
+    const textBounds = vi.spyOn(Text.prototype, "getBounds").mockImplementation(function (this: Text) {
+      const bounds = new Bounds();
+      bounds.addFrame(this.x, this.y, this.x + this.width, this.y + this.height);
+      return bounds;
+    });
+    const game = new Game(endless);
+    game["endlessEpoch"] = 1200;
+    for (const item of POWERUPS) if (item.kind === "kit" || item.kind === "bomb") game["inventory"].set(item.id, 1);
+    const view = new NetView(game);
+    const controller = new Controller(game, view);
+    const hud = new Hud(game, controller, {
+      restart: () => {}, requestRestart: () => {}, togglePause: () => {},
+      selectBrush: () => {}, focusSink: () => {},
+    });
+    const positions = () => {
+      hud.update(0, (point) => point);
+      hud.layout(width, height);
+      return hud["tools"].map((tool) => [tool.root.x, tool.root.y, tool.root.scale.x]);
+    };
+    try {
+      const initial = positions();
+      expect(hud["hint"].visible).toBe(false);
+      controller.setBrush({ kind: "bomb" });
+      expect(positions()).toEqual(initial);
+      expect(hud["hint"].visible).toBe(true);
+      hud["notice"] = { text: "NOT ENOUGH COINS", remaining: 10 };
+      expect(positions()).toEqual(initial);
+      hud["notice"] = undefined;
+      controller.cancel();
+      expect(positions()).toEqual(initial);
+      expect(hud["hint"].visible).toBe(false);
+    } finally {
+      hud.root.destroy({ children: true });
+      view.root.destroy({ children: true });
+      textWidth.mockRestore();
+      textHeight.mockRestore();
+      textBounds.mockRestore();
+    }
+  });
+
   describe("restart confirmation", () => {
     it("dismisses confirmation and pause backdrops while preserving a survival result", () => {
       const game = new Game(endless, Math.random, { survival: true });

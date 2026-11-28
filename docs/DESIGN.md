@@ -356,6 +356,7 @@ Explosions produce three staggered, vibrating shockwave rings over 1.2 simulatio
   Default firing/wiring help disappears from epoch 11, and all tool help disappears from epoch 101.
   Pause status remains available, and hidden help releases its HUD space.
   At screen aspect ratios of at least 2:1, visible help sits to the right of the toolbar instead of above it.
+  Space for side help stays reserved when it is hidden, so changing tooltip text or visibility never moves or rewraps the toolbar.
   Standard landscape toolbar rows remain centered on the screen, aligned with their centered help text; symmetric side space keeps resource counters clear.
   These ultra-wide layouts use screen width for the zoom-in limit, allowing larger nodes on phones in landscape.
   When a connection circle cannot fit vertically at that zoom, its selected node stays centered on that axis rather than panning to an impossible fit.

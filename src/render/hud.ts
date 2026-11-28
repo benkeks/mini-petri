@@ -910,8 +910,9 @@ export class Hud {
     const n = this.tools.length;
     this.hint.visible = !!this.notice || (this.shownFor === undefined && (this.game.paused || this.controller.hint() !== ""));
     this.hint.style.fontSize = width > 480 ? 13 : 11;
-    const sideHint = isUltraWide(width, height) && n > 1 && this.hint.visible;
-    const hintWidth = sideHint ? Math.min(280, width * 0.28) : 0;
+    const ultraWide = isUltraWide(width, height);
+    const sideHint = ultraWide && n > 1 && this.hint.visible;
+    const hintWidth = ultraWide ? Math.min(280, width * 0.28) : 0;
     this.hint.style.wordWrapWidth = sideHint ? hintWidth : Math.min(600, width - 32);
     this.hint.style.align = sideHint ? "left" : "center";
     const warningStart = this.lives.visible ? this.lives.x + 36 : this.coins.x + 36;
@@ -923,7 +924,7 @@ export class Hud {
       warning.baseY = resourceY - Math.floor(i / warningColumns) * WARNING_ROW;
       warning.text.position.set(warningStart + (i % warningColumns) * WARNING_GAP, warning.baseY);
     });
-    const rightSpace = isUltraWide(width, height) ? (sideHint ? hintWidth + 24 : 0) : resourceWidth;
+    const rightSpace = ultraWide ? hintWidth + 24 : resourceWidth;
     const layout = toolbarLayout(portrait ? width : width - resourceWidth - rightSpace,
       this.tools.map((tool) => tool.brush));
     this.toolSize = layout.size;

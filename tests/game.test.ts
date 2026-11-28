@@ -67,7 +67,7 @@ describe("late endless progression", () => {
     const advance = (nextRolls: number[] = []) => {
       rolls = [...nextRolls];
       game.sim.net.places.get("starterPlace")!.marking = [];
-      for (let i = 0; i < 15; i++) expect(game.sim.fire("starterSource")).toBe(true);
+      for (let i = 0; i < 10; i++) expect(game.sim.fire("starterSource")).toBe(true);
       const before = new Set(game.sim.net.transitions.keys());
       game.step(0);
       const spawned = [...game.sim.net.transitions.values()].filter((transition) => !before.has(transition.id));
@@ -202,10 +202,10 @@ describe("late endless progression", () => {
     source.autoInterval = undefined;
     advance();
     expect(game.epoch).toBe(2001);
-    expect(source.supply).toBe(35);
+    expect(source.supply).toBe(40);
 
     expect(game.remove("starterOutput")).toBe(false);
-    for (let remaining = 35; remaining > 0; remaining--) {
+    for (let remaining = 40; remaining > 0; remaining--) {
       if (remaining % 10 === 5) {
         game.sim.step(1);
         game.sim.net.places.get("starterPlace")!.marking = [];
@@ -223,7 +223,7 @@ describe("late endless progression", () => {
     game.sim.net.addTransition({ id: "replacementSource", x: source.x - 100, y: source.y, kind: "source" });
     game.sim.net.addArc({ id: "replacementOutput", from: "replacementSource", to: "starterPlace", color: "blue" });
     game.sim.net.places.get("starterPlace")!.marking = [];
-    for (let i = 0; i < 15; i++) expect(game.sim.fire("replacementSource")).toBe(true);
+    for (let i = 0; i < 10; i++) expect(game.sim.fire("replacementSource")).toBe(true);
     game.step(0);
     expect(game.epoch).toBeGreaterThan(epoch);
   }, 30000);
@@ -358,7 +358,7 @@ describe("survival mode", () => {
   it("preserves survival totals while endless scoring and epoch progression continue", () => {
     const game = survivalGame();
     expect(game.survivalResult).toBeUndefined();
-    for (let i = 0; i < 15; i++) expect(game.sim.fire("starterSource")).toBe(true);
+    for (let i = 0; i < 10; i++) expect(game.sim.fire("starterSource")).toBe(true);
     game.step(0);
     game.sim.step(1);
     game.sim.net.places.get("starterDestination")!.marking.push(...Array<"blue">(5).fill("blue"));
@@ -370,7 +370,7 @@ describe("survival mode", () => {
     expect(game.survivalResult).toEqual({ score: 5, epoch: 1 });
     expect(game.statistics.endlessAt).toBe(2);
     game.sim.net.places.get("starterPlace")!.marking = [];
-    for (let i = 0; i < 15; i++) expect(game.sim.fire("starterSource")).toBe(true);
+    for (let i = 0; i < 10; i++) expect(game.sim.fire("starterSource")).toBe(true);
     game.step(0);
     const goal = game.goals().find((goal) => goal.sinkId !== "starterSink")!;
     game.sim.net.connect(goal.sinkId, 0, "starterDestination");
@@ -548,7 +548,7 @@ describe("survival mode", () => {
     game.sim.net.transitions.get("starterSource")!.autoInterval = undefined;
     for (let i = 0; i < 6; i++) {
       game.sim.net.places.get("starterPlace")!.marking = [];
-      for (let j = 0; j < 15; j++) game.sim.fire("starterSource");
+      for (let j = 0; j < 10; j++) game.sim.fire("starterSource");
       game.step(0);
       game.sim.step(1);
     }
@@ -655,9 +655,11 @@ describe("goal sinks", () => {
       expect(deliveries).toHaveBeenCalledTimes(1);
       expect(game.sim.fire("sink")).toBe(true);
       expect(game.score).toBe(1);
+      const progress = game.snapshot().endlessProgress;
+      const time = game.sim.time;
       run(game, 0.5);
       expect(game.score).toBe(2);
-      expect(game.snapshot().endlessProgress - game.sim.time).toBeCloseTo(2);
+      expect(game.snapshot().endlessProgress - progress).toBeCloseTo((game.sim.time - time) * 15 + 1);
       expect(deliveries).toHaveBeenCalledTimes(2);
       expect(game.complete).toBe(false);
       run(game, RESOLVED_LINGER + 0.1);
@@ -701,7 +703,7 @@ describe("goal sinks", () => {
 
     function advanceEpoch(game: Game) {
       game.sim.net.places.get("starterPlace")!.marking = [];
-      for (let i = 0; i < 15; i++) expect(game.sim.fire("starterSource")).toBe(true);
+      for (let i = 0; i < 10; i++) expect(game.sim.fire("starterSource")).toBe(true);
       const before = new Set(game.sim.net.transitions.keys());
       game.step(0);
       const spawned = [...game.sim.net.transitions.values()].filter((transition) => !before.has(transition.id));
@@ -743,9 +745,9 @@ describe("goal sinks", () => {
       expect(new Game(endless).score).toBe(0);
     });
 
-    it("spawns an epoch for fifteen emitted tokens, sixty seconds, or a proportional mixture", () => {
+    it("spawns an epoch for ten emitted tokens, sixty seconds, or a proportional mixture", () => {
       const emitted = pausedGame();
-      for (let i = 0; i < 14; i++) expect(emitted.sim.fire("starterSource")).toBe(true);
+      for (let i = 0; i < 9; i++) expect(emitted.sim.fire("starterSource")).toBe(true);
       emitted.step(0);
       expect(emitted.goals()).toHaveLength(1);
       expect(emitted.sim.fire("starterSource")).toBe(true);
@@ -755,7 +757,7 @@ describe("goal sinks", () => {
 
       const mixed = pausedGame();
       for (let i = 0; i < 3; i++) expect(mixed.sim.fire("starterSource")).toBe(true);
-      mixed.step(47.9);
+      mixed.step(41.9);
       expect(mixed.goals()).toHaveLength(1);
       mixed.step(0.2);
       expect(mixed.goals()).toHaveLength(2);
@@ -770,13 +772,70 @@ describe("goal sinks", () => {
       multiple.net.arcs.find((arc) => arc.id === "starterOutput")!.count = 2;
       const multiGame = new Game(multiple);
       multiGame.sim.net.transitions.get("starterSource")!.autoInterval = undefined;
-      for (let i = 0; i < 7; i++) expect(multiGame.sim.fire("starterSource")).toBe(true);
+      for (let i = 0; i < 4; i++) expect(multiGame.sim.fire("starterSource")).toBe(true);
       multiGame.step(0);
       expect(multiGame.goals()).toHaveLength(1);
       expect(multiGame.sim.fire("starterSource")).toBe(true);
       multiGame.step(0);
       expect(multiGame.goals()).toHaveLength(2);
     });
+
+    it("spawns after four idle seconds without sinks, then returns to normal progress", () => {
+      const game = pausedGame();
+      game.sim.removeTransition("starterSink");
+      game.step(3.9);
+      expect(game.epoch).toBe(0);
+      expect(game.snapshot().endlessProgress).toBeCloseTo(58.5);
+      game.step(0.1);
+      expect(game.epoch).toBe(1);
+      expect(game.snapshot().endlessProgress).toBeCloseTo(0);
+      game.step(1);
+      expect(game.snapshot().endlessProgress).toBeCloseTo(1);
+    });
+
+    it("accelerates once demand is committed, stays accelerated after arrival, and respects pause", () => {
+      const definition = structuredClone(endless);
+      definition.goals[0].count = 1;
+      definition.net.transitions.forEach((transition) => { transition.autoInterval = undefined; });
+      const game = new Game(definition, () => 0);
+      game.sim.net.places.get("starterDestination")!.marking.push("blue");
+      expect(game.sim.fire("starterSink")).toBe(true);
+      game.step(0.1);
+      expect(game.goalsFor("starterSink")[0].delivered).toBe(0);
+      expect(game.snapshot().endlessProgress).toBeCloseTo(1.5);
+      game.paused = true;
+      game.step(10);
+      expect(game.snapshot().endlessProgress).toBeCloseTo(1.5);
+      game.paused = false;
+      game.sim.step(1);
+      expect(game.resolved.has("starterSink")).toBe(true);
+      expect(game.snapshot().endlessProgress).toBeCloseTo(2.5);
+      game.step(0.1);
+      expect(game.snapshot().endlessProgress).toBeCloseTo(4);
+    });
+
+    it.each(["infinite", "multicolor", "failed", "ghost"] as const)(
+      "uses the correct time rate for %s sink demand", (kind) => {
+        const definition = structuredClone(endless);
+        definition.net.transitions.forEach((transition) => { transition.autoInterval = undefined; });
+        if (kind === "infinite") definition.goals[0].count = Infinity;
+        if (kind === "multicolor") {
+          definition.goals[0].count = 1;
+          definition.goals.push({ sinkId: "starterSink", color: "red", count: 2 });
+          definition.net.arcs.push({ id: "redInput", from: "starterDestination", to: "starterSink", color: "red" });
+        }
+        const game = new Game(definition, () => 0);
+        if (kind === "failed") game.failed.set("starterSink", 0);
+        else if (kind === "ghost") game.sim.net.ghostTransition("starterSink");
+        else {
+          game.sim.net.places.get("starterDestination")!.marking.push("blue");
+          if (kind === "multicolor") game.sim.net.places.get("starterDestination")!.marking.push("red");
+          expect(game.sim.fire("starterSink")).toBe(true);
+        }
+        game.step(0.1);
+        expect(game.snapshot().endlessProgress).toBeCloseTo(kind === "failed" || kind === "ghost" ? 1.5 : 0.1);
+      },
+    );
 
     it.each([
       { colors: ["blue"], weight: 1 },
@@ -835,7 +894,7 @@ describe("goal sinks", () => {
       let weightedSink = "";
       for (let epoch = 1; epoch <= 51; epoch++) {
         game.sim.net.places.get("starterPlace")!.marking = [];
-        for (let i = 0; i < 15; i++) expect(game.sim.fire("starterSource")).toBe(true);
+        for (let i = 0; i < 10; i++) expect(game.sim.fire("starterSource")).toBe(true);
         game.step(0);
         const goal = game.goals().at(-1)!;
         if ([24, 25, 50, 51].includes(epoch)) {
@@ -899,7 +958,7 @@ describe("goal sinks", () => {
           return seed / 2 ** 32;
         };
         const game = new Game(definition, random);
-        for (let token = 0; token < 15; token++) expect(game.sim.fire("starterSource")).toBe(true);
+        for (let token = 0; token < 10; token++) expect(game.sim.fire("starterSource")).toBe(true);
         game.step(0);
         const sink = game.sim.net.transitions.get(game.goals().at(-1)!.sinkId)!;
         const center = game.sim.net.transitions.get("starterSource")!;
@@ -938,7 +997,7 @@ describe("goal sinks", () => {
       const pairs: { epoch: number; supply: number; demand: number }[] = [];
       for (let epoch = 1; epoch <= 70; epoch++) {
         game.sim.net.places.get("starterPlace")!.marking = [];
-        for (let i = 0; i < 15; i++) expect(game.sim.fire("starterSource")).toBe(true);
+        for (let i = 0; i < 10; i++) expect(game.sim.fire("starterSource")).toBe(true);
         const before = new Set(game.sim.net.transitions.keys());
         const existing = game.sim.net.liveNodes().map((node) => ({ ...node }));
         game.step(0);

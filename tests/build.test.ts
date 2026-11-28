@@ -413,7 +413,7 @@ describe("controller", () => {
     const reach = (epoch: number) => {
       while (game.epoch < epoch) {
         game.sim.net.places.get("starterPlace")!.marking = [];
-        for (let i = 0; i < 15; i++) expect(game.sim.fire("starterSource")).toBe(true);
+        for (let i = 0; i < 10; i++) expect(game.sim.fire("starterSource")).toBe(true);
         game.step(0);
         game.sim.step(1);
       }

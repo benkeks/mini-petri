@@ -1,9 +1,13 @@
 import type { Kit } from "./level";
 
-export type Powerup =
+export type Powerup = (
   | { id: string; label: string; afterEpoch: number; kind: "coins"; amount: number }
   | { id: string; label: string; afterEpoch: number; kind: "capacity" | "auto" | "life" }
-  | { id: string; label: string; afterEpoch: number; kind: "kit"; price: number; kit: Kit };
+  | { id: string; label: string; afterEpoch: number; kind: "kit"; price: number; kit: Kit }
+) & {
+  /** Exclusive offer cutoff; existing items and offers remain usable. */
+  untilEpoch?: number;
+};
 
 export const POWERUPS: readonly Powerup[] = [
   { id: "coins5", label: "5 coins", afterEpoch: 0, kind: "coins", amount: 5 },
@@ -13,7 +17,7 @@ export const POWERUPS: readonly Powerup[] = [
     id: "blueMultiply", label: "Blue 2→3\n7 coins", afterEpoch: 15, kind: "kit", price: 7,
     kit: { id: "blueMultiply", ports: [{ dir: "in", color: "blue", count: 2 }, { dir: "out", color: "blue", count: 3 }] },
   },
-  { id: "coins10", label: "10 coins", afterEpoch: 20, kind: "coins", amount: 10 },
+  { id: "coins10", label: "10 coins", afterEpoch: 20, untilEpoch: 300, kind: "coins", amount: 10 },
   {
     id: "blueToRed", label: "Blue 2→red\n5 coins", afterEpoch: 25, kind: "kit", price: 5,
     kit: { id: "blueToRed", ports: [{ dir: "in", color: "blue", count: 2 }, { dir: "out", color: "red" }] },
@@ -32,7 +36,7 @@ export const POWERUPS: readonly Powerup[] = [
   },
   { id: "life", label: "Extra life", afterEpoch: 50, kind: "life" },
   {
-    id: "redToGreen", label: "Red→green\n5 coins", afterEpoch: 60, kind: "kit", price: 5,
+    id: "redToGreen", label: "Red→green\n5 coins", afterEpoch: 60, untilEpoch: 250, kind: "kit", price: 5,
     kit: { id: "redToGreen", ports: [{ dir: "in", color: "red" }, { dir: "out", color: "green" }] },
   },
   {
@@ -44,4 +48,9 @@ export const POWERUPS: readonly Powerup[] = [
     kit: { id: "redTwoBlueToYellow", ports: [{ dir: "in", color: "red" }, { dir: "in", color: "blue", count: 2 }, { dir: "out", color: "yellow", count: 2 }] },
   },
   { id: "coins20", label: "20 coins", afterEpoch: 150, kind: "coins", amount: 20 },
+  {
+    id: "redToBlueGreen", label: "Red→blue+green\n5 coins", afterEpoch: 250, kind: "kit", price: 5,
+    kit: { id: "redToBlueGreen", ports: [{ dir: "in", color: "red" }, { dir: "out", color: "blue" }, { dir: "out", color: "green" }] },
+  },
+  { id: "coins50", label: "50 coins", afterEpoch: 300, kind: "coins", amount: 50 },
 ];

@@ -228,7 +228,9 @@ Completed goals are checked off and disappear.
 ## Epoch progression
 
 The initial sink exists before the first epoch.
-Private progress gains 1 unit per simulation second, 4 per emitted source token, and 1 per completed sink delivery.
+Private progress gains 1 unit per simulation second, 6 per emitted source token, and 1 per completed sink delivery.
+Time-based progress rises to 15 units per simulation second when no live, non-failed sink has demand left to reserve, returning to 1 as soon as new demand appears.
+Already committed deliveries cover demand even while travelling; infinite sinks always have open demand.
 A sink firing counts as one delivery for epoch progress regardless of how many tokens or colors it consumes; unmatched or failed deliveries do not contribute.
 Every 60 units creates one new goal epoch; if placement fails, it retries rather than advancing.
 Late epochs can create several sinks for the same 60 progress units; a retry keeps already-created sinks rather than duplicating them.
@@ -289,8 +291,13 @@ The blue milestone's original position is remembered across orientation changes 
 ### Powerup unlocks
 
 These are available after the stated number of epochs have completed. A kit's price is paid when it is built, not when it is collected.
-Below 50 coins, each unlocked coin reward has three times the selection weight of other non-heart rewards, for both choices without duplicates.
-At 50 coins or more, non-heart rewards retain equal weights; survival heart probabilities are unchanged.
+Below 50 coins, each unlocked coin reward has base selection weight 3 instead of 1, for both choices without duplicates.
+At 50 coins or more, non-heart rewards have equal base weights; survival heart probabilities are unchanged.
+Each transition kit's weight is multiplied by 0.66 when more than 7 copies are stocked, again above 15, and again above 25, giving weights of 1, 0.66, 0.4356 or 0.287496.
+Only unused inventory counts; coins and place/time upgrades are never penalized for stock.
+At completed epoch 250, red→blue+green replaces red→green in new offers, retaining the 5-coin build price.
+At completed epoch 300, 50-coin rewards replace 10-coin rewards in new offers.
+Previously owned kits and already spawned offers remain unchanged.
 The table is checked against the powerup definitions by the tests.
 
 | Completed epochs | ID | Reward | Kit cost |
@@ -309,6 +316,8 @@ The table is checked against the powerup definitions by the tests.
 | 90 | `redBlueToYellow` | Red+blue→yellow | 10 |
 | 120 | `redTwoBlueToYellow` | Red+2 blue→2 yellow | 20 |
 | 150 | `coins20` | 20 coins | — |
+| 250 | `redToBlueGreen` | Red→blue+green | 5 |
+| 300 | `coins50` | 50 coins | — |
 
 When changing progression, update this overview and the boundary tests in [game.test.ts](../tests/game.test.ts) and [powerups.test.ts](../tests/powerups.test.ts).
 

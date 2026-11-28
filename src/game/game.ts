@@ -55,7 +55,7 @@ export const STARTER_SOURCE_LIMIT_EPOCH = 2000;
 export const STARTER_SOURCE_SUPPLY = 50;
 export const POWERUP_LIFETIME = 120;
 export const ENDLESS_EPOCH_PROGRESS = 60;
-export const EMISSION_PROGRESS = 4;
+export const EMISSION_PROGRESS = 6;
 export const ENDLESS_RULES = {
   blueOnlyEpochs: 5,
   redChance: 0.5,
@@ -609,9 +609,15 @@ export class Game {
       this.changeCoins(1, position);
       return;
     }
-    const eligible = POWERUPS.filter((powerup) => powerup.kind !== "life" && this.endlessEpoch >= powerup.afterEpoch);
+    const eligible = POWERUPS.filter((powerup) => powerup.kind !== "life" && this.endlessEpoch >= powerup.afterEpoch
+      && (powerup.untilEpoch === undefined || this.endlessEpoch < powerup.untilEpoch));
     const draw = (): Powerup => {
-      const weights = eligible.map((powerup) => powerup.kind === "coins" && this.coins < 50 ? 3 : 1);
+      const weights = eligible.map((powerup) => {
+        if (powerup.kind === "coins") return this.coins < 50 ? 3 : 1;
+        if (powerup.kind !== "kit") return 1;
+        const stock = this.powerupStock(powerup.id);
+        return 0.66 ** ((stock > 7 ? 1 : 0) + (stock > 15 ? 1 : 0) + (stock > 25 ? 1 : 0));
+      });
       let roll = this.random() * weights.reduce((sum, weight) => sum + weight, 0);
       let index = 0;
       while (index < eligible.length - 1 && roll >= weights[index]) roll -= weights[index++];
@@ -1034,7 +1040,14 @@ export class Game {
   }
 
   private advance(dt: number): void {
-    if (this.level.mode === "endless") this.endlessProgress += dt;
+    if (this.level.mode === "endless") {
+      const openDemand = this.goalDefinitions.some((goal) => {
+        const sink = this.sim.net.transitions.get(goal.sinkId);
+        return sink?.kind === "sink" && !sink.ghost && !this.failed.has(sink.id) && !this.resolved.has(sink.id)
+          && (this.reserved.get(deliveryKey(sink.id, goal.color)) ?? 0) < goal.count;
+      });
+      this.endlessProgress += dt * (openDemand ? 1 : 15);
+    }
     this.sim.step(dt);
     if (this.survivalFailed) return;
     this.expireOffers();

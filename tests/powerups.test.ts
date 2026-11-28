@@ -36,7 +36,7 @@ function setup(count = 1) {
   const reachEpoch = (epochs: number) => {
     for (let epoch = 0; epoch < epochs; epoch++) {
       game.sim.net.places.get("starterPlace")!.marking = [];
-      for (let i = 0; i < 15; i++) expect(game.sim.fire("starterSource")).toBe(true);
+      for (let i = 0; i < 10; i++) expect(game.sim.fire("starterSource")).toBe(true);
       game.step(0);
       game.sim.step(1);
     }
@@ -69,7 +69,7 @@ describe("sink rewards", () => {
     if (losses) game.sim.step(240);
     for (let i = 0; i < epoch; i++) {
       game.sim.net.places.get("starterPlace")!.marking = [];
-      for (let j = 0; j < 15; j++) expect(game.sim.fire("starterSource")).toBe(true);
+      for (let j = 0; j < 10; j++) expect(game.sim.fire("starterSource")).toBe(true);
       game.step(0);
       game.sim.step(1);
     }
@@ -290,6 +290,79 @@ describe("sink rewards", () => {
   });
 
   it.each([
+    [7, 1], [8, 0.66], [15, 0.66], [16, 0.4356], [25, 0.4356], [26, 0.287496],
+  ])("reduces transition offer weights at stock %i to %f", (stock, weight) => {
+    const boundary = 3 / (3 + weight);
+    let roll = boundary - 1e-8;
+    const game = new Game(endless, () => roll);
+    game["endlessEpoch"] = 15;
+    game["coinBalance"] = 50;
+    game["inventory"].set("blueMultiply", stock);
+    game["spawnOffer"]({ x: 0, y: 0 }, 0);
+    expect([...game.offers.values()].at(-1)!.choices.map((choice) => choice.id)).toEqual(["auto", "blueMultiply"]);
+    roll = boundary + 1e-8;
+    game["spawnOffer"]({ x: 0, y: 0 }, 0);
+    expect([...game.offers.values()].at(-1)!.choices.map((choice) => choice.id)).toEqual(["blueMultiply", "auto"]);
+    expect(game.powerupStock("blueMultiply")).toBe(stock);
+  });
+
+  it.each([
+    [249, "redToGreen", "redToBlueGreen"],
+    [250, "redToBlueGreen", "redToGreen"],
+    [299, "coins10", "coins50"],
+    [300, "coins50", "coins10"],
+  ])("replaces offers at epoch %i with %s rather than %s", (epoch, wanted, excluded) => {
+    let roll = 0;
+    const game = new Game(endless, () => roll);
+    game["endlessEpoch"] = epoch;
+    game["coinBalance"] = 50;
+    for (let i = 0; i < 100; i++) {
+      roll = (i + 0.5) / 100;
+      game["spawnOffer"]({ x: 0, y: 0 }, 0);
+    }
+    const offered = [...game.offers.values()].flatMap((offer) => offer.choices.map((choice) => choice.id));
+    expect(offered).toContain(wanted);
+    expect(offered).not.toContain(excluded);
+  });
+
+  it("keeps old conversion offers usable and awards fifty coins from the replacement", () => {
+    const game = new Game(endless, () => 0.999);
+    const old = POWERUPS.find((choice) => choice.id === "redToGreen")!;
+    game.offers.set("old", { id: "old", x: 0, y: 0, expiresAt: 120, choices: [old, POWERUPS[0]] });
+    game["endlessEpoch"] = 300;
+    expect(game.collectOffer("old", 0)).toBe(true);
+    expect(game.powerupStock("redToGreen")).toBe(1);
+    expect(game.availableKits().some((kit) => kit.id === "redToGreen")).toBe(true);
+    game["spawnOffer"]({ x: 0, y: 0 }, 0);
+    const offer = [...game.offers.values()].at(-1)!;
+    expect(offer.choices[0].id).toBe("coins50");
+    const restored = new Game(endless, () => 0, { snapshot: game.snapshot() });
+    expect(restored.offers.get(offer.id)!.choices).toEqual(offer.choices);
+    expect(restored.powerupStock("redToGreen")).toBe(1);
+    const coins = game.coins;
+    expect(game.collectOffer(offer.id, 0)).toBe(true);
+    expect(game.coins).toBe(coins + 50);
+  });
+
+  it("converts one red token into one blue and one green with the replacement kit", () => {
+    const powerup = POWERUPS.find((choice) => choice.id === "redToBlueGreen");
+    if (!powerup || powerup.kind !== "kit") throw new Error("Missing red-to-blue-green kit");
+    const net = new Net({
+      places: [{ id: "input", x: 0, y: 0, marking: ["red"] }, { id: "output", x: 200, y: 0, marking: [] }],
+      transitions: [{ id: "convert", x: 100, y: 0, kind: "normal", open: powerup.kit.ports }], arcs: [],
+    });
+    net.connect("convert", 0, "input");
+    net.connect("convert", 0, "output");
+    net.connect("convert", 0, "output");
+    const sim = new Simulation(net, { tokenSpeed: 100 });
+    expect(sim.fire("convert")).toBe(true);
+    expect(sim.incoming("output")).toEqual({ blue: 1, green: 1 });
+    sim.step(2.1);
+    expect(net.places.get("input")!.marking).toEqual([]);
+    expect(net.places.get("output")!.marking).toEqual(["blue", "green"]);
+  });
+
+  it.each([
     [49, 0.3, ["coins5", "auto"]],
     [50, 0.3, ["capacity", "auto"]],
     [51, 0.3, ["capacity", "auto"]],
@@ -308,6 +381,8 @@ describe("sink rewards", () => {
     expect(game.collectOffer("balance", 0)).toBe(true);
     reachEpoch(20);
     expect(game.coins).toBe(balance);
+    game["inventory"].set("auto", 26);
+    game["inventory"].set("capacity", 26);
     setRandom(roll);
     const offer = finish(0);
     expect(offer.choices.map((choice) => choice.id)).toEqual(expected);

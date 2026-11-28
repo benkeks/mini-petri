@@ -227,7 +227,9 @@ Completed goals are checked off and disappear.
 
 ## Epoch progression
 
-The initial sink exists before the first epoch. Private progress gains 1 unit per elapsed second and 10 per emitted source token.
+The initial sink exists before the first epoch.
+Private progress gains 1 unit per simulation second, 4 per emitted source token, and 1 per completed sink delivery.
+A sink firing counts as one delivery for epoch progress regardless of how many tokens or colors it consumes; unmatched or failed deliveries do not contribute.
 Every 60 units creates one new goal epoch; if placement fails, it retries rather than advancing.
 Late epochs can create several sinks for the same 60 progress units; a retry keeps already-created sinks rather than duplicating them.
 New transitions have open colored ports, use normal clearance, and favor positions near the starting source, with an outer-edge fallback.

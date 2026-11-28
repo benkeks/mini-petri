@@ -1842,7 +1842,7 @@ describe("build area", () => {
       game.sim.net.transitions.get("starterSource")!.autoInterval = undefined;
       const view = new NetView(game);
       view.update(0, viewport);
-      for (let i = 0; i < 6; i++) expect(game.sim.fire("starterSource")).toBe(true);
+      for (let i = 0; i < 15; i++) expect(game.sim.fire("starterSource")).toBe(true);
       game.step(0);
       const sink = game.sim.net.transitions.get(game.goals().at(-1)!.sinkId)!;
       view.update(0, viewport);
@@ -1872,7 +1872,7 @@ describe("build area", () => {
       game.sim.net.transitions.get("starterSource")!.autoInterval = undefined;
       for (let epoch = 0; epoch < 6; epoch++) {
         game.sim.net.places.get("starterPlace")!.marking = [];
-        for (let i = 0; i < 6; i++) expect(game.sim.fire("starterSource")).toBe(true);
+        for (let i = 0; i < 15; i++) expect(game.sim.fire("starterSource")).toBe(true);
         game.step(0);
         if (epoch < 5) game.sim.step(1);
       }

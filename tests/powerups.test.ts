@@ -36,7 +36,7 @@ function setup(count = 1) {
   const reachEpoch = (epochs: number) => {
     for (let epoch = 0; epoch < epochs; epoch++) {
       game.sim.net.places.get("starterPlace")!.marking = [];
-      for (let i = 0; i < 6; i++) expect(game.sim.fire("starterSource")).toBe(true);
+      for (let i = 0; i < 15; i++) expect(game.sim.fire("starterSource")).toBe(true);
       game.step(0);
       game.sim.step(1);
     }
@@ -69,7 +69,7 @@ describe("sink rewards", () => {
     if (losses) game.sim.step(240);
     for (let i = 0; i < epoch; i++) {
       game.sim.net.places.get("starterPlace")!.marking = [];
-      for (let j = 0; j < 6; j++) expect(game.sim.fire("starterSource")).toBe(true);
+      for (let j = 0; j < 15; j++) expect(game.sim.fire("starterSource")).toBe(true);
       game.step(0);
       game.sim.step(1);
     }

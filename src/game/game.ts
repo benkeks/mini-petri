@@ -55,7 +55,7 @@ export const STARTER_SOURCE_LIMIT_EPOCH = 2000;
 export const STARTER_SOURCE_SUPPLY = 50;
 export const POWERUP_LIFETIME = 120;
 export const ENDLESS_EPOCH_PROGRESS = 60;
-export const EMISSION_PROGRESS = 10;
+export const EMISSION_PROGRESS = 4;
 export const ENDLESS_RULES = {
   blueOnlyEpochs: 5,
   redChance: 0.5,
@@ -337,6 +337,7 @@ export class Game {
         });
         const count = total(scored);
         if (count > 0) {
+          this.endlessProgress += 1;
           this.score += count;
           this.statistics.record("deliveries", e.time, scored);
           for (const listener of this.deliveryListeners) listener(scored);

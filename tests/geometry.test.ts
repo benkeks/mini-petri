@@ -1,10 +1,35 @@
 import { describe, expect, it } from "vitest";
-import { octilinearRoute, outsidePlace, tokenSlots } from "../src/render/geometry";
+import { octilinearRoute, outsidePlace, segmentInsideCircle, segmentInsideRect, tokenSlots } from "../src/render/geometry";
 import { placeRadius } from "../src/game/placeSize";
 import { STORED_TOKEN_RADIUS } from "../src/render/style";
 
 const angles = (pts: { x: number; y: number }[]) =>
   pts.slice(1).map((q, i) => (Math.atan2(q.y - pts[i].y, q.x - pts[i].x) * 180) / Math.PI);
+
+describe("node overlap clipping", () => {
+  it.each([
+    [[{ x: -100, y: 0 }, { x: 100, y: 0 }], true],
+    [[{ x: 0, y: -100 }, { x: 0, y: 100 }], true],
+    [[{ x: -100, y: -100 }, { x: 100, y: 100 }], true],
+    [[{ x: -100, y: 50 }, { x: -50, y: 0 }, { x: 100, y: 0 }], true],
+    [[{ x: -100, y: 50 }, { x: 100, y: 50 }], false],
+    [[{ x: 20, y: -100 }, { x: 20, y: 100 }], false],
+    [[{ x: 30, y: 30 }, { x: 100, y: 100 }], false],
+  ])("checks complete segments, not just endpoints: %j", (pts, intersects) => {
+    expect(pts.slice(1).some((b, i) => segmentInsideRect(pts[i], b, { x: 0, y: 0 }, 22, 64))).toBe(intersects);
+  });
+
+  it("clips circle chords and rectangle crossings at their actual boundaries", () => {
+    const a = { x: -100, y: 0 }, b = { x: 100, y: 0 };
+    expect(segmentInsideCircle(a, b, { x: 0, y: 0 }, 20)).toEqual([0.4, 0.6]);
+    expect(segmentInsideRect(a, b, { x: 0, y: 0 }, 40, 64)).toEqual([0.4, 0.6]);
+    const chord = segmentInsideCircle({ x: -100, y: 12 }, { x: 100, y: 12 }, { x: 0, y: 0 }, 20)!;
+    expect(chord[0]).toBeCloseTo(0.42);
+    expect(chord[1]).toBeCloseTo(0.58);
+    expect(segmentInsideCircle({ x: -100, y: 20 }, { x: 100, y: 20 }, { x: 0, y: 0 }, 20)).toBeUndefined();
+    expect(segmentInsideCircle({ x: 0, y: 0 }, b, { x: 0, y: 0 }, 20)).toEqual([0, 0.2]);
+  });
+});
 
 describe("octilinearRoute", () => {
   it.each([

@@ -10,6 +10,7 @@ Play current development version: <https://benkeks.github.io/mini-petri/>
 
 Route colored deliveries from sources to matching goals (sinks).
 Circles hold box-shaped deliveries; bars are transitions; colored lines show which deliveries a connection moves.
+Dashed x-ray segments reveal connections hidden by unrelated nodes; focus a node to highlight its connections and their endpoints.
 Empty boxes beside a goal show what it still needs.
 Filled goals disappear, and your score counts matching deliveries; new sources, goals and colors appear as epochs advance.
 

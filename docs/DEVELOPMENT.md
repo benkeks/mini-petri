@@ -32,6 +32,15 @@ Consumed tokens travel into the transition; output tokens start moving only afte
 Outputs count towards destination capacity immediately, but become available to other transitions only on arrival.
 See [continuous-time firing semantics](DESIGN.md#continuous-time-firing-semantics) for the full rules.
 
+Arcs retain their normal solid rendering; only portions overlapped by unrelated live nodes are drawn again as dashed x-ray strokes above the node bodies at 50% opacity.
+Segment clipping against place circles and oriented transition bars runs when the net's structure changes, not every frame.
+Overlapping occlusion intervals are merged so the same hidden portion is not drawn twice.
+X-ray dashes repeat every 12 world units, with a five-unit dash.
+Travelling tokens render at 50% opacity above x-ray arcs while their actual animated centers are inside an occluding node, returning to full opacity outside it.
+Occluder candidates are cached with the arc geometry; side-by-side token lanes are checked individually.
+Hovering, pressing or selecting a node for wiring highlights its live incident arcs and their opposite endpoints, without following further connections.
+Arc highlights render below node bodies; x-ray segments remain at 50% opacity and appear in saved thumbnails, while focus overlays are excluded.
+
 ## Saved sessions
 
 [`Saves`](../src/game/saves.ts) stores each session as a separate JSON entry in LocalStorage under `mini-petri:session:<id>`.

@@ -215,6 +215,37 @@ export function distanceToPolyline(p: Pt, pts: Pt[]): number {
   return best;
 }
 
+export function segmentInsideRect(a: Pt, b: Pt, center: Pt, width: number, height: number): [number, number] | undefined {
+  let enter = 0, exit = 1;
+  for (const [start, delta, half] of [
+    [a.x - center.x, b.x - a.x, width / 2],
+    [a.y - center.y, b.y - a.y, height / 2],
+  ]) {
+    if (delta === 0) {
+      if (Math.abs(start) > half) return undefined;
+    } else {
+      const t1 = (-half - start) / delta, t2 = (half - start) / delta;
+      enter = Math.max(enter, Math.min(t1, t2));
+      exit = Math.min(exit, Math.max(t1, t2));
+    }
+  }
+  return enter < exit ? [enter, exit] : undefined;
+}
+
+export function segmentInsideCircle(a: Pt, b: Pt, center: Pt, radius: number): [number, number] | undefined {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const x = a.x - center.x, y = a.y - center.y;
+  const length2 = dx * dx + dy * dy;
+  if (length2 === 0) return undefined;
+  const dot = x * dx + y * dy;
+  const discriminant = dot * dot - length2 * (x * x + y * y - radius * radius);
+  if (discriminant <= 0) return undefined;
+  const root = Math.sqrt(discriminant);
+  const enter = Math.max(0, (-dot - root) / length2);
+  const exit = Math.min(1, (-dot + root) / length2);
+  return enter < exit ? [enter, exit] : undefined;
+}
+
 export function lerp(a: Pt, b: Pt, t: number): Pt {
   return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
 }

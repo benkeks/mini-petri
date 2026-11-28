@@ -12,6 +12,8 @@ import {
   outsidePlace,
   pointAt,
   polylineLength,
+  segmentInsideCircle,
+  segmentInsideRect,
   subpath,
   transitionLayout,
   tokenSlots,
@@ -140,6 +142,10 @@ export class NetView {
   private readonly ghostArcLayer = new Graphics();
   private readonly ghostPlaceLayer = new Graphics();
   private readonly arcLayer = new Graphics();
+  private readonly focusArcLayer = new Graphics();
+  private readonly xrayArcLayer = new Graphics();
+  private readonly xrayTokenLayer = new Graphics();
+  private readonly xrayOccluders = new Map<string, Set<string>>();
   private readonly stubLayer = new Container();
   private readonly stubChunks: StubChunk[] = [];
   private readonly placeLayer = new Graphics();
@@ -168,6 +174,9 @@ export class NetView {
   private readonly placeDeniedAt = new Map<string, { at: number; color: number }>();
   private ripples: { x: number; y: number; at: number; color: number }[] = [];
   constructor(private readonly game: Game) {
+    this.arcLayer.addChild(this.focusArcLayer);
+    this.xrayArcLayer.alpha = 0.5;
+    this.xrayTokenLayer.alpha = 0.5;
     this.ghostLayer.alpha = GHOST_ALPHA;
     this.ghostLayer.addChild(this.removalBackground, this.ghostArcLayer, this.ghostPlaceLayer);
     this.rangeArea.mask = this.rangeMask;
@@ -185,7 +194,7 @@ export class NetView {
       this.overlayLayer,
       this.rewardLayer,
     );
-    this.labelLayer.addChild(this.staticLabels, this.stubLabels, this.previewLabels);
+    this.labelLayer.addChild(this.xrayArcLayer, this.xrayTokenLayer, this.staticLabels, this.stubLabels, this.previewLabels);
     this.buildPreview.label = "build-preview";
     this.buildPreview.alpha = 0.65;
     this.previewLabels.alpha = 0.65;
@@ -238,7 +247,7 @@ export class NetView {
 
   capture<T>(viewport: { x: number; y: number; width: number; height: number }, render: () => T): T {
     const overlay = this.overlay;
-    const layers = [this.rangeLayer, this.removalBackground, this.overlayLayer, this.previewLabels, this.rewardLayer];
+    const layers = [this.rangeLayer, this.removalBackground, this.overlayLayer, this.previewLabels, this.rewardLayer, this.focusArcLayer];
     const visibility = layers.map((layer) => layer.visible);
     try {
       this.overlay = {};
@@ -494,10 +503,56 @@ export class NetView {
 
   /** Arcs are drawn in the color of the tokens they move (ink for "any"), with one arrowhead per token. */
   private drawArcs(): void {
-    for (const arc of this.game.sim.net.arcs.values()) {
+    const net = this.game.sim.net;
+    this.xrayArcLayer.clear();
+    this.xrayOccluders.clear();
+    const places = [...net.places.values()].filter((place) => !place.ghost);
+    const transitions = [...net.transitions.values()].filter((transition) => !transition.ghost);
+    for (const arc of net.arcs.values()) {
+      const pts = this.visibleRoute(arc);
+      const color = arc.color ? TOKEN_COLORS[arc.color] : THEME.ink;
       const g = arc.ghost ? this.ghostArcLayer : this.arcLayer;
-      const label = this.drawArrow(g, this.visibleRoute(arc), arc.color ? TOKEN_COLORS[arc.color] : THEME.ink, arcCount(arc));
+      const label = this.drawArrow(g, pts, color, arcCount(arc));
       if (label && !arc.ghost) this.staticLabels.addChild(label);
+      if (arc.ghost) continue;
+      const occluders = new Set<string>();
+      let distance = 0;
+      let hidden = false;
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1], b = pts[i];
+        const length = Math.hypot(b.x - a.x, b.y - a.y);
+        const intervals: [number, number][] = [];
+        for (const place of places) {
+          if (place.id === arc.from || place.id === arc.to) continue;
+          const interval = segmentInsideCircle(a, b, place, placeRadius(place.capacity) + 2.5);
+          if (interval) {
+            intervals.push(interval);
+            occluders.add(place.id);
+          }
+        }
+        for (const transition of transitions) {
+          if (transition.id === arc.from || transition.id === arc.to) continue;
+          const { w, h } = this.layouts.get(transition.id)!.bar;
+          const interval = segmentInsideRect(a, b, transition, w + 3, h + 3);
+          if (interval) {
+            intervals.push(interval);
+            occluders.add(transition.id);
+          }
+        }
+        const merged: [number, number][] = [];
+        for (const interval of intervals.sort((a, b) => a[0] - b[0])) {
+          const last = merged.at(-1);
+          if (last && interval[0] <= last[1]) last[1] = Math.max(last[1], interval[1]);
+          else merged.push(interval);
+        }
+        for (const [enter, exit] of merged) {
+          this.dashedPath(this.xrayArcLayer, [lerp(a, b, enter), lerp(a, b, exit)], 1, distance + enter * length);
+          hidden = true;
+        }
+        distance += length;
+      }
+      if (hidden) this.xrayArcLayer.stroke({ width: 4, color, cap: "butt", join: "round" });
+      if (occluders.size) this.xrayOccluders.set(arc.id, occluders);
     }
   }
 
@@ -571,18 +626,7 @@ export class NetView {
     const spacing = 13 * size;
     const heads = Math.min(count, MAX_ARROWHEADS);
 
-    if (dashed) {
-      const length = Math.max(0, len - head * 0.5);
-      for (let d = 0; d < length; d += 10) {
-        g.moveTo(a.x + ux * d, a.y + uy * d)
-          .lineTo(a.x + ux * Math.min(d + 5, length), a.y + uy * Math.min(d + 5, length));
-      }
-      g.stroke({ width: 2, color, cap: "round" });
-    } else {
-      g.moveTo(pts[0].x, pts[0].y);
-      for (const q of pts.slice(1, -1)) g.lineTo(q.x, q.y);
-      g.lineTo(b.x - ux * head * 0.5, b.y - uy * head * 0.5).stroke({ width: 4, color, cap: "round", join: "round" });
-    }
+    this.strokeArc(g, pts, color, size < 1 ? 2 : 4, dashed, size);
     for (let i = 0; i < heads; i++) {
       const tx = b.x - ux * spacing * i;
       const ty = b.y - uy * spacing * i;
@@ -600,6 +644,42 @@ export class NetView {
       return label;
     }
     return undefined;
+  }
+
+  private strokeArc(g: Graphics, pts: Pt[], color: number, width: number, dashed: boolean, size = 1): void {
+    const end = pts.at(-1)!;
+    const before = pts.at(-2) ?? end;
+    const length = Math.hypot(end.x - before.x, end.y - before.y) || 1;
+    const shaft = [...pts.slice(0, -1), {
+      x: end.x - (end.x - before.x) / length * 10 * size,
+      y: end.y - (end.y - before.y) / length * 10 * size,
+    }];
+    if (!dashed) {
+      g.moveTo(shaft[0].x, shaft[0].y);
+      for (const point of shaft.slice(1)) g.lineTo(point.x, point.y);
+    } else {
+      this.dashedPath(g, shaft, size);
+    }
+    g.stroke({ width, color, cap: "round", join: "round" });
+  }
+
+  private dashedPath(g: Graphics, pts: Pt[], size: number, offset = 0): void {
+    const dash = 5;
+    const period = size < 1 ? 10 : 12;
+    let distance = offset;
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i];
+      const segment = Math.hypot(b.x - a.x, b.y - a.y);
+      if (segment === 0) continue;
+      for (let d = Math.floor(distance / period) * period; d < distance + segment; d += period) {
+        const start = Math.max(distance, d), stop = Math.min(distance + segment, d + dash);
+        if (stop <= start) continue;
+        const from = lerp(a, b, (start - distance) / segment);
+        const to = lerp(a, b, (stop - distance) / segment);
+        g.moveTo(from.x, from.y).lineTo(to.x, to.y);
+      }
+      distance += segment;
+    }
   }
 
   private buildTransitions(): void {
@@ -888,6 +968,7 @@ export class NetView {
   /** Build range, preview, highlights of the active brush's targets and denied-tap ripples. */
   private drawOverlay(now: number): void {
     const g = this.overlayLayer.clear();
+    this.focusArcLayer.clear();
     this.buildPreview.clear();
     for (const label of this.previewLabels.removeChildren()) label.destroy();
     const net = this.game.sim.net;
@@ -941,6 +1022,30 @@ export class NetView {
         if (s) this.dashedCircle(g, s.plug, PLUG_RADIUS + 4, color, width, alpha);
       }
     };
+
+    const focusedPick = o.pressed ?? hover;
+    const focused = !this.game.complete && (focusedPick?.kind === "place" || focusedPick?.kind === "transition"
+      ? focusedPick.id : focusedPick?.kind === "port" ? focusedPick.tid : (selectedPlace && selectedPlace.id) || selectedTransition?.id);
+    const focusedNode = focused && (net.places.get(focused) ?? net.transitions.get(focused));
+    if (focusedNode && !focusedNode.ghost) {
+      const pick: Pick = { kind: net.places.has(focusedNode.id) ? "place" : "transition", id: focusedNode.id };
+      ring(pick, o.removing && o.target?.(pick) ? THEME.removalGlow : THEME.ink, 0.85, 4);
+      const endpoints = new Set<string>();
+      for (const arc of net.arcsOf(focusedNode.id)) {
+        if (arc.ghost) continue;
+        const other = arc.from === focusedNode.id ? arc.to : arc.from;
+        const node = net.places.get(other) ?? net.transitions.get(other);
+        if (!node || node.ghost) continue;
+        const color = arc.color ? TOKEN_COLORS[arc.color] : THEME.ink;
+        const pts = this.visibleRoute(arc);
+        this.strokeArc(this.focusArcLayer, pts, THEME.background, 12, false);
+        this.strokeArc(this.focusArcLayer, pts, color, 7, false);
+        if (!endpoints.has(other)) {
+          ring({ kind: net.places.has(other) ? "place" : "transition", id: other }, color, 0.8, 4);
+          endpoints.add(other);
+        }
+      }
+    }
 
     if (o.target || (o.previewTarget && o.pointer && hover?.kind === "empty")) {
       const candidates: Pick[] = [
@@ -1071,7 +1176,8 @@ export class NetView {
   }
 
   private drawInFlight(): void {
-    const g = this.tokenLayer.clear();
+    this.tokenLayer.clear();
+    this.xrayTokenLayer.clear();
     const net = this.game.sim.net;
     const gap = TOKEN_RADIUS * 2 + 3;
     const activeFirings = new Set(this.game.sim.inFlight.map((token) => token.firingId));
@@ -1128,8 +1234,16 @@ export class NetView {
         lift = Math.sin(Math.PI * u);
       }
       const r = TOKEN_RADIUS + 1;
-      if (lift > 0) g.ellipse(p.x, p.y, r * (1 - 0.3 * lift), r * 0.45 * (1 - 0.3 * lift)).fill({ color: THEME.ink, alpha: 0.18 });
       const up = lift * HOP_HEIGHT;
+      const occluded = [...(this.xrayOccluders.get(tok.arcId) ?? [])].some((id) => {
+        const place = net.places.get(id);
+        if (place) return Math.hypot(p.x - place.x, p.y - up - place.y) <= placeRadius(place.capacity) + 2.5;
+        const transition = net.transitions.get(id)!;
+        const { w, h } = this.layouts.get(id)!.bar;
+        return Math.abs(p.x - transition.x) <= w / 2 + 1.5 && Math.abs(p.y - up - transition.y) <= h / 2 + 1.5;
+      });
+      const g = occluded ? this.xrayTokenLayer : this.tokenLayer;
+      if (lift > 0) g.ellipse(p.x, p.y, r * (1 - 0.3 * lift), r * 0.45 * (1 - 0.3 * lift)).fill({ color: THEME.ink, alpha: 0.18 });
       // Up is towards the top of the screen in both orientations.
       const size = r * (1 + 0.25 * lift);
       g.roundRect(p.x - size, p.y - up - size, size * 2, size * 2, 1.5)

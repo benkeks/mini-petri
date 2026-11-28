@@ -5,6 +5,7 @@ import { ENDLESS_RULES, Game, placementClearance } from "../src/game/game";
 import { endless } from "../src/game/endless";
 import { level2 } from "../src/game/level2";
 import { POWERUPS } from "../src/game/powerups";
+import { placeRadius } from "../src/game/placeSize";
 import { brushesOf, Controller, type Brush } from "../src/input/controller";
 import { tokenSlots } from "../src/render/geometry";
 import { Hud, survivalPopupPosition, toolbarLayout } from "../src/render/hud";
@@ -35,8 +36,8 @@ function balancePositions(view: NetView, game: Game, id: string, radius: number)
     .map((shape) => [shape.data[0] + radius, shape.data[1] + radius]);
 }
 
-function flightBoxes(view: NetView) {
-  return drawing(view.root.children[6] as Graphics).flatMap((item) => {
+function flightBoxes(view: NetView, layer = view.root.children[6] as Graphics) {
+  return drawing(layer).flatMap((item) => {
     if (item.action !== "fill") return [];
     const box = item.path.filter((shape) => shape.action === "roundRect").at(-1);
     if (!box) return [];
@@ -63,6 +64,215 @@ describe("save viewport capture", () => {
     expect(view.overlay).toBe(overlay);
     expect(layers.map((layer) => layer.visible)).toEqual(visibility);
     expect(view.capture(viewport, () => "thumbnail")).toBe("thumbnail");
+    view.root.destroy({ children: true });
+  });
+});
+
+describe("dense net readability", () => {
+  const viewport = { x: 0, y: 0, width: 1800, height: 1400 };
+  function network() {
+    return new Game({ ...level2, goals: [], net: {
+      places: [
+        { id: "from", x: 100, y: 200, marking: [] },
+        { id: "to", x: 600, y: 200, marking: [] },
+        { id: "unrelated", x: 280, y: 500, marking: [] },
+      ],
+      transitions: [
+        { id: "relay", x: 420, y: 200, kind: "normal" },
+        { id: "unrelatedTransition", x: 800, y: 500, kind: "normal" },
+      ],
+      arcs: [
+        { id: "input", from: "from", to: "relay", color: "blue" },
+        { id: "output", from: "relay", to: "to", color: "red" },
+      ],
+    } });
+  }
+
+  it.each(["place", "transition"] as const)("shows only the hidden portion above an unrelated %s at half opacity", (kind) => {
+    const game = network();
+    const net = game.sim.net;
+    const node = kind === "place" ? net.places.get("unrelated")! : net.transitions.get("unrelatedTransition")!;
+    node.x = 280;
+    node.y = 200;
+    net.version++;
+    const view = new NetView(game);
+    view.update(0, viewport);
+    expect(view["xrayArcLayer"].alpha).toBe(0.5);
+    expect(view.root.getChildIndex(view["labelLayer"])).toBeGreaterThan(view.root.getChildIndex(view["transitionLayer"]));
+    expect(view["xrayArcLayer"].parent).toBe(view["labelLayer"]);
+    const input = drawing(view["arcLayer"]).find((item) => item.action === "stroke" && item.color === TOKEN_COLORS.blue)!;
+    expect(input.width).toBe(4);
+    expect(input.path.filter((shape) => shape.action === "moveTo")).toHaveLength(1);
+    const xray = drawing(view["xrayArcLayer"]);
+    expect(xray.map((item) => item.color)).toEqual([TOKEN_COLORS.blue]);
+    const points = xray[0].path.filter((shape) => shape.action === "moveTo" || shape.action === "lineTo");
+    expect(points.length).toBeGreaterThan(1);
+    const half = kind === "place" ? placeRadius(game.sim.net.places.get(node.id)!.capacity) + 2.5
+      : view["layouts"].get(node.id)!.bar.w / 2 + 1.5;
+    expect(points.every((point) => point.data[0] >= node.x - half && point.data[0] <= node.x + half)).toBe(true);
+    const route = view["visibleRoute"](net.arcs.get("input")!);
+    expect(view.pick({ x: route[0].x + 50, y: route[0].y })).toEqual({ kind: "arc", id: "input" });
+    net.deleteNode(node.id);
+    view.update(0, viewport);
+    expect(view["xrayArcLayer"].context.instructions).toHaveLength(0);
+    view.root.destroy({ children: true });
+  });
+
+  it.each(["leg", "bend"] as const)("clips x-ray dashes to a circle at a bent arc's %s, keeping other parts solid", (position) => {
+    const game = network();
+    game.sim.net.transitions.get("relay")!.y = 360;
+    const view = new NetView(game);
+    view.update(0, viewport);
+    expect(view["xrayArcLayer"].context.instructions).toHaveLength(0);
+    const route = view["visibleRoute"](game.sim.net.arcs.get("input")!);
+    const middle = position === "bend" ? route[1]
+      : { x: (route[0].x + route[1].x) / 2, y: (route[0].y + route[1].y) / 2 };
+    Object.assign(game.sim.net.places.get("unrelated")!, middle);
+    game.sim.net.version++;
+    view.update(0, viewport);
+    const xray = drawing(view["xrayArcLayer"]).find((item) => item.color === TOKEN_COLORS.blue)!;
+    const radius = placeRadius(game.sim.net.places.get("unrelated")!.capacity) + 2.5;
+    const points = xray.path.filter((shape) => shape.action === "moveTo" || shape.action === "lineTo");
+    expect(points.length).toBeGreaterThan(1);
+    for (const point of points) expect(Math.hypot(point.data[0] - middle.x, point.data[1] - middle.y)).toBeLessThanOrEqual(radius + 1e-6);
+    const instructions = drawing(view["arcLayer"]).filter((item) => item.color === TOKEN_COLORS.blue);
+    expect(instructions.some((item) => item.action === "fill")).toBe(true);
+    const lines = instructions.find((item) => item.action === "stroke" && item.width === 4)!.path;
+    const moves = lines.filter((shape) => shape.action === "moveTo");
+    expect(moves).toHaveLength(1);
+    expect(lines.some((shape) => shape.action === "lineTo" && shape.data[0] > route[1].x)).toBe(true);
+    view.root.destroy({ children: true });
+  });
+
+  it.each(["hover", "pressed", "selected-place", "selected-port"] as const)(
+    "highlights only the focused node's live arcs and their opposite endpoints: %s", (focus) => {
+      const game = network();
+      const view = new NetView(game);
+      if (focus === "hover") view.overlay = { pointer: { x: 420, y: 200 } };
+      if (focus === "pressed") view.overlay = { pressed: { kind: "transition", id: "relay" } };
+      if (focus === "selected-place") view.overlay = { selectedPlace: "from" };
+      if (focus === "selected-port") {
+        game.sim.net.transitions.get("relay")!.open = [{ dir: "in", color: "blue" }];
+        game.sim.net.version++;
+        view.overlay = { selected: { tid: "relay", index: 0 } };
+      }
+      view.update(0, viewport);
+      const highlights = drawing(view["focusArcLayer"]).filter((item) => item.width === 7);
+      expect(highlights.map((item) => item.color)).toEqual(focus === "selected-place"
+        ? [TOKEN_COLORS.blue] : [TOKEN_COLORS.blue, TOKEN_COLORS.red]);
+      const rings = drawing(view["overlayLayer"]).flatMap((item) => item.path)
+        .filter((shape) => shape.action === "circle");
+      expect(rings.some((shape) => shape.data[0] === 600)).toBe(focus !== "selected-place");
+      expect(rings.some((shape) => shape.data[0] === 100)).toBe(true);
+      expect(rings.some((shape) => shape.data[0] === 280)).toBe(false);
+      view.capture(viewport, () => expect(view["focusArcLayer"].visible).toBe(false));
+      expect(view["focusArcLayer"].visible).toBe(true);
+      view.overlay = {};
+      view.update(0, viewport);
+      expect(view["focusArcLayer"].context.instructions).toHaveLength(0);
+      view.root.destroy({ children: true });
+    });
+
+  it("keeps visible focus strokes solid, hidden x-ray strokes at half opacity, and ignores ghost connections", () => {
+    const game = network();
+    const view = new NetView(game);
+    Object.assign(game.sim.net.places.get("unrelated")!, { x: 280, y: 200 });
+    game.sim.net.version++;
+    view.overlay = { pointer: { x: 420, y: 200 } };
+    view.update(0, viewport);
+    const focused = drawing(view["focusArcLayer"]).find((item) => item.color === TOKEN_COLORS.blue)!;
+    expect(focused.path.filter((shape) => shape.action === "moveTo")).toHaveLength(1);
+    expect(view["xrayArcLayer"].alpha).toBe(0.5);
+    expect(drawing(view["xrayArcLayer"]).map((item) => item.color)).toEqual([TOKEN_COLORS.blue]);
+    game.sim.net.ghostArc("input");
+    view.update(0, viewport);
+    expect(drawing(view["focusArcLayer"]).filter((item) => item.width === 7).map((item) => item.color)).toEqual([TOKEN_COLORS.red]);
+    expect(view["xrayArcLayer"].context.instructions).toHaveLength(0);
+    view.root.destroy({ children: true });
+  });
+
+  it("merges overlapping occluders so the same arc portion is not drawn twice", () => {
+    const game = network();
+    Object.assign(game.sim.net.places.get("unrelated")!, { x: 280, y: 200 });
+    const view = new NetView(game);
+    view.update(0, viewport);
+    const oneOccluder = drawing(view["xrayArcLayer"]);
+    Object.assign(game.sim.net.transitions.get("unrelatedTransition")!, { x: 280, y: 200 });
+    game.sim.net.version++;
+    view.update(0, viewport);
+    expect(drawing(view["xrayArcLayer"])).toEqual(oneOccluder);
+    view.capture(viewport, () => {
+      expect(view["xrayArcLayer"].visible).toBe(true);
+      expect(view["xrayArcLayer"].alpha).toBe(0.5);
+    });
+    view.root.destroy({ children: true });
+  });
+
+  it("uses twice the x-ray dash frequency while keeping the visible arc solid", () => {
+    const game = network();
+    Object.assign(game.sim.net.places.get("unrelated")!, { x: 280, y: 200, capacity: 19 });
+    const view = new NetView(game);
+    view.update(0, viewport);
+    const path = drawing(view["xrayArcLayer"])[0].path;
+    const moves = path.filter((shape) => shape.action === "moveTo");
+    const ends = path.filter((shape) => shape.action === "lineTo");
+    expect(moves.length).toBeGreaterThan(4);
+    expect(moves[2].data[0] - moves[1].data[0]).toBeCloseTo(12);
+    expect(ends[1].data[0] - moves[1].data[0]).toBeCloseTo(5);
+    const solid = drawing(view["arcLayer"]).find((item) => item.action === "stroke" && item.color === TOKEN_COLORS.blue)!;
+    expect(solid.path.filter((shape) => shape.action === "moveTo")).toHaveLength(1);
+    view.root.destroy({ children: true });
+  });
+
+  it.each((["place", "transition"] as const).flatMap((kind) =>
+    (["input", "output"] as const).map((direction) => ({ kind, direction }))))(
+    "fades a travelling $direction token only while crossing an unrelated $kind", ({ kind, direction }) => {
+      const game = network();
+      game.sim.net.places.get("from")!.marking = ["blue"];
+      const view = new NetView(game);
+      view.update(0, viewport);
+      expect(game.sim.fire("relay")).toBe(true);
+      if (direction === "output") {
+        game.sim.inFlight[0].progress = 1;
+        game.sim.step(0.001);
+      }
+      const token = game.sim.inFlight.find((token) => token.kind === direction)!;
+      expect(token).toBeDefined();
+      token.progress = 0.55;
+      view.update(0, viewport);
+      const position = flightBoxes(view)[0];
+      const node = kind === "place" ? game.sim.net.places.get("unrelated")! : game.sim.net.transitions.get("unrelatedTransition")!;
+      Object.assign(node, { x: position.x, y: position.y });
+      game.sim.net.version++;
+      view.update(0, viewport);
+      expect(flightBoxes(view)).toHaveLength(0);
+      expect(flightBoxes(view, view["xrayTokenLayer"])).toEqual([position]);
+      expect(view["xrayTokenLayer"].alpha).toBe(0.5);
+      expect(view["labelLayer"].getChildIndex(view["xrayTokenLayer"])).toBeGreaterThan(view["labelLayer"].getChildIndex(view["xrayArcLayer"]));
+      view.capture(viewport, () => expect(view["xrayTokenLayer"].visible).toBe(true));
+      token.progress = 0.9;
+      view.update(0, viewport);
+      expect(flightBoxes(view)).toHaveLength(1);
+      expect(flightBoxes(view, view["xrayTokenLayer"])).toHaveLength(0);
+      view.root.destroy({ children: true });
+    });
+
+  it("uses each token's actual lane, keeping tokens beside an x-rayed section fully opaque", () => {
+    const game = network();
+    game.sim.net.places.get("from")!.marking = ["blue", "blue", "blue"];
+    game.sim.net.arcs.get("input")!.count = 3;
+    const view = new NetView(game);
+    view.update(0, viewport);
+    expect(game.sim.fire("relay")).toBe(true);
+    for (const token of game.sim.inFlight) token.progress = 0.7;
+    view.update(0, viewport);
+    const positions = flightBoxes(view);
+    const center = positions[1];
+    Object.assign(game.sim.net.places.get("unrelated")!, { x: center.x, y: center.y, capacity: 1 });
+    game.sim.net.version++;
+    view.update(0, viewport);
+    expect(flightBoxes(view, view["xrayTokenLayer"])).toEqual([center]);
+    expect(flightBoxes(view)).toEqual([positions[0], positions[2]]);
     view.root.destroy({ children: true });
   });
 });

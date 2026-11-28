@@ -1,9 +1,12 @@
 import type { Kit } from "./level";
 
+export const BOMB_PRICE = 25;
+
 export type Powerup = (
   | { id: string; label: string; afterEpoch: number; kind: "coins"; amount: number }
   | { id: string; label: string; afterEpoch: number; kind: "capacity" | "auto" | "life" }
   | { id: string; label: string; afterEpoch: number; kind: "kit"; price: number; kit: Kit }
+  | { id: string; label: string; afterEpoch: number; kind: "bomb"; price: number }
 ) & {
   /** Exclusive offer cutoff; existing items and offers remain usable. */
   untilEpoch?: number;
@@ -53,4 +56,5 @@ export const POWERUPS: readonly Powerup[] = [
     kit: { id: "redToBlueGreen", ports: [{ dir: "in", color: "red" }, { dir: "out", color: "blue" }, { dir: "out", color: "green" }] },
   },
   { id: "coins50", label: "50 coins", afterEpoch: 300, kind: "coins", amount: 50 },
+  { id: "bomb", label: "Bomb\n25 coins", afterEpoch: 500, kind: "bomb", price: BOMB_PRICE },
 ];

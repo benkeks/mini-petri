@@ -3,7 +3,7 @@ import { arcCount, Net, type Arc, type Place, type Transition } from "../core/ne
 import { Simulation } from "../core/simulation";
 import type { Goal, Kit, Level } from "./level";
 import { PLACE_CAPACITIES, placeLevel, placeRadius } from "./placeSize";
-import { POWERUPS, type Powerup } from "./powerups";
+import { BOMB_PRICE, POWERUPS, type Powerup } from "./powerups";
 import { Statistics } from "./statistics";
 import { distanceToPolyline, outsidePlace, transitionLayout, type Pt } from "../render/geometry";
 
@@ -12,6 +12,7 @@ export const BUILD_RANGE = 220;
 export function buildRange(node: Place | Transition): number {
   return "kind" in node ? BUILD_RANGE : BUILD_RANGE + (BUILD_RANGE / 5) * placeLevel(node.capacity);
 }
+
 /** Base center-to-center arc reach for a one-token place. */
 export const CONNECTION_RANGE = BUILD_RANGE + 80;
 export function connectionRange(node: { x: number; y: number; capacity?: number }): number {
@@ -21,6 +22,7 @@ export function connectionRange(node: { x: number; y: number; capacity?: number 
 export function withinConnectionRange(a: { x: number; y: number; capacity?: number }, b: { x: number; y: number; capacity?: number }): boolean {
   return Math.hypot(a.x - b.x, a.y - b.y) <= Math.max(connectionRange(a), connectionRange(b));
 }
+
 /** Radii nodes claim for themselves; footprints plus `CLEARANCE` must not overlap. */
 export const PLACE_FOOTPRINT = placeRadius(PLACE_CAPACITIES[PLACE_CAPACITIES.length - 1]) + 8;
 export const TRANSITION_FOOTPRINT = 36;
@@ -56,6 +58,9 @@ export const STARTER_SOURCE_SUPPLY = 50;
 export const POWERUP_LIFETIME = 120;
 export const ENDLESS_EPOCH_PROGRESS = 60;
 export const EMISSION_PROGRESS = 6;
+export const BOMB_COUNTDOWN = 3;
+export const CATASTROPHE_COUNTDOWN = 120;
+export const EXPLOSION_TIME = 1.2;
 export const ENDLESS_RULES = {
   blueOnlyEpochs: 5,
   redChance: 0.5,
@@ -149,6 +154,21 @@ export interface PowerupOffer {
   choices: [Powerup, Powerup];
 }
 
+export interface Bomb {
+  id: string;
+  x: number;
+  y: number;
+  placedAt: number;
+  deadline: number;
+  catastrophe: boolean;
+}
+
+export interface Explosion {
+  x: number;
+  y: number;
+  at: number;
+}
+
 /** Game rules on top of the net simulation: goals at sinks and source difficulty ramp. */
 export class Game {
   readonly sim: Simulation;
@@ -180,6 +200,12 @@ export class Game {
   private readonly inventory = new Map<string, number>();
   readonly offers = new Map<string, PowerupOffer>();
   offerVersion = 0;
+  readonly bombs = new Map<string, Bomb>();
+  readonly explosions: Explosion[] = [];
+  bombVersion = 0;
+  private nextBombId = 1;
+  private pendingCatastrophes = 0;
+  private nextCatastropheRetryAt = 0;
   private nextOfferId = 1;
   /** Goal sinks whose goals are all met, with the time they were met. */
   readonly resolved = new Map<string, number>();
@@ -365,6 +391,8 @@ export class Game {
       builtTransitions: [...this.builtTransitions], inventory: [...this.inventory],
       offers: [...this.offers.values()].map((offer) => ({ ...offer, choices: offer.choices.map((choice) => choice.id) })),
       nextOfferId: this.nextOfferId,
+      bombs: [...this.bombs.values()].map((bomb) => ({ ...bomb })), nextBombId: this.nextBombId,
+      pendingCatastrophes: this.pendingCatastrophes, nextCatastropheRetryAt: this.nextCatastropheRetryAt,
       resolved: [...this.resolved], exhausted: [...this.exhausted], rewardedSources: [...this.rewardedSources],
       failed: [...this.failed], delivered: [...this.delivered], reserved: [...this.reserved],
       completedGoalOrdinals: [...this.completedGoalOrdinals].map(([key, value]) => [key, [...value]] as [string, number[]]),
@@ -402,6 +430,27 @@ export class Game {
         || !Number.isFinite(countdown.startsAt) || !Number.isFinite(countdown.deadline)
         || !Number.isFinite(countdown.duration) || countdown.duration <= 0) throw new Error("Invalid countdown");
     }
+    const bombs = state.bombs === undefined ? [] : state.bombs;
+    const nextBombId = state.nextBombId === undefined ? 1 : state.nextBombId;
+    const pendingCatastrophes = state.pendingCatastrophes === undefined ? 0 : state.pendingCatastrophes;
+    const nextCatastropheRetryAt = state.nextCatastropheRetryAt === undefined ? 0 : state.nextCatastropheRetryAt;
+    if (!Array.isArray(bombs) || !Number.isInteger(nextBombId) || nextBombId < 1
+      || !Number.isInteger(pendingCatastrophes) || pendingCatastrophes < 0
+      || !Number.isFinite(nextCatastropheRetryAt) || nextCatastropheRetryAt < 0) {
+      throw new Error("Invalid bomb state");
+    }
+    for (const bomb of bombs) {
+      if (!bomb || typeof bomb.id !== "string" || this.bombs.has(bomb.id)
+        || ![bomb.x, bomb.y, bomb.placedAt, bomb.deadline].every(Number.isFinite)
+        || bomb.placedAt < 0 || bomb.deadline <= bomb.placedAt || typeof bomb.catastrophe !== "boolean") {
+        throw new Error("Invalid saved bomb");
+      }
+      this.bombs.set(bomb.id, { ...bomb });
+    }
+    this.nextBombId = nextBombId;
+    this.pendingCatastrophes = pendingCatastrophes;
+    this.nextCatastropheRetryAt = nextCatastropheRetryAt;
+    this.bombVersion++;
     this.sim.restore(state.simulation);
     this.statistics.restore(state.statistics);
     this.portrait = state.portrait;
@@ -613,6 +662,7 @@ export class Game {
       && (powerup.untilEpoch === undefined || this.endlessEpoch < powerup.untilEpoch));
     const draw = (): Powerup => {
       const weights = eligible.map((powerup) => {
+        if (powerup.kind === "bomb") return 0.33;
         if (powerup.kind === "coins") return this.coins < 50 ? 3 : 1;
         if (powerup.kind !== "kit") return 1;
         const stock = this.powerupStock(powerup.id);
@@ -640,6 +690,165 @@ export class Game {
       this.offerVersion++;
       this.changeCoins(1, offer);
     }
+  }
+
+  get bombRadius(): number {
+    const source = this.level.net.transitions.find((node) => node.id === "starterSource");
+    const place = this.level.net.places.find((node) => node.id === "starterPlace");
+    if (!source || !place) throw new Error("Bombs require the starting source and place");
+    return Math.hypot(source.x - place.x, source.y - place.y);
+  }
+
+  canPlaceBomb(x: number, y: number, notify = false): boolean {
+    return !this.complete && !this.paused && this.level.mode === "endless"
+      && Number.isFinite(x) && Number.isFinite(y) && this.powerupStock("bomb") > 0
+      && ![...this.bombs.values()].some((bomb) => Math.hypot(bomb.x - x, bomb.y - y) < 24)
+      && this.canAfford(BOMB_PRICE, notify);
+  }
+
+  placeBomb(x: number, y: number): string | undefined {
+    if (!this.canPlaceBomb(x, y, true)) return undefined;
+    this.inventory.set("bomb", this.powerupStock("bomb") - 1);
+    this.changeCoins(-BOMB_PRICE, { x, y });
+    return this.armBomb({ x, y }, false);
+  }
+
+  private armBomb(position: Pt, catastrophe: boolean): string {
+    let id: string;
+    do { id = `bomb${this.nextBombId++}`; } while (this.bombs.has(id));
+    this.bombs.set(id, {
+      id, ...position, placedAt: this.sim.time,
+      deadline: this.sim.time + (catastrophe ? CATASTROPHE_COUNTDOWN : BOMB_COUNTDOWN), catastrophe,
+    });
+    this.bombVersion++;
+    return id;
+  }
+
+  private bombProtected(id: string): boolean {
+    return id === "starterSource" || id === "starterPlace";
+  }
+
+  private infiniteSink(id: string): boolean {
+    return this.goalsOf(id).some((goal) => !Number.isFinite(goal.count));
+  }
+
+  private explode(bomb: Bomb): void {
+    const net = this.sim.net;
+    const hit = (point: Pt) => Math.hypot(point.x - bomb.x, point.y - bomb.y) <= this.bombRadius + TIME_EPSILON;
+    const ids = new Set([...net.places.values(), ...net.transitions.values()]
+      .filter((node) => hit(node) && !this.bombProtected(node.id)
+        && !(bomb.catastrophe && this.infiniteSink(node.id))).map((node) => node.id));
+    for (const id of ids) {
+      if (net.transitions.get(id)?.kind === "sink") {
+        this.statistics.recordSinkDeath(this.sim.time, this.goalsOf(id).map((goal) => goal.color));
+      }
+    }
+    const arcIds = new Set<string>();
+    for (const transition of net.transitions.values()) {
+      for (const [id, route] of transitionLayout(net, transition, this.portrait).routes) {
+        const arc = net.arcs.get(id)!;
+        if (this.bombProtected(arc.from) && this.bombProtected(arc.to)) continue;
+        if (distanceToPolyline(bomb, route.pts) <= this.bombRadius + TIME_EPSILON) arcIds.add(id);
+      }
+    }
+    const cancelled = this.sim.destroyNodes(ids, arcIds);
+    const survivingSinks = new Set<string>();
+    for (const event of cancelled) {
+      this.firingGoalOrdinals.delete(event.firingId);
+      if (ids.has(event.transitionId) || !this.goalsOf(event.transitionId).length) continue;
+      survivingSinks.add(event.transitionId);
+      for (const color of COLORS) {
+        const count = event.consumed[color] ?? 0;
+        if (count) {
+          const key = deliveryKey(event.transitionId, color);
+          this.reserved.set(key, this.reserved.get(key)! - count);
+        }
+      }
+      const sink = net.transitions.get(event.transitionId)!;
+      if (!this.failed.has(sink.id) && !this.resolved.has(sink.id)) {
+        sink.disabled = this.goalsOf(sink.id).every((goal) =>
+          (this.reserved.get(deliveryKey(sink.id, goal.color)) ?? 0) >= goal.count);
+      }
+    }
+    for (const id of survivingSinks) this.repairGoalOrdinals(id);
+    for (const id of ids) {
+      this.forgetGoal(id);
+      this.resolved.delete(id);
+      this.failed.delete(id);
+      this.exhausted.delete(id);
+      this.rewardedSources.delete(id);
+      this.spawnedAt.delete(id);
+      this.unusedPlaces.delete(id);
+      this.upgradeSpending.delete(id);
+      this.autoUpgradeLevels.delete(id);
+      this.builtTransitions.delete(id);
+    }
+    for (const other of this.bombs.values()) {
+      if (other.id === bomb.id || (!other.catastrophe && hit(other))) this.bombs.delete(other.id);
+    }
+    this.explosions.push({ x: bomb.x, y: bomb.y, at: this.sim.time });
+    this.bombVersion++;
+  }
+
+  private repairGoalOrdinals(tid: string): void {
+    for (const goal of this.goalsOf(tid)) {
+      if (!Number.isFinite(goal.count)) continue;
+      const key = deliveryKey(tid, goal.color);
+      const completed = this.completedGoalOrdinals.get(key)?.size ?? 0;
+      this.completedGoalOrdinals.set(key, new Set(Array.from({ length: completed }, (_, i) => i)));
+      const remapped = new Map<number, number>();
+      let ordinal = completed;
+      for (const entries of this.firingGoalOrdinals.values()) {
+        for (const entry of entries) {
+          if (entry.key !== key) continue;
+          remapped.set(entry.ordinal, ordinal);
+          entry.ordinal = ordinal++;
+        }
+      }
+      for (const token of this.sim.inFlight) {
+        if (token.kind !== "input" || token.color !== goal.color || token.goalOrdinal === undefined
+          || this.sim.net.arcs.get(token.arcId)!.to !== tid) continue;
+        const next = remapped.get(token.goalOrdinal);
+        if (next !== undefined) token.goalOrdinal = next;
+      }
+    }
+  }
+
+  private updateBombs(): void {
+    for (const bomb of [...this.bombs.values()]) {
+      if (this.bombs.has(bomb.id) && this.sim.time + TIME_EPSILON >= bomb.deadline) this.explode(bomb);
+    }
+    while (this.explosions.length && this.sim.time - this.explosions[0].at + TIME_EPSILON >= EXPLOSION_TIME) this.explosions.shift();
+    if (!this.pendingCatastrophes || this.sim.time < this.nextCatastropheRetryAt) return;
+    while (this.pendingCatastrophes) {
+      if (!this.spawnCatastrophe()) {
+        console.warn("Could not place a catastrophe away from infinite sinks; retrying in one second");
+        this.nextCatastropheRetryAt = this.sim.time + 1;
+        return;
+      }
+      this.pendingCatastrophes--;
+    }
+  }
+
+  private spawnCatastrophe(): boolean {
+    const net = this.sim.net;
+    const places = [...net.places.values()].filter((place) => !place.ghost && !this.bombProtected(place.id));
+    const sinks = [...net.transitions.values()].filter((sink) => !sink.ghost && this.infiniteSink(sink.id));
+    const start = Math.floor(this.random() * places.length);
+    for (let i = 0; i < places.length; i++) {
+      const place = places[(start + i) % places.length];
+      const phase = this.random() * Math.PI * 2;
+      for (let trial = 0; trial < 64; trial++) {
+        const angle = phase + trial * Math.PI / 16;
+        const radius = this.bombRadius * (trial < 32 ? Math.sqrt(this.random()) : 0.999);
+        const point = { x: place.x + Math.cos(angle) * radius, y: place.y + Math.sin(angle) * radius };
+        if (sinks.some((sink) => Math.hypot(sink.x - point.x, sink.y - point.y) <= this.bombRadius + TIME_EPSILON)
+          || [...this.bombs.values()].some((bomb) => Math.hypot(bomb.x - point.x, bomb.y - point.y) < 24)) continue;
+        this.armBomb(point, true);
+        return true;
+      }
+    }
+    return false;
   }
 
   private changeCoins(amount: number, position: { x: number; y: number }): void {
@@ -923,6 +1132,15 @@ export class Game {
   remove(id: string, apply = true): boolean {
     const net = this.sim.net;
     if (this.complete || !this.level.tools?.remove) return false;
+    const bomb = this.bombs.get(id);
+    if (bomb) {
+      if (bomb.catastrophe) return false;
+      if (apply) {
+        this.bombs.delete(id);
+        this.bombVersion++;
+      }
+      return true;
+    }
     const a = net.arcs.get(id);
     if (a && !a.ghost && !a.indestructible) {
       if (apply) {
@@ -1040,6 +1258,7 @@ export class Game {
   }
 
   private advance(dt: number): void {
+    this.updateBombs();
     if (this.level.mode === "endless") {
       const openDemand = this.goalDefinitions.some((goal) => {
         const sink = this.sim.net.transitions.get(goal.sinkId);
@@ -1049,6 +1268,7 @@ export class Game {
       this.endlessProgress += dt * (openDemand ? 1 : 15);
     }
     this.sim.step(dt);
+    this.updateBombs();
     if (this.survivalFailed) return;
     this.expireOffers();
     this.rampSources();
@@ -1113,6 +1333,9 @@ export class Game {
       [this.endlessCenter.x, this.endlessCenter.y] = [this.endlessCenter.y, this.endlessCenter.x];
     }
     for (const offer of this.offers.values()) [offer.x, offer.y] = [offer.y, offer.x];
+    for (const bomb of this.bombs.values()) [bomb.x, bomb.y] = [bomb.y, bomb.x];
+    for (const explosion of this.explosions) [explosion.x, explosion.y] = [explosion.y, explosion.x];
+    this.bombVersion++;
     if (this.permanentBluePosition) {
       [this.permanentBluePosition.x, this.permanentBluePosition.y] = [this.permanentBluePosition.y, this.permanentBluePosition.x];
     }
@@ -1258,6 +1481,10 @@ export class Game {
       }
       this.endlessProgress = Math.max(0, this.endlessProgress - ENDLESS_EPOCH_PROGRESS);
       this.endlessEpoch++;
+      if (this.endlessEpoch >= 1100 && this.endlessEpoch % 100 === 0) {
+        this.pendingCatastrophes++;
+        this.updateBombs();
+      }
       if (this.endlessEpoch === STARTER_SOURCE_LIMIT_EPOCH && this.endlessCenter) {
         this.endlessCenter.supply = STARTER_SOURCE_SUPPLY;
         this.endlessCenter.initialSupply = STARTER_SOURCE_SUPPLY;

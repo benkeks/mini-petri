@@ -1,7 +1,7 @@
 import { Container, Graphics, Rectangle, Text } from "pixi.js";
 import { COLORS, type Color } from "../core/multiset";
 import { ENDLESS_RULES, MAX_LIVES, type CoinEvent, type Game } from "../game/game";
-import type { Powerup } from "../game/powerups";
+import { POWERUPS, type Powerup } from "../game/powerups";
 import { brushesOf, sameBrush, type Brush, type Controller } from "../input/controller";
 import { isUltraWide, type Pt } from "./geometry";
 import { THEME, TOKEN_COLORS } from "./style";
@@ -1019,7 +1019,8 @@ export class Hud {
         });
       }
       b.root.y = b.baseY;
-      const powerup = b.brush.kind === "kit" ? g.kitPowerup(b.brush.kit) : undefined;
+      const powerup = b.brush.kind === "kit" ? g.kitPowerup(b.brush.kit)
+        : b.brush.kind === "bomb" ? POWERUPS.find((item) => item.kind === "bomb") : undefined;
       const free = b.brush.kind === "auto" || b.brush.kind === "capacity" ? g.powerupStock(b.brush.kind) : 0;
       const stock = powerup ? g.powerupStock(powerup.id) : free;
       const price = b.brush.kind === "life" ? g.lifePrice

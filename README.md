@@ -50,6 +50,8 @@ At zero lives, restart or continue in endless mode with your network intact; you
 Building and wiring are free, while upgrades cost coins.
 Filled sinks offer a choice of rewards, including coins, free upgrades and transition kits.
 After your first lost life, the heart tool offers replacement lives.
+From epoch 500, bomb rewards let you clear troublesome nodes for 25 coins after a three-second fuse.
+From epoch 1100, every hundredth epoch adds an undeletable two-minute bomb.
 
 ## Petri nets behind the game
 

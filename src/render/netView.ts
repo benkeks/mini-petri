@@ -1,7 +1,7 @@
 import { Container, Graphics, Text } from "pixi.js";
 import { total } from "../core/multiset";
 import { arcCount, Net, type Arc, type Port, type Transition } from "../core/net";
-import { buildRange, connectionRange, placementClearance, POWERUP_LIFETIME, RESOLVED_LINGER, STARTER_SOURCE_LIMIT_EPOCH, type GoalStatus, type NodeKind, type PowerupOffer } from "../game/game";
+import { buildRange, connectionRange, EXPLOSION_TIME, placementClearance, POWERUP_LIFETIME, RESOLVED_LINGER, STARTER_SOURCE_LIMIT_EPOCH, type GoalStatus, type NodeKind, type PowerupOffer } from "../game/game";
 import type { Game } from "../game/game";
 import type { Powerup } from "../game/powerups";
 import { placeRadius } from "../game/placeSize";
@@ -21,7 +21,7 @@ import {
   type Pt,
 } from "./geometry";
 import { STORED_TOKEN_RADIUS, THEME, TOKEN_COLORS, TOKEN_RADIUS } from "./style";
-import { drawToolIcon } from "./toolIcon";
+import { drawBomb, drawToolIcon } from "./toolIcon";
 
 const FLASH_TIME = 0.35;
 const SHAKE_TIME = 0.3;
@@ -45,6 +45,7 @@ const STUBS_PER_CHUNK = 16;
 
 /** What a tap at some point of the world hits. */
 export type Pick =
+  | { kind: "bomb"; id: string }
   | { kind: "reward"; id: string; index: number }
   | { kind: "port"; tid: string; index: number }
   | { kind: "transition"; id: string }
@@ -54,6 +55,7 @@ export type Pick =
 
 /** What the input controller wants shown on top of the net. */
 export interface Overlay {
+  bombPreview?: boolean;
   /** Pointer position in world coordinates, if known. */
   pointer?: Pt;
   /** Picks whose tap would have an effect or give feedback. */
@@ -171,6 +173,9 @@ export class NetView {
   private readonly tokenLayer = new Graphics();
   private readonly overlayContainer = new Container();
   private readonly overlayLayer = new Graphics();
+  private readonly bombContainer = new Container();
+  private readonly bombLayer = new Graphics();
+  private readonly bombLabels = new Map<string, Text>();
   private readonly buildPreview = new Graphics();
   private readonly portGlowLayer = new Container();
   private readonly portGlows = new Map<string, PortGlow>();
@@ -220,6 +225,8 @@ export class NetView {
       this.rewardLayer,
     );
     this.labelLayer.addChild(this.xrayArcLayer, this.xrayTokenLayer, this.staticLabels, this.stubLabels, this.previewLabels);
+    this.bombContainer.addChild(this.bombLayer);
+    this.labelLayer.addChild(this.bombContainer);
     this.buildPreview.label = "build-preview";
     this.buildPreview.alpha = 0.65;
     this.previewLabels.alpha = 0.65;
@@ -278,6 +285,7 @@ export class NetView {
       if (n.container.visible) this.drawTransition(n, now, dt);
     }
     this.drawInFlight();
+    this.drawBombs();
     const hover = this.overlay.pointer ? this.pick(this.overlay.pointer) : undefined;
     this.drawOverlay(now, this.game.complete ? undefined : hover);
     this.drawRewards(hover);
@@ -340,6 +348,10 @@ export class NetView {
       if (n) Object.assign(n, { deniedAt: now, deniedColor: color });
     } else if (pick.kind === "place") this.placeDeniedAt.set(pick.id, { at: now, color });
     else if (pick.kind === "empty") this.ripples.push({ x: pick.x, y: pick.y, at: now, color });
+    else if (pick.kind === "bomb") {
+      const bomb = this.game.bombs.get(pick.id);
+      if (bomb) this.ripples.push({ x: bomb.x, y: bomb.y, at: now, color });
+    }
   }
 
   rewardCollected(offer: PowerupOffer, index: number): void {
@@ -368,6 +380,9 @@ export class NetView {
       }
     }
     const slop = PICK_SLOP / (this.root.scale.x || 1);
+    for (const bomb of [...this.game.bombs.values()].reverse()) {
+      if (Math.hypot(bomb.x - p.x, bomb.y - p.y) <= 17 + slop / 2) return { kind: "bomb", id: bomb.id };
+    }
     const closest = <T>(items: Iterable<T>, dist: (x: T) => number, max: number): T | undefined => {
       let best: T | undefined;
       let bestD = max;
@@ -436,7 +451,7 @@ export class NetView {
             item.addChild(amount);
           } else {
             drawToolIcon(icon, choice.kind === "kit" ? { kind: "kit", kit: choice.kit } : { kind: choice.kind });
-            if (choice.kind === "kit") {
+            if (choice.kind === "kit" || choice.kind === "bomb") {
               const badge = new Graphics().circle(19, 19, 10).fill(0xdd8a25);
               const price = new Text({ text: String(choice.price), style: { fontFamily: THEME.font, fontSize: 11, fill: 0xffffff, fontWeight: "bold" } });
               price.anchor.set(0.5);
@@ -1048,6 +1063,13 @@ export class NetView {
     const net = this.game.sim.net;
     const o = this.overlay;
     const pulse = 0.5 + 0.5 * Math.sin(now * 6);
+    if (o.bombPreview && o.pointer && !this.game.complete) {
+      const { x, y } = o.pointer;
+      const valid = this.game.canPlaceBomb(x, y);
+      g.circle(x, y, this.game.bombRadius).fill({ color: THEME.removal, alpha: 0.07 })
+        .stroke({ width: 2, color: THEME.removal, alpha: 0.65 });
+      drawBomb(this.buildPreview, x, y, 0.8, valid ? THEME.ink : THEME.removal);
+    }
     const selectedTransition = o.selected && net.transitions.get(o.selected.tid);
     const selectedPlace = o.selectedPlace && net.places.get(o.selectedPlace);
     const connectionOrigin = selectedTransition && !selectedTransition.ghost && selectedTransition.open?.[o.selected!.index]
@@ -1078,7 +1100,10 @@ export class NetView {
     }
 
     const ring = (pick: Pick, color: number, alpha: number, width: number) => {
-      if (pick.kind === "transition") {
+      if (pick.kind === "bomb") {
+        const bomb = this.game.bombs.get(pick.id)!;
+        g.circle(bomb.x, bomb.y, 26).stroke({ width, color, alpha });
+      } else if (pick.kind === "transition") {
         const t = net.transitions.get(pick.id)!;
         const { w, h } = this.layouts.get(t.id)!.bar;
         g.roundRect(t.x - w / 2 - 9, t.y - h / 2 - 9, w + 18, h + 18, 12).stroke({ width, color, alpha });
@@ -1123,6 +1148,7 @@ export class NetView {
 
     if (o.target || (o.previewTarget && o.pointer && hover?.kind === "empty")) {
       const candidates: Pick[] = [
+        ...[...this.game.bombs.values()].map((bomb): Pick => ({ kind: "bomb", id: bomb.id })),
         ...net.liveNodes().map((n): Pick => (net.places.has(n.id) ? { kind: "place", id: n.id } : { kind: "transition", id: n.id })),
         ...this.stubs.map((s): Pick => ({ kind: "port", tid: s.tid, index: s.index })),
       ];
@@ -1186,7 +1212,60 @@ export class NetView {
       g.moveTo(center.x + Math.cos(start) * radius, center.y + Math.sin(start) * radius)
         .arc(center.x, center.y, radius, start, start + Math.PI / 3);
     }
+
     g.stroke({ width, color, alpha });
+  }
+
+  private drawBombs(): void {
+    const g = this.bombLayer.clear();
+    const now = this.game.sim.time;
+    for (const [id, label] of this.bombLabels) {
+      if (!this.game.bombs.has(id)) {
+        label.destroy();
+        this.bombLabels.delete(id);
+      }
+    }
+    for (const bomb of this.game.bombs.values()) {
+      const radius = this.game.bombRadius;
+      const visible = !this.viewport || overlaps(this.viewport, {
+        left: bomb.x - radius, right: bomb.x + radius, top: bomb.y - radius, bottom: bomb.y + radius,
+      });
+      let label = this.bombLabels.get(bomb.id);
+      if (!label) {
+        label = new Text({ text: "", style: { fontFamily: THEME.font, fontSize: 12, fill: THEME.removal } });
+        label.anchor.set(0.5, 0);
+        this.bombContainer.addChild(label);
+        this.bombLabels.set(bomb.id, label);
+      }
+      label.visible = visible;
+      if (!visible) continue;
+      label.text = String(Math.max(0, Math.ceil(bomb.deadline - now)));
+      label.position.set(bomb.x, bomb.y + 29);
+      g.circle(bomb.x, bomb.y, radius).fill({ color: THEME.removal, alpha: 0.035 })
+        .stroke({ width: 2, color: THEME.removal, alpha: 0.4 });
+      const remaining = Math.max(0, Math.min(1, (bomb.deadline - now) / (bomb.deadline - bomb.placedAt)));
+      if (remaining > 0) g.moveTo(bomb.x, bomb.y - 24)
+        .arc(bomb.x, bomb.y, 24, -Math.PI / 2, -Math.PI / 2 + remaining * Math.PI * 2)
+        .stroke({ width: 3, color: THEME.removal, alpha: 0.9 });
+      drawBomb(g, bomb.x, bomb.y, 0.8, bomb.catastrophe ? THEME.removal : THEME.ink);
+    }
+    for (const explosion of this.game.explosions) {
+      const age = now - explosion.at;
+      for (let wave = 0; wave < 3; wave++) {
+        const progress = (age - wave * 0.12) / (EXPLOSION_TIME - 0.24);
+        if (progress < 0 || progress >= 1) continue;
+        for (let segment = 0; segment <= 48; segment++) {
+          const angle = segment * Math.PI / 24;
+          const radius = this.game.bombRadius * (0.08 + progress)
+            + Math.sin(now * 65 + angle * 7 + wave) * 4 * (1 - progress);
+          const x = explosion.x + Math.cos(angle) * radius;
+          const y = explosion.y + Math.sin(angle) * radius;
+          if (segment === 0) g.moveTo(x, y);
+          else g.lineTo(x, y);
+        }
+        g.stroke({ width: 5 * (1 - progress) + 1, color: THEME.removal, alpha: 0.65 * (1 - progress) });
+      }
+    }
   }
 
   /** Grouped colored goals, an infinity marker for open-ended sinks, or a check mark once resolved. */

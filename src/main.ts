@@ -35,6 +35,7 @@ async function main(): Promise<void> {
   const navigation = new Navigation(camera);
   let boundsVersion = -1;
   let boundsOfferVersion = -1;
+  let boundsBombVersion = -1;
   let view = createView();
   const controller = new Controller(game, view);
   let pausedBeforeStatistics = false;
@@ -277,11 +278,13 @@ async function main(): Promise<void> {
   }
 
   function updateBounds(): void {
-    if (boundsVersion === game.sim.net.version && boundsOfferVersion === game.offerVersion) return;
+    if (boundsVersion === game.sim.net.version && boundsOfferVersion === game.offerVersion
+      && boundsBombVersion === game.bombVersion) return;
     boundsVersion = game.sim.net.version;
     boundsOfferVersion = game.offerVersion;
+    boundsBombVersion = game.bombVersion;
     camera.setNodes([...game.sim.net.liveNodes().map((node) => ({ ...node, range: buildRange(node) })),
-      ...game.offers.values()], game.size);
+      ...game.offers.values(), ...[...game.bombs.values()].map((bomb) => ({ ...bomb, range: game.bombRadius }))], game.size);
   }
 
   function applyCamera(): void {
@@ -448,7 +451,7 @@ async function main(): Promise<void> {
       controller.move(world);
       const pick = view.pick(world);
       app.canvas.style.cursor = controller.interactive(pick) ? "pointer"
-        : pick.kind === "empty" && controller.brush.kind !== "kit" ? "grab" : "default";
+        : pick.kind === "empty" && controller.brush.kind !== "kit" && controller.brush.kind !== "bomb" ? "grab" : "default";
     }
     controller.sync(dt);
     if (hud.update(dt, (point) => ({ x: point.x * camera.scale + camera.x, y: point.y * camera.scale + camera.y }))) layout();

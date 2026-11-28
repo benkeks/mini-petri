@@ -7,11 +7,23 @@ export function drawHeart(g: Graphics, x = 0, y = 0, scale = 1): void {
     .bezierCurveTo(x + 12 * scale, y - 24 * scale, x + 30 * scale, y - 5 * scale, x, y + 14 * scale).fill(THEME.heart);
 }
 
+export function drawBomb(g: Graphics, x = 0, y = 0, scale = 1, color = THEME.ink): void {
+  g.circle(x, y + 3 * scale, 12 * scale).fill(color);
+  g.roundRect(x + 3 * scale, y - 12 * scale, 7 * scale, 7 * scale, 2 * scale).fill(color);
+  g.moveTo(x + 7 * scale, y - 12 * scale)
+    .bezierCurveTo(x + 6 * scale, y - 21 * scale, x + 19 * scale, y - 13 * scale, x + 16 * scale, y - 21 * scale)
+    .stroke({ width: 2 * scale, color, cap: "round" });
+  g.circle(x + 16 * scale, y - 21 * scale, 2 * scale).fill(0xdd8a25);
+}
+
 /** Icons of the toolbar, drawn around (0, 0) within 48 pixels. */
 export function drawToolIcon(g: Graphics, b: Brush): void {
   const ink = THEME.ink;
   const bar = (x: number, w = 8, h = 24, color: number = ink) => g.roundRect(x - w / 2, -h / 2, w, h, 3).fill(color);
   switch (b.kind) {
+    case "bomb":
+      drawBomb(g);
+      break;
     case "life":
       drawHeart(g);
       break;

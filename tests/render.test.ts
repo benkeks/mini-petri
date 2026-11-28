@@ -69,6 +69,83 @@ describe("Pixi layer hierarchy", () => {
   });
 });
 
+describe("bomb presentation", () => {
+  it("previews the blast over nodes, picks armed bombs and shrinks their countdown ring", () => {
+    const game = new Game(endless);
+    game["inventory"].set("bomb", 1);
+    const view = new NetView(game);
+    const controller = new Controller(game, view);
+    const viewport = { x: 0, y: 0, width: 1200, height: 800 };
+    controller.setBrush({ kind: "bomb" });
+    controller.move({ x: 800, y: 400 });
+    controller.sync();
+    view.update(0.3, viewport);
+    expect(drawing(view["overlayLayer"]).flatMap((item) => item.path)
+      .some((shape) => shape.action === "circle" && shape.data[0] === 800 && shape.data[2] === 200)).toBe(true);
+    expect(drawing(view["buildPreview"]).some((item) => item.action === "fill")).toBe(true);
+    controller.tap({ x: 800, y: 400 });
+    controller.sync();
+    view.update(0, viewport);
+    const id = [...game.bombs.keys()][0];
+    expect(view.pick({ x: 800, y: 400 })).toEqual({ kind: "bomb", id });
+    expect(view["bombLabels"].get(id)!.text).toBe("3");
+    game.sim.time = 1.5;
+    view.update(0, viewport);
+    const ring = drawing(view["bombLayer"]).flatMap((item) => item.path)
+      .find((shape) => shape.action === "arc" && shape.data[2] === 24)!;
+    expect(ring.data[4] - ring.data[3]).toBeCloseTo(Math.PI);
+    expect(view["bombLabels"].get(id)!.text).toBe("2");
+    expect(drawing(view["bombLayer"]).flatMap((item) => item.path)
+      .some((shape) => shape.action === "circle" && shape.data[2] === 200)).toBe(true);
+    view.root.destroy({ children: true });
+  });
+
+  it("draws several changing shockwaves after detonation", () => {
+    const game = new Game(endless);
+    game["inventory"].set("bomb", 1);
+    const view = new NetView(game);
+    game.placeBomb(800, 400);
+    game.step(3.4);
+    view.update(0, { x: 0, y: 0, width: 1200, height: 800 });
+    const waves = drawing(view["bombLayer"]).filter((item) => item.action === "stroke");
+    expect(waves).toHaveLength(3);
+    expect(waves.every((wave) => wave.path.filter((shape) => shape.action === "lineTo").length >= 32)).toBe(true);
+    game.step(0.05);
+    view.update(0, { x: 0, y: 0, width: 1200, height: 800 });
+    expect(drawing(view["bombLayer"])).not.toEqual(waves);
+    view.root.destroy({ children: true });
+  });
+
+  it("shows bomb stock and placement price in the toolbar", () => {
+    const width = vi.spyOn(Text.prototype, "width", "get").mockReturnValue(40);
+    const height = vi.spyOn(Text.prototype, "height", "get").mockReturnValue(14);
+    const bounds = vi.spyOn(Text.prototype, "getBounds").mockImplementation(function (this: Text) {
+      const bounds = new Bounds();
+      bounds.addFrame(this.x, this.y, this.x + 40, this.y + 14);
+      return bounds;
+    });
+    const game = new Game(endless);
+    game["inventory"].set("bomb", 2);
+    const view = new NetView(game);
+    const hud = new Hud(game, new Controller(game, view), {
+      restart: () => {}, requestRestart: () => {}, togglePause: () => {},
+      selectBrush: () => {}, focusSink: () => {},
+    });
+    try {
+      hud.update(0, (point) => point);
+      const tool = hud["tools"].find((item) => item.brush.kind === "bomb")!;
+      expect(tool.count.text).toBe("2");
+      expect(tool.price.text).toBe("25");
+    } finally {
+      hud.root.destroy({ children: true });
+      view.root.destroy({ children: true });
+      width.mockRestore();
+      height.mockRestore();
+      bounds.mockRestore();
+    }
+  });
+});
+
 describe("save viewport capture", () => {
   it("hides build and reward UI and restores it even if rendering fails", () => {
     const game = new Game(endless);

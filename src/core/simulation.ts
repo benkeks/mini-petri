@@ -287,6 +287,44 @@ export class Simulation {
     this.autoTimers.delete(tid);
   }
 
+  /** Immediately destroys nodes and affected firings, reopening surviving connectors. */
+  destroyNodes(ids: ReadonlySet<string>, destroyedArcs: ReadonlySet<string> = new Set()): FireEvent[] {
+    const arcIds = new Set([...destroyedArcs, ...[...ids].flatMap((id) => this.net.arcsOf(id).map((arc) => arc.id))]);
+    const cancelledIds = new Set(this.inFlight
+      .filter((token) => token.kind === "input" && arcIds.has(token.arcId)).map((token) => token.firingId));
+    const cancelled: FireEvent[] = [];
+    for (const [id, firing] of this.firings) {
+      if (!ids.has(firing.transitionId) && !cancelledIds.has(id)
+        && !firing.outputs.some(({ arc }) => arcIds.has(arc.id))) continue;
+      cancelledIds.add(id);
+      for (const { arc, colors } of firing.outputs) this.reserve(arc.to, colors, -1);
+      cancelled.push({
+        firingId: id, transitionId: firing.transitionId, consumed: firing.consumed,
+        produced: firing.produced, time: this.time,
+      });
+      this.firings.delete(id);
+    }
+    for (const token of this.inFlight) {
+      if (token.kind === "output" && arcIds.has(token.arcId)) {
+        this.reserve(this.net.arcs.get(token.arcId)!.to, [token.color], -1);
+      }
+    }
+    const kept = this.inFlight.filter((token) => !arcIds.has(token.arcId) && !cancelledIds.has(token.firingId));
+    this.inFlight.length = 0;
+    this.inFlight.push(...kept);
+    for (const id of ids) if (this.net.transitions.has(id)) this.net.ghostTransition(id);
+    for (const id of ids) if (this.net.places.has(id)) this.net.ghostPlace(id);
+    for (const id of arcIds) {
+      this.net.ghostArc(id);
+      this.net.deleteArc(id);
+    }
+    for (const id of ids) {
+      this.net.deleteNode(id);
+      this.autoTimers.delete(id);
+    }
+    return cancelled;
+  }
+
   /** True while `tid` has a firing whose outputs have not started to travel yet. */
   isBusy(tid: string): boolean {
     for (const f of this.firings.values()) if (f.transitionId === tid) return true;

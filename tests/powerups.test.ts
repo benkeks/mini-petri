@@ -108,8 +108,8 @@ describe("sink rewards", () => {
     expect(section).toBeDefined();
     const rows = section!.split("\n").filter((line) => /^\| \d+ \|/.test(line));
     const expected = POWERUPS.map((powerup) => {
-      const label = powerup.kind === "kit" ? powerup.label.split("\n")[0] : powerup.label.replace("\n", " ");
-      const cost = powerup.kind === "kit" ? String(powerup.price) : "—";
+      const label = "price" in powerup ? powerup.label.split("\n")[0] : powerup.label.replace("\n", " ");
+      const cost = "price" in powerup ? String(powerup.price) : "—";
       return `| ${powerup.afterEpoch} | \`${powerup.id}\` | ${label} | ${cost} |`;
     });
     expect(rows).toEqual(expected);

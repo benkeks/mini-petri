@@ -20,7 +20,8 @@ export type Brush =
   | { kind: "remove" }
   | { kind: "auto" }
   | { kind: "capacity" }
-  | { kind: "life" };
+  | { kind: "life" }
+  | { kind: "bomb" };
 
 export const FIRE: Brush = { kind: "fire" };
 
@@ -35,6 +36,7 @@ export function brushesOf(game: Game): Brush[] {
   if (tools.capacity && (game.level.mode !== "endless" || game.epoch >= 10)) brushes.push({ kind: "capacity" });
   if (game.survival && game.hasLostLife) brushes.push({ kind: "life" });
   for (const kit of kits) if (kit !== relay) brushes.push({ kind: "kit", kit });
+  if (game.powerupStock("bomb") > 0) brushes.push({ kind: "bomb" });
   if (tools.remove) brushes.push({ kind: "remove" });
   return brushes;
 }
@@ -112,7 +114,7 @@ export class Controller {
       this.hasInteracted = true;
       return true;
     }
-    const edits = this.brush.kind === "kit" || (this.brush.kind === "remove" && pick.kind !== "empty")
+    const edits = this.brush.kind === "kit" || this.brush.kind === "bomb" || (this.brush.kind === "remove" && pick.kind !== "empty")
       || (!!this.selected && (pick.kind === "empty" || pick.kind === "port" || pick.kind === "transition" || pick.kind === "place"))
       || (!!this.selectedPlace && (pick.kind === "port" || pick.kind === "transition" || pick.kind === "place"
         || (pick.kind === "empty" && !!this.game.relayKit())));
@@ -162,6 +164,8 @@ export class Controller {
   /** Whether tapping this pick changes the game or gives interaction feedback. */
   interactive(pick: Pick): boolean {
     if (this.game.complete || this.game.paused) return false;
+    if (this.brush.kind === "bomb") return pick.kind === "reward"
+      || (!!this.pointer && this.game.canPlaceBomb(this.pointer.x, this.pointer.y));
     if (pick.kind === "port" && this.selectedPlace) return this.game.connect(pick.tid, pick.index, this.selectedPlace, false);
     if (pick.kind === "port" && this.selected && this.game.level.tools?.place) return this.game.connectPorts(this.selected, pick, false, this.pointer);
     if (pick.kind === "transition" && this.selectedPlace) return this.firstConnectiblePort(pick.id, this.selectedPlace) !== undefined;
@@ -247,6 +251,10 @@ export class Controller {
       const offer = game.offers.get(pick.id);
       if (!this.effect(game.collectOffer(pick.id, pick.index))) this.deny(pick);
       else if (offer) this.view.rewardCollected?.(offer, pick.index);
+      return;
+    }
+    if (this.brush.kind === "bomb") {
+      if (!this.act(pick, true, chain)) this.deny(pick, "Cannot place a bomb. Check your stock and coins, and leave space from other bombs.");
       return;
     }
     if (pick.kind === "place") game.touchPlace(pick.id);
@@ -350,6 +358,7 @@ export class Controller {
     }
     const game = this.game;
     if (this.brush.kind === "kit" && !game.availableKits().includes(this.brush.kit)) this.brush = FIRE;
+    if (this.brush.kind === "bomb" && game.powerupStock("bomb") === 0) this.brush = FIRE;
     const b = this.brush;
     if (this.selected) {
       const t = game.sim.net.transitions.get(this.selected.tid);
@@ -391,6 +400,7 @@ export class Controller {
       connection,
       hoverAction: (pick) => this.interactive(pick),
       suppressTransitionConnections: b.kind === "fire" && !this.selected && !this.selectedPlace,
+      bombPreview: b.kind === "bomb",
       build: canBuildConnected ? { kind: "place", capacity: 1, connection: this.selected, position: bridge, bridgeTo }
         : relay ? { kind: "transition", ports: relay.ports, fromPlace: this.selectedPlace,
           canPlace: (x, y) => game.canBuildConnectedTransition(this.selectedPlace!, x, y, relay) }
@@ -425,6 +435,8 @@ export class Controller {
 
   /** Explains what a tap does now. */
   hint(): string {
+    if (this.brush.kind === "bomb") return this.failureHint?.text
+      ?? "Place a bomb for 25 coins. Everything in the ring is destroyed after 3 seconds, except the starting source and place.";
     if (this.game.level.mode === "endless") {
       if (this.game.epoch > 100) return "";
       if (this.game.epoch > 10 && this.brush.kind === "fire") return "";
@@ -548,6 +560,15 @@ export class Controller {
         return pick.kind === "place" && (apply ? this.effect(game.upgradeCapacity(pick.id)) : game.upgradeCapacity(pick.id, false));
       case "life":
         return false;
+      case "bomb": {
+        const point = this.pointer;
+        if (!point) return false;
+        if (!apply) return game.canPlaceBomb(point.x, point.y);
+        if (game.placeBomb(point.x, point.y) === undefined) return false;
+        this.hasInteracted = true;
+        if (!chain || !game.powerupStock("bomb")) this.brush = FIRE;
+        return true;
+      }
     }
   }
 }

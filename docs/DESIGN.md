@@ -292,7 +292,8 @@ The blue milestone's original position is remembered across orientation changes 
 
 These are available after the stated number of epochs have completed. A kit's price is paid when it is built, not when it is collected.
 Below 50 coins, each unlocked coin reward has base selection weight 3 instead of 1, for both choices without duplicates.
-At 50 coins or more, non-heart rewards have equal base weights; survival heart probabilities are unchanged.
+At 50 coins or more, ordinary non-heart rewards have equal base weights; survival heart probabilities are unchanged.
+From epoch 500, bombs have base selection weight 0.33, making them occasional offers.
 Each transition kit's weight is multiplied by 0.66 when more than 7 copies are stocked, again above 15, and again above 25, giving weights of 1, 0.66, 0.4356 or 0.287496.
 Only unused inventory counts; coins and place/time upgrades are never penalized for stock.
 At completed epoch 250, red→blue+green replaces red→green in new offers, retaining the 5-coin build price.
@@ -300,7 +301,7 @@ At completed epoch 300, 50-coin rewards replace 10-coin rewards in new offers.
 Previously owned kits and already spawned offers remain unchanged.
 The table is checked against the powerup definitions by the tests.
 
-| Completed epochs | ID | Reward | Kit cost |
+| Completed epochs | ID | Reward | Placement cost |
 | --- | --- | --- | --- |
 | 0 | `coins5` | 5 coins | — |
 | 10 | `capacity` | Free place upgrade | — |
@@ -318,8 +319,32 @@ The table is checked against the powerup definitions by the tests.
 | 150 | `coins20` | 20 coins | — |
 | 250 | `redToBlueGreen` | Red→blue+green | 5 |
 | 300 | `coins50` | 50 coins | — |
+| 500 | `bomb` | Bomb | 25 |
 
 When changing progression, update this overview and the boundary tests in [game.test.ts](../tests/game.test.ts) and [powerups.test.ts](../tests/powerups.test.ts).
+
+### Bombs and catastrophes
+
+Collecting a bomb adds one item to stock; placing it costs 25 coins and starts a three-second simulation-time fuse.
+Bombs can be placed anywhere on the map, including on nodes, with at least 24 units between bomb centers.
+Their radius is the initial starting source-to-place distance (200 world units); node centers on the boundary are included.
+The starting source and its starting place are always protected, including their tokens and original connecting arc.
+Other places, transitions, sources and sinks are immediately destroyed, including ghosts and otherwise indestructible nodes.
+Their incident arcs, arcs crossing the blast circle and affected token flights are lost; surviving transitions regain their loose connectors.
+Cancelled sink firings release their demand reservations so the sink can be rewired and supplied again.
+Bomb destruction gives no refunds, rewards, deliveries or starvation life penalties; destroyed sinks are recorded in the statistics death timeline.
+Player bombs can be removed without refund or destroyed by another blast, without chain reactions.
+
+Every completed epoch divisible by 100 from 1100 schedules one free, randomly positioned catastrophe bomb with a 120-second simulation-time fuse.
+Placement must hit at least one live, non-starting place and avoid all live infinite sinks.
+If no safe position can be found, the scheduled bomb is retained and placement retries after one simulation second.
+Catastrophe bombs cannot be deleted or destroyed by player actions or other explosions.
+Infinite sinks also survive catastrophe explosions if they appeared inside the range after placement; player bombs can destroy them.
+Armed bombs and deferred catastrophes survive saving/loading and transpose with the map on orientation changes.
+Pause freezes both countdowns and explosions.
+
+Placement and armed bombs show the blast radius; a small bomb icon, shrinking countdown circle and remaining seconds identify each armed bomb.
+Explosions produce three staggered, vibrating shockwave rings over 1.2 simulation seconds.
 
 ## Presentation
 - Transitions with connected arcs all predominantly above or below them use horizontal bars; arcs all predominantly left/right use vertical bars, including in portrait mode.

@@ -58,6 +58,8 @@ export interface Overlay {
   pointer?: Pt;
   /** Picks whose tap would have an effect or give feedback. */
   hoverAction?: (pick: Pick) => boolean;
+  /** Ordinary transition firing should not trace the transition's connections. */
+  suppressTransitionConnections?: boolean;
   /** Shows the build range and a preview of the node to build under the pointer. */
   build?: { kind: NodeKind; ports?: Port[]; capacity?: number; connection?: { tid: string; index: number }; bridgeTo?: { tid: string; index: number }; fromPlace?: string; position?: Pt; canPlace?: (x: number, y: number) => boolean };
   /** Prospective arc between an existing place and an open transition port. */
@@ -1027,7 +1029,8 @@ export class NetView {
     const focused = !this.game.complete && (focusedPick?.kind === "place" || focusedPick?.kind === "transition"
       ? focusedPick.id : focusedPick?.kind === "port" ? focusedPick.tid : (selectedPlace && selectedPlace.id) || selectedTransition?.id);
     const focusedNode = focused && (net.places.get(focused) ?? net.transitions.get(focused));
-    if (focusedNode && !focusedNode.ghost) {
+    if (focusedNode && !focusedNode.ghost
+      && !(o.suppressTransitionConnections && net.transitions.has(focusedNode.id))) {
       const pick: Pick = { kind: net.places.has(focusedNode.id) ? "place" : "transition", id: focusedNode.id };
       ring(pick, o.removing && o.target?.(pick) ? THEME.removalGlow : THEME.ink, 0.85, 4);
       const endpoints = new Set<string>();

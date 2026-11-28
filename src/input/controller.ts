@@ -390,6 +390,7 @@ export class Controller {
       pointer: this.pointer,
       connection,
       hoverAction: (pick) => this.interactive(pick),
+      suppressTransitionConnections: b.kind === "fire" && !this.selected && !this.selectedPlace,
       build: canBuildConnected ? { kind: "place", capacity: 1, connection: this.selected, position: bridge, bridgeTo }
         : relay ? { kind: "transition", ports: relay.ports, fromPlace: this.selectedPlace,
           canPlace: (x, y) => game.canBuildConnectedTransition(this.selectedPlace!, x, y, relay) }

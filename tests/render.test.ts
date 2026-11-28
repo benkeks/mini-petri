@@ -191,6 +191,43 @@ describe("dense net readability", () => {
     view.root.destroy({ children: true });
   });
 
+  it("does not trace ordinary firing clicks, but keeps connection highlighting for wiring and upgrades", () => {
+    const game = network();
+    game.sim.net.places.get("from")!.marking = ["blue"];
+    const view = new NetView(game);
+    const controller = new Controller(game, view);
+    const relay = { x: 420, y: 200 };
+    controller.move(relay);
+    controller.sync();
+    view.update(0, viewport);
+    expect(view["focusArcLayer"].context.instructions).toHaveLength(0);
+    expect(controller.press(relay)).toBe(false);
+    controller.sync();
+    view.update(0, viewport);
+    expect(view["focusArcLayer"].context.instructions).toHaveLength(0);
+    controller.tap(relay);
+    controller.sync();
+    view.update(0, viewport);
+    expect(game.sim.inFlight).toHaveLength(1);
+    expect(view["focusArcLayer"].context.instructions).toHaveLength(0);
+    expect(drawing(view["overlayLayer"]).flatMap((item) => item.path).some((shape) => shape.action === "circle")).toBe(false);
+    controller.move({ x: 100, y: 200 });
+    controller.sync();
+    view.update(0, viewport);
+    expect(drawing(view["focusArcLayer"]).filter((item) => item.width === 7).map((item) => item.color)).toEqual([TOKEN_COLORS.blue]);
+    controller.tap({ x: 100, y: 200 });
+    controller.move(relay);
+    controller.sync();
+    view.update(0, viewport);
+    expect(drawing(view["focusArcLayer"]).filter((item) => item.width === 7)).toHaveLength(2);
+    controller.setBrush({ kind: "auto" });
+    controller.move(relay);
+    controller.sync();
+    view.update(0, viewport);
+    expect(drawing(view["focusArcLayer"]).filter((item) => item.width === 7)).toHaveLength(2);
+    view.root.destroy({ children: true });
+  });
+
   it("merges overlapping occluders so the same arc portion is not drawn twice", () => {
     const game = network();
     Object.assign(game.sim.net.places.get("unrelated")!, { x: 280, y: 200 });

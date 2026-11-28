@@ -38,7 +38,7 @@ Overlapping occlusion intervals are merged so the same hidden portion is not dra
 X-ray dashes repeat every 12 world units, with a five-unit dash.
 Travelling tokens render at 50% opacity above x-ray arcs while their actual animated centers are inside an occluding node, returning to full opacity outside it.
 Occluder candidates are cached with the arc geometry; side-by-side token lanes are checked individually.
-Hovering, pressing or selecting a node for wiring highlights its live incident arcs and their opposite endpoints, without following further connections.
+Hovering, pressing or selecting a node for wiring highlights its live incident arcs and their opposite endpoints, without following further connections; ordinary transition firing without a wiring selection does not trace connections.
 Arc highlights render below node bodies; x-ray segments remain at 50% opacity and appear in saved thumbnails, while focus overlays are excluded.
 
 ## Saved sessions
